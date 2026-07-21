@@ -1,0 +1,110 @@
+"""The attribution join: git changes -> Sessions, with honest tiers.
+
+- exact:  commit hash captured in a Session's `git commit` stdout
+- likely: file-path overlap with a Session's Edit/Write calls (shown with ~)
+File paths are matched by the path itself, not the Session's cwd, so a
+Session that edited files outside its own repo attributes correctly.
+"""
+
+from __future__ import annotations
+
+import os
+from datetime import datetime, timedelta, timezone
+
+from . import gitstate
+from .models import Attribution, Commit, RepoEntry, Session
+
+LIKELY_COMMIT_CAP = 15  # max commits per repo to attribute via file overlap
+LIKELY_WINDOW_BEFORE = timedelta(days=7)   # session edit must precede the commit by less than this
+LIKELY_WINDOW_AFTER = timedelta(minutes=30)  # small slack for clock skew / amend
+_EPOCH = datetime.min.replace(tzinfo=timezone.utc)
+
+
+def _attr(session: Session, tier: str, when=None) -> Attribution:
+    return Attribution(tier=tier, session_id=session.session_id,
+                       title=session.title, when=when)
+
+
+def _match_pending(entry: RepoEntry, sessions: list[Session]) -> None:
+    for checkout in entry.checkouts:
+        for pf in checkout.pending:
+            target = os.path.realpath(os.path.join(checkout.path, pf.path))
+            is_dir = pf.path.endswith("/")
+            for s in sessions:
+                best = None
+                for fp, ts in s.edited_files.items():
+                    rp = os.path.realpath(fp)
+                    hit = rp == target or (is_dir and rp.startswith(target + os.sep))
+                    if hit and (best is None or ts > best):
+                        best = ts
+                if best is not None:
+                    pf.attributions.append(_attr(s, "likely", best))
+            pf.attributions.sort(key=lambda a: a.when or _EPOCH, reverse=True)
+
+
+def _match_commits_exact(commits: list[Commit], sessions: list[Session]) -> None:
+    for c in commits:
+        for s in sessions:
+            for short, ts in s.commit_hashes.items():
+                if c.sha.startswith(short):
+                    c.attributions.append(_attr(s, "exact", ts))
+                    break
+        c.attributions.sort(key=lambda a: a.when or _EPOCH, reverse=True)
+
+
+def _match_commits_likely(entry: RepoEntry, commits: list[Commit],
+                          sessions: list[Session]) -> None:
+    budget = LIKELY_COMMIT_CAP
+    tops = [os.path.realpath(co.path) for co in entry.checkouts]
+    for c in commits:
+        if c.attributions or budget <= 0:
+            continue
+        budget -= 1
+        files = set(gitstate.commit_files(entry.main_path, c.sha))
+        if not files:
+            continue
+        lo = c.when - LIKELY_WINDOW_BEFORE
+        hi = c.when + LIKELY_WINDOW_AFTER
+        candidates: list[tuple[float, Session, datetime]] = []
+        for s in sessions:
+            best: datetime | None = None
+            for fp, ts in s.edited_files.items():
+                if not (lo <= ts <= hi):
+                    continue
+                rp = os.path.realpath(fp)
+                rel = next((os.path.relpath(rp, t) for t in tops
+                            if rp.startswith(t + os.sep)), None)
+                if rel not in files:
+                    continue
+                if best is None or abs((c.when - ts).total_seconds()) < abs((c.when - best).total_seconds()):
+                    best = ts
+            if best is not None:
+                candidates.append((abs((c.when - best).total_seconds()), s, best))
+        candidates.sort(key=lambda t: t[0])
+        c.attributions.extend(_attr(s, "likely", ts) for _, s, ts in candidates[:3])
+
+
+def attribute(entries: list[RepoEntry], sessions: list[Session]) -> None:
+    active = [s for s in sessions if s.edited_files or s.commit_hashes]
+    for entry in entries:
+        _match_pending(entry, active)
+        all_commits = [c for co in entry.checkouts for c in co.unpushed] + entry.done
+        _match_commits_exact(all_commits, active)
+        _match_commits_likely(entry, all_commits, active)
+
+
+def sessions_for_repo(entry: RepoEntry, sessions: list[Session]) -> list[Session]:
+    """Sessions whose cwd or edited files fall inside any checkout of this repo."""
+    tops = [os.path.realpath(c.path) for c in entry.checkouts]
+    out = []
+    for s in sessions:
+        cwd = os.path.realpath(s.cwd) if s.cwd else ""
+        in_cwd = any(cwd == t or cwd.startswith(t + os.sep) for t in tops)
+        in_edit = any(
+            os.path.realpath(fp).startswith(t + os.sep)
+            for fp in s.edited_files for t in tops
+        )
+        if in_cwd or in_edit:
+            out.append(s)
+    out.sort(key=lambda s: s.last_activity or _EPOCH, reverse=True)
+    return out
