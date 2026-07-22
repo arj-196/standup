@@ -9,9 +9,9 @@ from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from . import cache as cache_mod
 from . import claude_logs, gitstate, join, render
 
-DEFAULT_LOOKBACK_DAYS = 30
 RECENT_WINDOW_DAYS = 7  # the Recent Window (ADR 0002); --since overrides
 
 
@@ -76,8 +76,6 @@ def main(argv: list[str] | None = None) -> int:
                         help="also show work pushed within the recent window (default %dd)" % RECENT_WINDOW_DAYS)
     parser.add_argument("--since", help="override the recent window (yesterday, 3d, 12h, 2w, ISO date)")
     parser.add_argument("--json", action="store_true", help="structured output for scripts/TUI")
-    parser.add_argument("--lookback", type=int, default=DEFAULT_LOOKBACK_DAYS,
-                        metavar="DAYS", help="how far back to fully parse session logs (default %(default)s)")
     parser.add_argument("--projects-dir", default=os.path.expanduser("~/.claude/projects"),
                         help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
@@ -85,17 +83,18 @@ def main(argv: list[str] | None = None) -> int:
     now = datetime.now(timezone.utc)
     since = parse_since(args.since) if args.since else now - timedelta(days=RECENT_WINDOW_DAYS)
     window = args.since or f"{RECENT_WINDOW_DAYS}d"
-    horizon = min(since, now - timedelta(days=args.lookback))
 
     projects_dir = Path(args.projects_dir)
     if not projects_dir.is_dir():
         print(f"standup: no Claude Code logs found at {projects_dir}", file=sys.stderr)
         return 1
 
-    sessions = claude_logs.scan_sessions(projects_dir, horizon)
+    cache = cache_mod.open_cache()
+    sessions = claude_logs.scan_sessions(projects_dir, cache)
     cwds = [s.cwd for s in sessions if s.cwd]
     entries = gitstate.discover_repos(cwds, since)
-    join.attribute(entries, sessions)
+    join.attribute(entries, sessions, cache)
+    cache.flush()
 
     if args.json:
         print(_to_json(entries, sessions, since, now))

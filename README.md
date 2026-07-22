@@ -24,7 +24,9 @@ standup --json           # collect-layer output for scripts/TUI
 ```
 
 Standup is stateless: the same command at the same moment always prints the
-same inbox (ADR 0002).
+same inbox (ADR 0002). It keeps a derived cache at `~/.standup` to avoid
+re-parsing unchanged session logs — a pure accelerator that never changes
+output; `rm -rf ~/.standup` is always safe (ADR 0003).
 
 ## Reading the output
 

@@ -1,10 +1,12 @@
 """Scan ~/.claude/projects JSONL session logs.
 
-Two-speed scan:
-- every session file gets a cheap header parse (first lines) to learn its cwd,
-  which seeds the Scan Universe (ADR 0001);
-- files modified within the lookback horizon get a full parse with line-level
-  prefiltering to extract edits, captured commit hashes, and titles.
+Every session file is fully parsed (line-level prefiltering to extract edits,
+captured commit hashes, and titles) and the result is cached in the Derived
+Cache (ADR 0003), keyed on (size, mtime_ns). Unchanged files are served from the
+cache without being opened; only files that actually changed are reparsed.
+
+Parsing is no longer gated by a lookback horizon — the cache makes full-history
+parsing cheap, and attribution is ageless (ADR 0004).
 """
 
 from __future__ import annotations
@@ -41,25 +43,6 @@ def _interesting(line: str) -> bool:
     if '"toolUseResult"' in line and COMMIT_HINT_RE.search(line):
         return True
     return False
-
-
-def _header_scan(session: Session, path: Path) -> None:
-    """Read the first lines only, to learn cwd (repo discovery)."""
-    with open(path, errors="replace") as f:
-        for _ in range(25):
-            line = f.readline()
-            if not line:
-                return
-            if '"cwd"' not in line:
-                continue
-            try:
-                obj = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            cwd = obj.get("cwd")
-            if cwd:
-                session.cwd = cwd
-                return
 
 
 def _extract_edits(session: Session, obj: dict, ts: datetime | None) -> None:
@@ -135,19 +118,54 @@ def _full_scan(session: Session, path: Path) -> None:
                 _extract_commits(session, obj, ts)
 
 
-def scan_sessions(projects_dir: Path, horizon: datetime) -> list[Session]:
-    """Return all sessions; ones with recent mtime are fully parsed."""
+def _to_cache(s: Session) -> dict:
+    return {
+        "cwd": s.cwd,
+        "custom_title": s.custom_title,
+        "ai_title": s.ai_title,
+        "slug": s.slug,
+        "last_prompt": s.last_prompt,
+        "branches": sorted(s.branches),
+        "edited_files": {p: t.isoformat() for p, t in s.edited_files.items()},
+        "commit_hashes": {h: t.isoformat() for h, t in s.commit_hashes.items()},
+    }
+
+
+def _from_cache(session_id: str, log_path: str, mtime: datetime, d: dict) -> Session:
+    s = Session(session_id=session_id, log_path=log_path, last_activity=mtime)
+    s.cwd = d.get("cwd")
+    s.custom_title = d.get("custom_title")
+    s.ai_title = d.get("ai_title")
+    s.slug = d.get("slug")
+    s.last_prompt = d.get("last_prompt")
+    s.branches = set(d.get("branches") or [])
+    s.edited_files = {p: datetime.fromisoformat(t)
+                      for p, t in (d.get("edited_files") or {}).items()}
+    s.commit_hashes = {h: datetime.fromisoformat(t)
+                       for h, t in (d.get("commit_hashes") or {}).items()}
+    return s
+
+
+def scan_sessions(projects_dir: Path, cache) -> list[Session]:
+    """Fully parse every session file, serving unchanged ones from the cache."""
     sessions: list[Session] = []
+    live_ids: set[str] = set()
     for log in sorted(projects_dir.glob("*/*.jsonl")):
         try:
-            mtime = datetime.fromtimestamp(log.stat().st_mtime, tz=timezone.utc)
+            st = log.stat()
         except OSError:
             continue
-        session = Session(session_id=log.stem, log_path=str(log), last_activity=mtime)
-        if mtime >= horizon:
-            _full_scan(session, log)
+        sid = log.stem
+        live_ids.add(sid)
+        mtime = datetime.fromtimestamp(st.st_mtime, tz=timezone.utc)
+        cached = cache.get_session(sid, st.st_size, st.st_mtime_ns)
+        if cached is not None:
+            session = _from_cache(sid, str(log), mtime, cached)
         else:
-            _header_scan(session, log)
+            session = Session(session_id=sid, log_path=str(log), last_activity=mtime)
+            _full_scan(session, log)
+            cache.put_session(sid, st.st_size, st.st_mtime_ns, _to_cache(session))
         if session.cwd:
             sessions.append(session)
+    cache.prune(live_ids)
     return sessions

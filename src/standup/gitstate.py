@@ -8,14 +8,15 @@ from __future__ import annotations
 
 import os
 import subprocess
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
-from pathlib import Path
 
 from .models import Checkout, Commit, PendingFile, RepoEntry
 
 SEP = "\x1f"
 LOG_FORMAT = f"%H{SEP}%h{SEP}%s{SEP}%cI{SEP}%ae"
 UNPUSHED_CAP = 30
+MAX_GIT_WORKERS = 16
 
 
 def git(path: str, *args: str) -> str | None:
@@ -108,44 +109,66 @@ def commit_files(toplevel: str, sha: str) -> list[str]:
     return [l for l in (out or "").splitlines() if l]
 
 
+def _resolve(cwd: str) -> tuple[str, str] | None:
+    """Map a cwd to (main-ish toplevel, repo key = realpath of git-common-dir)."""
+    if not os.path.isdir(cwd):
+        return None
+    toplevel = git(cwd, "rev-parse", "--show-toplevel")
+    common = git(cwd, "rev-parse", "--git-common-dir")
+    if not toplevel or not common:
+        return None
+    toplevel = toplevel.strip()
+    common = common.strip()
+    if not os.path.isabs(common):
+        common = os.path.join(toplevel, common)
+    return toplevel, os.path.realpath(common)
+
+
+def _build_entry(toplevel: str, since: datetime) -> RepoEntry:
+    worktrees = [w for w in _worktrees(toplevel) if os.path.isdir(w)]
+    main = worktrees[0]
+    entry = RepoEntry(name=os.path.basename(main), main_path=main)
+    user_email = (git(main, "config", "user.email") or "").strip() or None
+
+    seen: set[str] = set()
+    for wt in worktrees:
+        real = os.path.realpath(wt)
+        if real in seen:
+            continue
+        seen.add(real)
+        checkout = Checkout(path=wt, branch=_branch(wt), is_main=(wt == main))
+        checkout.pending = [PendingFile(code=c, path=p) for c, p in _pending(wt)]
+        checkout.unpushed = _unpushed(wt)
+        entry.checkouts.append(checkout)
+
+    entry.done = _done(main, since, user_email)
+    # drop done commits that are still sitting in an unpushed list (belt & braces)
+    unpushed_shas = {c.sha for co in entry.checkouts for c in co.unpushed}
+    entry.done = [c for c in entry.done if c.sha not in unpushed_shas]
+    return entry
+
+
 def discover_repos(cwds: list[str], since: datetime) -> list[RepoEntry]:
-    entries: dict[str, RepoEntry] = {}
-    seen_toplevels: set[str] = set()
+    unique_cwds = list(dict.fromkeys(cwds))  # order-preserving
 
-    for cwd in dict.fromkeys(cwds):  # unique, order-preserving
-        if not os.path.isdir(cwd):
+    def _pool(items, fn):
+        if not items:
+            return []
+        with ThreadPoolExecutor(max_workers=min(MAX_GIT_WORKERS, len(items))) as ex:
+            return list(ex.map(fn, items))
+
+    # Phase 1: resolve cwds -> repo keys in parallel, then dedup keeping first-seen order.
+    resolved = _pool(unique_cwds, _resolve)
+    order: list[str] = []
+    top_of_key: dict[str, str] = {}
+    for res in resolved:
+        if not res:
             continue
-        toplevel = git(cwd, "rev-parse", "--show-toplevel")
-        common = git(cwd, "rev-parse", "--git-common-dir")
-        if not toplevel or not common:
-            continue
-        toplevel = toplevel.strip()
-        common = common.strip()
-        if not os.path.isabs(common):
-            common = os.path.join(toplevel, common)
-        key = os.path.realpath(common)
-        if key in entries:
-            continue
+        toplevel, key = res
+        if key not in top_of_key:
+            top_of_key[key] = toplevel
+            order.append(key)
 
-        worktrees = [w for w in _worktrees(toplevel) if os.path.isdir(w)]
-        main = worktrees[0]
-        entry = RepoEntry(name=os.path.basename(main), main_path=main)
-        user_email = (git(main, "config", "user.email") or "").strip() or None
-
-        for wt in worktrees:
-            real = os.path.realpath(wt)
-            if real in seen_toplevels:
-                continue
-            seen_toplevels.add(real)
-            checkout = Checkout(path=wt, branch=_branch(wt), is_main=(wt == main))
-            checkout.pending = [PendingFile(code=c, path=p) for c, p in _pending(wt)]
-            checkout.unpushed = _unpushed(wt)
-            entry.checkouts.append(checkout)
-
-        entry.done = _done(main, since, user_email)
-        # drop done commits that are still sitting in an unpushed list (belt & braces)
-        unpushed_shas = {c.sha for co in entry.checkouts for c in co.unpushed}
-        entry.done = [c for c in entry.done if c.sha not in unpushed_shas]
-        entries[key] = entry
-
-    return list(entries.values())
+    # Phase 2: build each repo entry in parallel; reassemble in first-seen order.
+    entries = _pool(order, lambda key: _build_entry(top_of_key[key], since))
+    return [e for e in entries if e is not None]

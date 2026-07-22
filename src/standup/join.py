@@ -52,15 +52,27 @@ def _match_commits_exact(commits: list[Commit], sessions: list[Session]) -> None
         c.attributions.sort(key=lambda a: a.when or _EPOCH, reverse=True)
 
 
+def _commit_files(cache, toplevel: str, sha: str) -> list[str]:
+    """commit_files(sha), served from / recorded in the Derived Cache (immutable by sha)."""
+    if cache is not None:
+        hit = cache.get_commit_files(sha)
+        if hit is not None:
+            return hit
+    files = gitstate.commit_files(toplevel, sha)
+    if cache is not None and files:  # never cache an empty/error result
+        cache.put_commit_files(sha, files)
+    return files
+
+
 def _match_commits_likely(entry: RepoEntry, commits: list[Commit],
-                          sessions: list[Session]) -> None:
+                          sessions: list[Session], cache=None) -> None:
     budget = LIKELY_COMMIT_CAP
     tops = [os.path.realpath(co.path) for co in entry.checkouts]
     for c in commits:
         if c.attributions or budget <= 0:
             continue
         budget -= 1
-        files = set(gitstate.commit_files(entry.main_path, c.sha))
+        files = set(_commit_files(cache, entry.main_path, c.sha))
         if not files:
             continue
         lo = c.when - LIKELY_WINDOW_BEFORE
@@ -84,13 +96,13 @@ def _match_commits_likely(entry: RepoEntry, commits: list[Commit],
         c.attributions.extend(_attr(s, "likely", ts) for _, s, ts in candidates[:3])
 
 
-def attribute(entries: list[RepoEntry], sessions: list[Session]) -> None:
+def attribute(entries: list[RepoEntry], sessions: list[Session], cache=None) -> None:
     active = [s for s in sessions if s.edited_files or s.commit_hashes]
     for entry in entries:
         _match_pending(entry, active)
         all_commits = [c for co in entry.checkouts for c in co.unpushed] + entry.done
         _match_commits_exact(all_commits, active)
-        _match_commits_likely(entry, all_commits, active)
+        _match_commits_likely(entry, all_commits, active, cache)
 
 
 def rollups(entry: RepoEntry) -> list[Rollup]:

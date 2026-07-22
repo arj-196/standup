@@ -25,8 +25,12 @@ An inbox entry requiring action — uncommitted dirt or unpushed commits. Ageles
 - **Unpushed** — committed but local-only; compressed to one line per repo in the overview (detail lives in the drill-down).
 
 **Recent Window**:
-The rolling time window (default: last 7 days) that gates the recently-pushed retrospective shown by `-a`; `--since` overrides it ad hoc. Needs-Decision Items ignore it — they remain ageless. Standup stores no state: the same command at the same moment always prints the same inbox.
-_Avoid_: checkpoint, last run (retired concepts — see ADR 0002)
+The rolling time window (default: last 7 days) that gates the recently-pushed retrospective shown by `-a`; `--since` overrides it ad hoc. It is the *only* time knob — `--lookback` is retired (ADR 0004). Needs-Decision Items ignore it — they remain ageless, and their attribution is ageless too: it reaches back over the full cached history regardless of the window. Standup keeps no run-state; the only store is the Derived Cache, a pure accelerator that never changes output. The same command at the same moment always prints the same inbox.
+_Avoid_: checkpoint, last run, lookback (retired concepts — see ADR 0002, 0004)
+
+**Derived Cache**:
+The `~/.standup` store: a pure accelerator holding results derived deterministically from the session logs (parsed Sessions). Keyed so any stale entry is detected and recomputed; output is byte-identical whether the cache is warm, cold, or deleted. Never holds run-history — it is not the retired Checkpoint (ADR 0002). It caches log parsing only; live git state is never cached (git is the source of truth and de-facto read-marker).
+_Avoid_: state, checkpoint, index
 
 **Attribution Tier**:
 The strength of a change→Session claim — `exact` (commit hash captured in the Session log), `likely` (file-path overlap with the Session's Edit/Write calls, displayed with `~`), or unattributed. Multiple plausible Sessions are all listed; Standup never fakes a single winner.
@@ -43,9 +47,25 @@ The content of a Session Rollup: Session title + scale (file/commit counts) + To
 **Touched Areas**:
 The top-level directories a Session's footprint lives in (max ~3 shown, then `+N more`). The one-line replacement for the per-file listing of the old overview.
 
+**Notional Cost**:
+The API-equivalent dollar *weight* of a Session or project: its logged token usage (input / output / cache-write / cache-read) priced at the published pay-as-you-go **Rate Card**. A comparison unit for load — explicitly not money paid.
+_Avoid_: spend, bill, "what it cost" (those imply real money — see Real Spend)
+
+**Real Spend**:
+The only actual money — the account-level extra-usage / credit overflow (`xu` in `plan-usage-history.json`) drawn once subscription limits are crossed. Account-wide, sourced outside the session logs, and never attributable to a Session or project. Surfaced once as context, never divided across Sessions.
+_Avoid_: credits, overage (as loose synonyms)
+
+**Rate Card**:
+The model → price table that converts tokens into **Notional Cost**. Stored as base input + output per model; cache-read (0.1×), 5m-write (1.25×) and 1h-write (2×) are *derived* from base input, and per-turn modifiers (`speed:"fast"`, `service_tier:"batch"` ×0.5, `inference_geo:"us"` ×1.1, web-search +$0.01/req) are read from the turn's own `usage`. A dated, sourced constant (see ADR 0005). Every model in use has a public rate; a future/unknown model is shown with its tokens but **excluded from the dollar total and flagged unpriced** — never silently $0.
+
 ## Relationships
 
 - A **Session** belongs to exactly one working directory (`cwd`), which may be a repo checkout or a worktree
+- A **Session**'s **Notional Cost** is the sum of its turns' token usage priced by the **Rate Card**; a project's Notional Cost is the sum of its Sessions'
+- The `cost` view spans **all** Sessions (any git footprint or none) and groups them by **Repo Entry** — worktrees fold into their parent checkout — falling back to the raw `cwd` for Sessions whose directory is not a git repo
+- The `cost` view defaults to the **current calendar month** — chosen to sit alongside the per-cycle **Real Spend** — and stays stateless: recomputed from logs each run, never cached (ADR 0002)
+- **Real Spend** is account-level and stands apart — it is never the sum of Session Notional Costs
+- **Notional Cost** and **Real Spend** are retrospective analytics, not **Needs-Decision Items**: they live in the `cost` view and never in the **Triage Inbox** (a summary line may appear only in the `-a` retrospective)
 - A **Repo Entry** aggregates one main checkout plus its worktrees; each pending/committed change carries one **Attribution Tier**
 - The **Triage Inbox** is fully derived — computed fresh from git + JSONL; there is no stored state (ADR 0002)
 
@@ -60,3 +80,4 @@ The top-level directories a Session's footprint lives in (max ~3 shown, then `+N
 
 - "report" vs "inbox" — resolved: Standup is a **Triage Inbox**, not a passive report. Output ordering is by required action (uncommitted → unpushed → done), not chronology.
 - file-major vs session-major — resolved (2026-07-22): the Session is the display unit at every altitude; files are evidence shown only in the drill-down. Within a section, repos order by most recent activity, not alphabetically.
+- "cost" / "money" / "spend" — resolved (2026-07-22): per-Session and per-project figures are **Notional Cost** (API-equivalent load, not money). Real money is **Real Spend** — account-level and unattributable. The tool must never present Notional Cost as spend.
