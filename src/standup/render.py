@@ -18,6 +18,7 @@ from collections import Counter
 from datetime import datetime, timezone
 
 from . import join
+from .cost import ProjectCost, SessionCost
 from .models import Attribution, Commit, RepoEntry, Rollup
 
 AREAS_SHOWN = 3
@@ -259,3 +260,97 @@ def render_detail(entry: RepoEntry, now: datetime,
         out.append("")
 
     return "\n".join(out)
+
+
+# ── Cost views (Notional Cost; see CONTEXT.md / ADR 0005) ──────────────────
+_FAMILIES = ("opus", "fable", "mythos", "sonnet", "haiku")
+
+
+def _money(x: float) -> str:
+    return f"${x:,.2f}"
+
+
+def _abbr_model(m: str) -> str:
+    bare = (m or "?").replace("claude-", "")
+    return next((f for f in _FAMILIES if f in bare), bare)
+
+
+def _tok(n: int) -> str:
+    if n >= 1_000_000:
+        return f"{n / 1e6:.1f}M"
+    if n >= 1_000:
+        return f"{n / 1e3:.0f}k"
+    return str(n)
+
+
+def _model_split(by_model: dict[str, float]) -> str:
+    total = sum(by_model.values()) or 1
+    parts = sorted(by_model.items(), key=lambda kv: -kv[1])
+    return " · ".join(f"{_abbr_model(m)} {c / total * 100:.0f}%" for m, c in parts[:3])
+
+
+def _cost_disclaimer(st: Style) -> str:
+    return st.dim("notional API-equivalent load — not money paid (real spend: claude.ai)")
+
+
+def render_cost_overview(projects: list[ProjectCost], window: str, now: datetime) -> str:
+    st = _style()
+    width = _term_width()
+    out = [st.bold(f"COST · {window}"), _cost_disclaimer(st), ""]
+    if not projects:
+        out.append(st.dim("no priced sessions in the window"))
+        return "\n".join(out)
+
+    total = sum(p.cost for p in projects)
+    w = max(len(_money(p.cost)) for p in projects)
+    for p in projects:
+        line = (f"  {_money(p.cost):>{w}}  {st.bold(p.name)}"
+                f"   {_plural(len(p.sessions), 'session')}"
+                f"   {st.dim(_model_split(p.by_model))}")
+        out.append(_clamp(line, width))
+
+    merged: dict[str, float] = {}
+    for p in projects:
+        for m, c in p.by_model.items():
+            merged[m] = merged.get(m, 0.0) + c
+    tail = "  ·  " + " · ".join(f"{_abbr_model(m)} {_money(c)}"
+                                for m, c in sorted(merged.items(), key=lambda kv: -kv[1]))
+    out += ["  " + "─" * w, f"  {_money(total):>{w}}  {st.bold('total')}{st.dim(tail)}"]
+    return "\n".join(out)
+
+
+def render_cost_detail(project: ProjectCost, window: str, now: datetime) -> str:
+    st = _style()
+    width = _term_width()
+    out = [st.bold(project.name) + st.dim(f" — {_money(project.cost)} notional · {window}"),
+           _cost_disclaimer(st), ""]
+    w = max((len(_money(s.cost)) for s in project.sessions), default=5)
+    for s in project.sessions:
+        why = f"  {st.yellow(s.why)}" if s.why else ""
+        head = (f"  {_money(s.cost):>{w}}  {st.dim(s.handle)}  \"{s.title}\""
+                f"  {st.dim(_abbr_model(s.dominant_model or '?'))}{why}")
+        out.append(_clamp(head, width))
+        t = s.tokens
+        meta = (f"in {_tok(t['input'])} · out {_tok(t['output'])} · "
+                f"cache-w {_tok(t['cache_write'])} · cache-r {_tok(t['cache_read'])}")
+        if s.session.last_activity:
+            meta += f" · {humanize(s.session.last_activity, now)}"
+        indent = " " * (w + 4)
+        out.append(_clamp(indent + st.dim(meta), width))
+        out.append(indent + st.dim(f"standup show {s.handle}"))
+        out.append("")
+    return "\n".join(out)
+
+
+def render_cost_footer(session_costs: list["SessionCost"], window: str) -> str:
+    """One dim notional-load line for the `-a` retrospective (never real money)."""
+    st = _style()
+    total = sum(s.cost for s in session_costs)
+    merged: dict[str, float] = {}
+    for s in session_costs:
+        for m, c in s.by_model.items():
+            merged[m] = merged.get(m, 0.0) + c
+    split = " · ".join(f"{_abbr_model(m)} {_money(c)}"
+                       for m, c in sorted(merged.items(), key=lambda kv: -kv[1]))
+    tail = f"  ({split})" if split else ""
+    return st.dim(f"notional load · {_window_label(window)}: {_money(total)}{tail} — not real money")
