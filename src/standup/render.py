@@ -1,15 +1,28 @@
-"""Render the Triage Inbox to a terminal."""
+"""Render the Triage Inbox: session-major at every altitude.
+
+Layout rules (CONTEXT.md, "Resume"):
+- the Session is the display unit; the overview never lists individual files;
+- a Rollup renders as a two-line stanza — title line first so titles align
+  for at-a-glance scanning, metadata indented below;
+- no emitted line may exceed the terminal width: content grows vertically,
+  never wraps.
+"""
 
 from __future__ import annotations
 
 import os
+import re
+import shutil
 import sys
+from collections import Counter
 from datetime import datetime, timezone
 
-from .models import Attribution, Commit, RepoEntry, Session
+from . import join
+from .models import Attribution, Commit, RepoEntry, Rollup
 
-PENDING_SHOWN = 6
-COMMITS_SHOWN = 5
+AREAS_SHOWN = 3
+ANSI_RE = re.compile(r"\033\[[0-9;]*m")
+_EPOCH = datetime.min.replace(tzinfo=timezone.utc)
 
 
 class Style:
@@ -26,6 +39,18 @@ class Style:
 def _style() -> Style:
     enabled = sys.stdout.isatty() and not os.environ.get("NO_COLOR")
     return Style(enabled)
+
+
+def _term_width() -> int:
+    return shutil.get_terminal_size((100, 24)).columns
+
+
+def _clamp(line: str, width: int) -> str:
+    """Guarantee the line fits; a clamped line loses styling rather than wrap."""
+    if len(ANSI_RE.sub("", line)) <= width:
+        return line
+    plain = ANSI_RE.sub("", line)
+    return plain[: max(0, width - 1)].rstrip() + "…"
 
 
 def humanize(dt: datetime | None, now: datetime) -> str:
@@ -48,119 +73,189 @@ def _shorten_home(path: str) -> str:
     return "~" + path[len(home):] if path.startswith(home) else path
 
 
-def _attr_label(attrs: list[Attribution], now: datetime, st: Style, with_time=True) -> str:
+def _window_label(raw: str) -> str:
+    if re.fullmatch(r"\d+[dhw]", raw):
+        return f"last {raw}"
+    return f"since {raw}"
+
+
+def _area(path: str) -> str:
+    """Touched Area of one path: its dirname capped at two segments."""
+    segs = path.rstrip("/").split("/")
+    if len(segs) == 1:
+        return segs[0]
+    if len(segs) == 2:
+        return segs[0]
+    return "/".join(segs[:2])
+
+
+def _areas(paths: list[str]) -> str:
+    counts = Counter(_area(p) for p in paths)
+    ordered = [a for a, _ in counts.most_common()]
+    label = ", ".join(ordered[:AREAS_SHOWN])
+    if len(ordered) > AREAS_SHOWN:
+        label += f" +{len(ordered) - AREAS_SHOWN} more"
+    return label
+
+
+def _plural(n: int, word: str) -> str:
+    return f"{n} {word}{'s' if n != 1 else ''}"
+
+
+def _attr_label(attrs: list[Attribution], st: Style) -> str:
     if not attrs:
         return st.dim("unattributed")
     parts = []
     for a in attrs[:2]:
-        mark = "[exact]" if a.tier == "exact" else "~"
-        when = f" ({humanize(a.when, now)})" if with_time and a.when else ""
-        title = f'"{a.title}"'
-        parts.append(f"{mark + ' ' if a.tier == 'exact' else '~'}{title}{when}"
-                     if a.tier != "exact" else f"{title}{when} {st.green('[exact]')}")
+        parts.append(f'"{a.title}" {st.green("[exact]")}' if a.tier == "exact" else f'~"{a.title}"')
     label = " / ".join(parts)
     if len(attrs) > 2:
         label += st.dim(f" +{len(attrs) - 2} more")
     return label
 
 
-def _commit_line(c: Commit, now: datetime, st: Style, indent: str) -> str:
-    attr = _attr_label(c.attributions, now, st, with_time=False)
-    return f"{indent}{st.dim(c.short)} {c.subject}  {attr}"
+def _commit_line(c: Commit, st: Style, indent: str) -> str:
+    return f"{indent}{st.dim(c.short)} {c.subject}  {_attr_label(c.attributions, st)}"
 
 
-def render_overview(entries: list[RepoEntry], sessions: list[Session],
-                    since: datetime, now: datetime) -> str:
+def _dominant_sessions(commits: list[Commit], st: Style) -> str:
+    """One-line label for a compressed commit list: top session title + count of others."""
+    attrs = [a for c in commits for a in c.attributions[:1]]
+    if not attrs:
+        return st.dim("unattributed")
+    dominant = Counter(a.title for a in attrs).most_common(1)[0][0]
+    extra = len({a.session_id for a in attrs}) - 1
+    label = f'~"{dominant}"'
+    if extra > 0:
+        label += st.dim(f" +{_plural(extra, 'session')}")
+    return label
+
+
+def _rollup_stanza(r: Rollup, now: datetime, st: Style, width: int) -> list[str]:
+    if r.session_id:
+        title_line = f'  ~ "{r.title}"'
+    else:
+        title_line = f"    {st.dim('unattributed')}"
+    meta = f"{_plural(len(r.files), 'file')} · {_areas([pf.path for _, pf in r.files])}"
+    if r.last_activity:
+        meta += f" · {humanize(r.last_activity, now)}"
+    return [_clamp(title_line, width), _clamp(f"      {st.dim(meta)}", width)]
+
+
+def _pending_total(e: RepoEntry) -> int:
+    return sum(len(co.pending) for co in e.checkouts)
+
+
+def _unpushed_total(e: RepoEntry) -> int:
+    return sum(len(co.unpushed) for co in e.checkouts)
+
+
+def _by_recency(entries: list[RepoEntry]) -> list[RepoEntry]:
+    return sorted(entries, key=lambda e: e.latest_activity or _EPOCH, reverse=True)
+
+
+def render_overview(entries: list[RepoEntry], since: datetime, now: datetime,
+                    show_all: bool = False, window: str = "7d") -> str:
     st = _style()
-    out: list[str] = []
-    header = f"standup · {now.astimezone().strftime('%a %b %d')} · since {humanize(since, now)}"
-    out.append(st.bold(header))
-    out.append("")
+    width = _term_width()
+    out: list[str] = [st.bold(f"standup · {now.astimezone().strftime('%a %b %d')}"), ""]
 
-    needs = [e for e in entries if e.needs_decision]
-    done = [e for e in entries if not e.needs_decision and e.done]
-    needs.sort(key=lambda e: e.name.lower())
+    active = [e for e in entries if _pending_total(e)]
+    unpushed_only = [e for e in entries if not _pending_total(e) and _unpushed_total(e)]
 
-    if needs:
-        out.append(st.bold(st.yellow("NEEDS DECISION")))
-        for e in needs:
-            out.append(f"{st.yellow('●')} {st.bold(e.name)}"
-                       f"{' ' * max(1, 40 - len(e.name))}{st.dim(_shorten_home(e.main_path))}")
-            for co in e.checkouts:
-                label = "" if co.is_main else f"└ {st.cyan(co.branch)}  "
-                if co.pending:
-                    where = f"on {co.branch}" if co.is_main else ""
-                    out.append(f"  {label}{len(co.pending)} file"
-                               f"{'s' if len(co.pending) != 1 else ''} uncommitted {where}".rstrip())
-                    for pf in co.pending[:PENDING_SHOWN]:
-                        mark = "~ " if pf.attributions else "  "
-                        attr = _attr_label(pf.attributions, now, st)
-                        out.append(f"    {mark}{pf.code.strip() or '??':>2} {pf.path:<34} {attr}")
-                    if len(co.pending) > PENDING_SHOWN:
-                        out.append(st.dim(f"      +{len(co.pending) - PENDING_SHOWN} more files"))
-                if co.unpushed:
-                    label2 = "" if co.is_main else (f"  └ {st.cyan(co.branch)}  " if not co.pending else "     ")
-                    prefix = "  " if co.is_main else label2
-                    out.append(f"{prefix}{len(co.unpushed)} commit"
-                               f"{'s' if len(co.unpushed) != 1 else ''} unpushed"
-                               f"{' on ' + co.branch if co.is_main else ''}")
-                    for c in co.unpushed[:COMMITS_SHOWN]:
-                        out.append(_commit_line(c, now, st, "      "))
-                    if len(co.unpushed) > COMMITS_SHOWN:
-                        extra = len(co.unpushed) - COMMITS_SHOWN
-                        out.append(st.dim(f"      +{extra} more commit{'s' if extra != 1 else ''}"))
+    if active:
+        out.append(st.bold(st.yellow("ACTIVE WORK")))
+        for e in _by_recency(active):
+            rolls = join.rollups(e)
+            n_sessions = sum(1 for r in rolls if r.session_id)
+            head = f"{st.yellow('●')} {st.bold(e.name)} · {_plural(_pending_total(e), 'file')} uncommitted"
+            head += f" · {_plural(n_sessions, 'session')}" if n_sessions else " · unattributed"
+            if _unpushed_total(e):
+                head += f" · {_plural(_unpushed_total(e), 'commit')} unpushed"
+            out.append(_clamp(head, width))
+            dirty_branches = list(dict.fromkeys(co.branch for co in e.checkouts if co.pending))
+            out.append(_clamp(f"  {st.dim(_shorten_home(e.main_path) + ' · ' + ', '.join(dirty_branches))}", width))
+            for r in rolls:
+                out.extend(_rollup_stanza(r, now, st, width))
             out.append("")
     else:
-        out.append(st.green("Nothing needs a decision. Inbox zero."))
+        out.append(st.green("No active work — nothing uncommitted."))
         out.append("")
 
-    done_lines: list[str] = []
-    for e in sorted(entries, key=lambda e: e.name.lower()):
-        if not e.done:
-            continue
-        first = e.done[0]
-        attr = _attr_label(first.attributions, now, st, with_time=False)
-        done_lines.append(f"{st.green('✓')} {e.name:<16} "
-                          f"{len(e.done)} commit{'s' if len(e.done) != 1 else ''} pushed  {attr}")
-    if done_lines:
-        out.append(st.bold(st.green("DONE since checkpoint")))
-        out.extend(done_lines)
+    if unpushed_only:
+        out.append(st.bold("UNPUSHED ONLY"))
+        for e in _by_recency(unpushed_only):
+            commits = [c for co in e.checkouts for c in co.unpushed]
+            branches = list(dict.fromkeys(co.branch for co in e.checkouts if co.unpushed))
+            line = (f"○ {st.bold(e.name)} · {_plural(len(commits), 'commit')} unpushed"
+                    f" on {', '.join(branches)} · {_dominant_sessions(commits, st)}")
+            out.append(_clamp(line, width))
+        out.append("")
+
+    if show_all:
+        out.append(st.bold(st.green(f"PUSHED · {_window_label(window)}")))
+        pushed = [e for e in entries if e.done]
+        if pushed:
+            for e in _by_recency(pushed):
+                line = (f"{st.green('✓')} {st.bold(e.name)} · {_plural(len(e.done), 'commit')} pushed"
+                        f" · {_dominant_sessions(e.done, st)}")
+                out.append(_clamp(line, width))
+        else:
+            out.append(st.dim("  nothing pushed in the window"))
         out.append("")
 
     return "\n".join(out)
 
 
-def render_detail(entry: RepoEntry, repo_sessions: list[Session], now: datetime) -> str:
+def render_detail(entry: RepoEntry, now: datetime,
+                  show_all: bool = False, window: str = "7d") -> str:
     st = _style()
-    out = [st.bold(f"{entry.name}  {st.dim(_shorten_home(entry.main_path))}"), ""]
+    width = _term_width()
+    out = [st.bold(entry.name) + "  " + st.dim(_shorten_home(entry.main_path)), ""]
+    multi = len(entry.checkouts) > 1
+
+    rolls = join.rollups(entry)
+    for r in rolls:
+        if r.session_id:
+            head = f'~ "{r.title}"'
+            if r.last_activity:
+                head += st.dim(f" · {humanize(r.last_activity, now)}")
+        else:
+            head = st.dim("unattributed")
+        out.append(_clamp(head, width))
+        for branch, pf in r.files:
+            line = f"  {pf.code.strip() or '??':>2} "
+            if multi:
+                line += f"{st.cyan('[' + branch + ']')} "
+            line += pf.path
+            others = [a for a in pf.attributions if a.session_id != r.session_id]
+            if others:
+                also = f'also ~"{others[0].title}"'
+                if len(others) > 1:
+                    also += f" +{len(others) - 1}"
+                line += f"   {st.dim(also)}"
+            out.append(_clamp(line, width))
+        out.append("")
 
     for co in entry.checkouts:
-        head = co.path if co.is_main else f"worktree {_shorten_home(co.path)}"
-        out.append(st.bold(f"[{co.branch}] {st.dim(head) if not co.is_main else ''}").rstrip())
-        if not co.pending and not co.unpushed:
-            out.append(st.dim("  clean, nothing unpushed"))
-        for pf in co.pending:
-            attr = _attr_label(pf.attributions, now, st)
-            out.append(f"  {pf.code.strip() or '??':>2} {pf.path:<40} {attr}")
+        if not co.unpushed:
+            continue
+        out.append(st.bold(f"unpushed · {_plural(len(co.unpushed), 'commit')} on {co.branch}"))
         for c in co.unpushed:
-            out.append(_commit_line(c, now, st, "  "))
-            if c.attributions and c.attributions[0].when:
-                pass
+            out.append(_clamp(_commit_line(c, st, "  "), width))
         out.append("")
 
-    if entry.done:
-        out.append(st.bold(st.green("Pushed since checkpoint")))
-        for c in entry.done:
-            out.append(_commit_line(c, now, st, "  "))
+    if not rolls and not any(co.unpushed for co in entry.checkouts):
+        out.append(st.dim("clean, nothing unpushed"))
         out.append("")
 
-    if repo_sessions:
-        out.append(st.bold("Sessions"))
-        for s in repo_sessions[:12]:
-            n_edits = len(s.edited_files)
-            edits = f"{n_edits} edit{'s' if n_edits != 1 else ''}" if n_edits else ""
-            out.append(f"  {st.dim(s.session_id[:8])} {s.title:<44} "
-                       f"{humanize(s.last_activity, now):<16} {st.dim(edits)}")
+    if show_all:
+        out.append(st.bold(st.green(f"pushed · {_window_label(window)}")))
+        if entry.done:
+            for c in entry.done:
+                out.append(_clamp(_commit_line(c, st, "  "), width))
+        else:
+            out.append(st.dim("  nothing pushed in the window"))
         out.append("")
 
     return "\n".join(out)

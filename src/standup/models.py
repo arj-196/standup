@@ -40,6 +40,19 @@ class Attribution:
 
 
 @dataclass
+class Rollup:
+    """A Session's uncommitted footprint in one repo (session_id None = unattributed).
+
+    Footprints may overlap: a multi-attributed file appears in every plausible
+    Session's Rollup — the RepoEntry header carries the true git totals.
+    """
+    session_id: str | None
+    title: str
+    files: list[tuple[str, "PendingFile"]] = field(default_factory=list)  # (branch, file)
+    last_activity: datetime | None = None
+
+
+@dataclass
 class PendingFile:
     code: str  # porcelain status code, e.g. " M", "??"
     path: str  # relative to checkout toplevel
@@ -70,7 +83,7 @@ class RepoEntry:
     name: str
     main_path: str
     checkouts: list[Checkout] = field(default_factory=list)  # main first
-    done: list[Commit] = field(default_factory=list)  # pushed since checkpoint
+    done: list[Commit] = field(default_factory=list)  # pushed within the Recent Window
 
     @property
     def needs_decision(self) -> bool:

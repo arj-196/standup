@@ -9,9 +9,10 @@ from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from . import checkpoint, claude_logs, gitstate, join, render
+from . import claude_logs, gitstate, join, render
 
 DEFAULT_LOOKBACK_DAYS = 30
+RECENT_WINDOW_DAYS = 7  # the Recent Window (ADR 0002); --since overrides
 
 
 def parse_since(raw: str) -> datetime:
@@ -71,9 +72,10 @@ def main(argv: list[str] | None = None) -> int:
         description="Morning triage inbox for Claude Code activity across your repos.",
     )
     parser.add_argument("repo", nargs="?", help="repo name or path fragment for a drill-down")
-    parser.add_argument("--since", help="override the checkpoint (yesterday, 3d, 12h, 2w, ISO date)")
-    parser.add_argument("--json", action="store_true", help="structured output; never advances the checkpoint")
-    parser.add_argument("--no-checkpoint", action="store_true", help="don't advance the checkpoint")
+    parser.add_argument("-a", "--all", action="store_true",
+                        help="also show work pushed within the recent window (default %dd)" % RECENT_WINDOW_DAYS)
+    parser.add_argument("--since", help="override the recent window (yesterday, 3d, 12h, 2w, ISO date)")
+    parser.add_argument("--json", action="store_true", help="structured output for scripts/TUI")
     parser.add_argument("--lookback", type=int, default=DEFAULT_LOOKBACK_DAYS,
                         metavar="DAYS", help="how far back to fully parse session logs (default %(default)s)")
     parser.add_argument("--projects-dir", default=os.path.expanduser("~/.claude/projects"),
@@ -81,7 +83,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     now = datetime.now(timezone.utc)
-    since = parse_since(args.since) if args.since else checkpoint.read_or_default()
+    since = parse_since(args.since) if args.since else now - timedelta(days=RECENT_WINDOW_DAYS)
+    window = args.since or f"{RECENT_WINDOW_DAYS}d"
     horizon = min(since, now - timedelta(days=args.lookback))
 
     projects_dir = Path(args.projects_dir)
@@ -108,12 +111,10 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         exact = [e for e in matches if e.name.lower() == needle]
         entry = exact[0] if exact else matches[0]
-        print(render.render_detail(entry, join.sessions_for_repo(entry, sessions), now))
+        print(render.render_detail(entry, now, show_all=args.all, window=window))
         return 0
 
-    print(render.render_overview(entries, sessions, since, now))
-    if not args.no_checkpoint and not args.since:
-        checkpoint.write(now)
+    print(render.render_overview(entries, since, now, show_all=args.all, window=window))
     return 0
 
 

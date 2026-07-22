@@ -92,7 +92,7 @@ def _has_remote(path: str) -> bool:
 
 
 def _done(path: str, since: datetime, user_email: str | None) -> list[Commit]:
-    """Commits pushed (reachable from a remote ref) since the checkpoint."""
+    """Commits pushed (reachable from a remote ref) within the Recent Window."""
     if not _has_remote(path):
         return []
     out = git(path, "log", f"--format={LOG_FORMAT}",

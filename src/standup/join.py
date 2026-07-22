@@ -12,7 +12,7 @@ import os
 from datetime import datetime, timedelta, timezone
 
 from . import gitstate
-from .models import Attribution, Commit, RepoEntry, Session
+from .models import Attribution, Commit, RepoEntry, Rollup, Session
 
 LIKELY_COMMIT_CAP = 15  # max commits per repo to attribute via file overlap
 LIKELY_WINDOW_BEFORE = timedelta(days=7)   # session edit must precede the commit by less than this
@@ -93,18 +93,28 @@ def attribute(entries: list[RepoEntry], sessions: list[Session]) -> None:
         _match_commits_likely(entry, all_commits, active)
 
 
-def sessions_for_repo(entry: RepoEntry, sessions: list[Session]) -> list[Session]:
-    """Sessions whose cwd or edited files fall inside any checkout of this repo."""
-    tops = [os.path.realpath(c.path) for c in entry.checkouts]
-    out = []
-    for s in sessions:
-        cwd = os.path.realpath(s.cwd) if s.cwd else ""
-        in_cwd = any(cwd == t or cwd.startswith(t + os.sep) for t in tops)
-        in_edit = any(
-            os.path.realpath(fp).startswith(t + os.sep)
-            for fp in s.edited_files for t in tops
-        )
-        if in_cwd or in_edit:
-            out.append(s)
-    out.sort(key=lambda s: s.last_activity or _EPOCH, reverse=True)
+def rollups(entry: RepoEntry) -> list[Rollup]:
+    """Invert pending-file attributions into Session Rollups.
+
+    A multi-attributed file lands in every plausible Session's Rollup (no fake
+    winner); files no Session explains collect in a trailing unattributed
+    Rollup. Sorted by most recent activity, unattributed always last.
+    """
+    buckets: dict[str, Rollup] = {}
+    unattributed = Rollup(session_id=None, title="unattributed")
+    for co in entry.checkouts:
+        for pf in co.pending:
+            if not pf.attributions:
+                unattributed.files.append((co.branch, pf))
+                continue
+            for a in pf.attributions:
+                r = buckets.get(a.session_id)
+                if r is None:
+                    r = buckets[a.session_id] = Rollup(session_id=a.session_id, title=a.title)
+                r.files.append((co.branch, pf))
+                if a.when and (r.last_activity is None or a.when > r.last_activity):
+                    r.last_activity = a.when
+    out = sorted(buckets.values(), key=lambda r: r.last_activity or _EPOCH, reverse=True)
+    if unattributed.files:
+        out.append(unattributed)
     return out
