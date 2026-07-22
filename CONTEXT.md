@@ -29,7 +29,7 @@ The rolling time window (default: last 7 days) that gates the recently-pushed re
 _Avoid_: checkpoint, last run, lookback (retired concepts — see ADR 0002, 0004)
 
 **Derived Cache**:
-The `~/.standup` store: a pure accelerator holding results derived deterministically from the session logs (parsed Sessions). Keyed so any stale entry is detected and recomputed; output is byte-identical whether the cache is warm, cold, or deleted. Never holds run-history — it is not the retired Checkpoint (ADR 0002). It caches log parsing only; live git state is never cached (git is the source of truth and de-facto read-marker).
+The `~/.standup/cache` store: a pure accelerator holding results derived deterministically from the session logs (parsed Sessions). Keyed so any stale entry is detected and recomputed; output is byte-identical whether the cache is warm, cold, or deleted. `rm -rf ~/.standup/cache` is always safe. Never holds run-history — it is not the retired Checkpoint (ADR 0002). It caches log parsing only; live git state is never cached (git is the source of truth and de-facto read-marker). It lives in a `cache/` subdirectory precisely so the `~/.standup` root can also hold *durable, non-recomputable* data (**Session Briefs**) without exposing it to a cache wipe — the root is never deleted; only `cache/` is (ADR 0003).
 _Avoid_: state, checkpoint, index
 
 **Attribution Tier**:
@@ -39,13 +39,17 @@ The strength of a change→Session claim — `exact` (commit hash captured in th
 One top-level item in the Triage Inbox, identified by `git rev-parse --git-common-dir` — worktrees roll up under their main checkout as branch sub-lines; independent clones stay separate.
 
 **Session Rollup**:
-One line under a Repo Entry in the overview: a Session plus the scale of its footprint. The Session is the display unit; individual files never appear in the overview. Footprints may overlap — a multi-attributed change counts under every plausible Session (no fake winner) — so the Repo Entry header carries the true git totals ("N files uncommitted across M sessions") and per-Session counts are honest even when they don't sum to it.
+One line under a Repo Entry in the overview: a Session plus the scale of its footprint. The Session is the display unit; individual files never appear in the overview. Each file belongs to exactly one Session — its **latest** — so a file touched across several Sessions appears once, not once per Session. Older Sessions that also touched it are not lost: they surface as the `also ~"…"` annotation in the drill-down. Per-Session file counts therefore sum to the Repo Entry header's true git total ("N files uncommitted across M sessions").
 
 **Resume**:
-The content of a Session Rollup: Session title + scale (file/commit counts) + Touched Areas + recency. Derived offline from the log and git — never LLM-generated at render time. Rendered as a two-line stanza — title line first (titles must align for at-a-glance scanning), metadata indented below. No emitted line may exceed the terminal width: content grows vertically, never wraps.
+The content of a Session Rollup: Session title + scale (file/commit counts) + Touched Areas + recency. Derived offline from the log and git — never LLM-generated at render time (its authored companion is the **Session Brief**, which is LLM-written but still only *read* at render time). Rendered as a two-line stanza — title line first (titles must align for at-a-glance scanning), metadata indented below. No emitted line may exceed the terminal width: content grows vertically, never wraps.
 
 **Touched Areas**:
 The top-level directories a Session's footprint lives in (max ~3 shown, then `+N more`). The one-line replacement for the per-file listing of the old overview.
+
+**Session Brief**:
+An LLM-authored, best-effort account of a **Session**'s *objective(s)* — what the session set out to do — generated **out-of-band** while the session runs (a Claude Code Stop hook spawns a cheap model pass over the JSONL; the live conversation pays no extra tokens or round-trips) and read by Standup as just another log input. A *claim*, not a derived fact: it can be stale, wrong, or hallucinated, so Standup always renders it **marked as a claim** (the `~`-style honesty carried over from Attribution) and lets it *augment* — never replace — the derived title in a **Session Rollup** (title stays the aligned anchor; the Brief adds one "objective" line). Standup only ever *reads* it: generation is offline, so the "never LLM-generated at render time" rule (see **Resume**) still holds and the inbox stays deterministic given the files on disk.
+_Avoid_: metadata (overloaded — titles/`cwd`/branches are *derived* metadata), summary, description, log
 
 **Notional Cost**:
 The API-equivalent dollar *weight* of a Session or project: its logged token usage (input / output / cache-write / cache-read) priced at the published pay-as-you-go **Rate Card**. A comparison unit for load — explicitly not money paid.
@@ -76,7 +80,7 @@ The `standup show <handle>` rendering of a **Session**'s conversation — user p
 - A **Repo Entry** aggregates one main checkout plus its worktrees; each pending/committed change carries one **Attribution Tier**
 - The **Triage Inbox** is fully derived — computed fresh from git + JSONL; there is no stored state (ADR 0002)
 
-- The drill-down (`standup <repo>`) is the Triage Inbox at higher magnification — the same session-major model, with each Session Rollup expanded into its file/commit evidence. A multi-attributed file is listed under every plausible Session, marked `also ~"…"`.
+- The drill-down (`standup <repo>`) is the Triage Inbox at higher magnification — the same session-major model, with each Session Rollup expanded into its file/commit evidence. A file appears under its latest Session only; the older Sessions that also touched it are named inline as `also ~"…"`.
 
 ## Example dialogue
 

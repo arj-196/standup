@@ -108,9 +108,11 @@ def attribute(entries: list[RepoEntry], sessions: list[Session], cache=None) -> 
 def rollups(entry: RepoEntry) -> list[Rollup]:
     """Invert pending-file attributions into Session Rollups.
 
-    A multi-attributed file lands in every plausible Session's Rollup (no fake
-    winner); files no Session explains collect in a trailing unattributed
-    Rollup. Sorted by most recent activity, unattributed always last.
+    Each file lands in exactly one Rollup — its latest Session (attributions
+    are sorted newest-first). Older Sessions that also touched the file survive
+    as the `also ~"…"` annotation in the drill-down, not as duplicate Rollups.
+    Files no Session explains collect in a trailing unattributed Rollup. Sorted
+    by most recent activity, unattributed always last.
     """
     buckets: dict[str, Rollup] = {}
     unattributed = Rollup(session_id=None, title="unattributed")
@@ -119,13 +121,13 @@ def rollups(entry: RepoEntry) -> list[Rollup]:
             if not pf.attributions:
                 unattributed.files.append((co.branch, pf))
                 continue
-            for a in pf.attributions:
-                r = buckets.get(a.session_id)
-                if r is None:
-                    r = buckets[a.session_id] = Rollup(session_id=a.session_id, title=a.title)
-                r.files.append((co.branch, pf))
-                if a.when and (r.last_activity is None or a.when > r.last_activity):
-                    r.last_activity = a.when
+            a = pf.attributions[0]  # latest Session wins; one Rollup per file
+            r = buckets.get(a.session_id)
+            if r is None:
+                r = buckets[a.session_id] = Rollup(session_id=a.session_id, title=a.title)
+            r.files.append((co.branch, pf))
+            if a.when and (r.last_activity is None or a.when > r.last_activity):
+                r.last_activity = a.when
     out = sorted(buckets.values(), key=lambda r: r.last_activity or _EPOCH, reverse=True)
     if unattributed.files:
         out.append(unattributed)
