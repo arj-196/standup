@@ -10,6 +10,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from . import cache as cache_mod
+from . import brief as brief_mod
 from . import claude_logs, cost, gitstate, join, render, show
 
 RECENT_WINDOW_DAYS = 7  # the Recent Window (ADR 0002); --since overrides
@@ -65,6 +66,13 @@ def _to_json(entries, sessions, since, now) -> str:
                 "edited_files": {p: t.isoformat() for p, t in s.edited_files.items()},
                 "commit_hashes": {h: t.isoformat() for h, t in s.commit_hashes.items()},
                 "branches": sorted(s.branches),
+                "brief": ({
+                    "objective": s.brief.objective,
+                    "status": s.brief.status,
+                    "generated": s.brief.generated.isoformat() if s.brief.generated else None,
+                    "model": s.brief.model,
+                    "stale": s.brief.stale,
+                } if s.brief else None),
             }
             for s in sessions
             if s.edited_files or s.commit_hashes
@@ -97,6 +105,8 @@ def _cost_json(projects, window_start, label, now) -> str:
                 "name": p.name,
                 "path": p.path,
                 "cost": round(p.cost, 4),
+                "brief_overhead": round(p.brief_overhead, 4),
+                "brief_count": p.brief_count,
                 "by_model": {m: round(c, 4) for m, c in p.by_model.items()},
                 "sessions": [
                     {
@@ -137,6 +147,7 @@ def _cmd_cost(argv: list[str]) -> int:
 
     session_costs = cost.scan_session_costs(projects_dir, window_start)
     projects = cost.group_by_project(session_costs)
+    cost.attach_brief_overhead(projects)
 
     if args.json:
         print(_cost_json(projects, window_start, label, now))
@@ -216,10 +227,40 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_cost(argv[1:])
     if argv and argv[0] == "show":
         return _cmd_show(argv[1:])
+    if argv and argv[0] == "_brief":  # hidden: the Stop hook's entry point (ADR 0006)
+        from . import briefgen
+        return briefgen.run_from_hook_stdin()
+    if argv and argv[0] in ("install", "uninstall"):
+        sub = argv[0]
+        if "-h" in argv[1:] or "--help" in argv[1:]:
+            print(f"usage: standup {sub}\n")
+            if sub == "install":
+                print("Install the Session Brief Stop hook into ~/.claude/settings.json so\n"
+                      "every Claude Code session gets an out-of-band objective summary (ADR 0006).\n"
+                      "Idempotent; runs a headless `claude -p` auth check. Takes no options.")
+            else:
+                print("Remove the Session Brief Stop hook from ~/.claude/settings.json.\n"
+                      "Leaves existing Briefs in ~/.standup/briefs/ in place. Takes no options.")
+            return 0
+        if argv[1:]:
+            print(f"standup {sub}: unexpected argument {argv[1]!r} (takes no options)", file=sys.stderr)
+            return 2
+        from . import install as install_mod
+        return install_mod.install() if sub == "install" else install_mod.uninstall()
 
     parser = argparse.ArgumentParser(
         prog="standup",
         description="Morning triage inbox for Claude Code activity across your repos.",
+        epilog=(
+            "subcommands:\n"
+            "  cost [repo]        Notional Cost by project/session (not real money)\n"
+            "  show <handle>      read a session's transcript (prompts + responses)\n"
+            "  install            set up the Session Brief Stop hook (machine-wide)\n"
+            "  uninstall          remove the Session Brief Stop hook\n"
+            "\n"
+            "run `standup <subcommand> -h` for a subcommand's options."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("repo", nargs="?", help="repo name or path fragment for a drill-down")
     parser.add_argument("-a", "--all", action="store_true",
@@ -246,6 +287,10 @@ def main(argv: list[str] | None = None) -> int:
     join.attribute(entries, sessions, cache)
     cache.flush()
 
+    # Session Briefs (ADR 0006): read-only join, then drop briefs for dead logs.
+    briefs = brief_mod.load_for_sessions(sessions)
+    brief_mod.prune_orphans({s.session_id for s in sessions})
+
     if args.json:
         print(_to_json(entries, sessions, since, now))
         return 0
@@ -260,10 +305,10 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         exact = [e for e in matches if e.name.lower() == needle]
         entry = exact[0] if exact else matches[0]
-        print(render.render_detail(entry, now, show_all=args.all, window=window))
+        print(render.render_detail(entry, now, show_all=args.all, window=window, briefs=briefs))
         return 0
 
-    print(render.render_overview(entries, since, now, show_all=args.all, window=window))
+    print(render.render_overview(entries, since, now, show_all=args.all, window=window, briefs=briefs))
     if args.all:  # optional notional-load footer, retrospective only (CONTEXT.md)
         sc = cost.scan_session_costs(projects_dir, since)
         print(render.render_cost_footer(sc, window))

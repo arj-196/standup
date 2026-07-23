@@ -4,7 +4,9 @@ Date: 2026-07-22
 
 ## Status
 
-Accepted
+Accepted (amended 2026-07-22: the cache moved from the `~/.standup` root into a
+`~/.standup/cache/` subdirectory, reserving the root for durable, non-recomputable
+data — the first tenant being the Session Brief. See CONTEXT.md → Session Brief.)
 
 ## Context
 
@@ -16,7 +18,7 @@ retired Checkpoint (ADR 0002) made "no stored state" a point of pride, so a
 
 ## Decision
 
-Add a **Derived Cache** at `~/.standup/cache.db` (stdlib SQLite, WAL). It holds
+Add a **Derived Cache** at `~/.standup/cache/cache.db` (stdlib SQLite, WAL). It holds
 one row per session file — the fully parsed Session (cwd, branches, titles,
 edited files, commit hashes, and any per-session token totals) — plus an
 immutable `commit_files(sha)` table. It is a **pure accelerator**: keyed on
@@ -29,6 +31,12 @@ The cache stores the *complete* parse of every file unconditionally; the
 `--since` horizon is re-applied at query time (see ADR 0004), so caching is
 decoupled from what any given command exposes. Live git state is never cached —
 git remains the source of truth and de-facto read-marker.
+
+The cache lives in a `cache/` **subdirectory**, not at the `~/.standup` root,
+because the root also holds durable data that standup *cannot* recompute — the
+Session Brief (`~/.standup/briefs/<sessionId>.brief.md`), authored out-of-band by
+a Claude Code Stop hook. Splitting the two keeps "disposable accelerator" and
+"authored, non-recomputable artifact" on opposite sides of a `rm -rf` boundary.
 
 ## Considered Options
 
@@ -44,9 +52,11 @@ git remains the source of truth and de-facto read-marker.
 
 ## Consequences
 
-- The cache is disposable: `rm -rf ~/.standup` is always safe and correct. Any
-  read error, or a `parser_version` mismatch (bumped when parse logic changes),
-  triggers a silent cold rebuild — a broken cache is never a user-visible error.
+- The cache is disposable: `rm -rf ~/.standup/cache` is always safe and correct.
+  Deleting the `~/.standup` **root** is no longer safe — it would take the durable
+  Session Briefs with it. Any read error, or a `parser_version` mismatch (bumped
+  when parse logic changes), triggers a silent cold rebuild — a broken cache is
+  never a user-visible error.
 - Rows for deleted session files are opportunistically pruned each run.
 - Warm runs drop from ~2.35 s to roughly the git cost alone; parallelizing the
   per-repo git subprocesses and caching immutable `commit_files(sha)` cut that

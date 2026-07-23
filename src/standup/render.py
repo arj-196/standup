@@ -132,15 +132,38 @@ def _dominant_sessions(commits: list[Commit], st: Style) -> str:
     return label
 
 
-def _rollup_stanza(r: Rollup, now: datetime, st: Style, width: int) -> list[str]:
+def _brief_line(brief: "Brief | None", st: Style, width: int, indent: str) -> str | None:
+    """The Session Brief's objective, rendered as a marked *claim* line (ADR
+    0006): a `~` glyph in the honesty family used for `likely` attribution, plus
+    a `(stale)` / status hedge. Never impersonates a derived fact; augments,
+    never replaces, the title line above it.
+    """
+    if brief is None or not brief.objective:
+        return None
+    tags = []
+    if brief.status and brief.status != "done":
+        tags.append(brief.status)
+    if brief.stale:
+        tags.append("stale")
+    suffix = st.dim("  (" + ", ".join(tags) + ")") if tags else ""
+    return _clamp(f"{indent}{st.dim('~')} {brief.objective}{suffix}", width)
+
+
+def _rollup_stanza(r: Rollup, now: datetime, st: Style, width: int,
+                   briefs: dict | None = None) -> list[str]:
     if r.session_id:
         title_line = f'  ~ "{r.title}"'
     else:
         title_line = f"    {st.dim('unattributed')}"
+    lines = [_clamp(title_line, width)]
+    bl = _brief_line((briefs or {}).get(r.session_id) if r.session_id else None, st, width, "      ")
+    if bl:
+        lines.append(bl)
     meta = f"{_plural(len(r.files), 'file')} · {_areas([pf.path for _, pf in r.files])}"
     if r.last_activity:
         meta += f" · {humanize(r.last_activity, now)}"
-    return [_clamp(title_line, width), _clamp(f"      {st.dim(meta)}", width)]
+    lines.append(_clamp(f"      {st.dim(meta)}", width))
+    return lines
 
 
 def _pending_total(e: RepoEntry) -> int:
@@ -156,7 +179,8 @@ def _by_recency(entries: list[RepoEntry]) -> list[RepoEntry]:
 
 
 def render_overview(entries: list[RepoEntry], since: datetime, now: datetime,
-                    show_all: bool = False, window: str = "7d") -> str:
+                    show_all: bool = False, window: str = "7d",
+                    briefs: dict | None = None) -> str:
     st = _style()
     width = _term_width()
     out: list[str] = [st.bold(f"standup · {now.astimezone().strftime('%a %b %d')}"), ""]
@@ -177,7 +201,7 @@ def render_overview(entries: list[RepoEntry], since: datetime, now: datetime,
             dirty_branches = list(dict.fromkeys(co.branch for co in e.checkouts if co.pending))
             out.append(_clamp(f"  {st.dim(_shorten_home(e.main_path) + ' · ' + ', '.join(dirty_branches))}", width))
             for r in rolls:
-                out.extend(_rollup_stanza(r, now, st, width))
+                out.extend(_rollup_stanza(r, now, st, width, briefs))
             out.append("")
     else:
         out.append(st.green("No active work — nothing uncommitted."))
@@ -209,7 +233,8 @@ def render_overview(entries: list[RepoEntry], since: datetime, now: datetime,
 
 
 def render_detail(entry: RepoEntry, now: datetime,
-                  show_all: bool = False, window: str = "7d") -> str:
+                  show_all: bool = False, window: str = "7d",
+                  briefs: dict | None = None) -> str:
     st = _style()
     width = _term_width()
     out = [st.bold(entry.name) + "  " + st.dim(_shorten_home(entry.main_path)), ""]
@@ -224,6 +249,9 @@ def render_detail(entry: RepoEntry, now: datetime,
         else:
             head = st.dim("unattributed")
         out.append(_clamp(head, width))
+        bl = _brief_line((briefs or {}).get(r.session_id) if r.session_id else None, st, width, "  ")
+        if bl:
+            out.append(bl)
         for branch, pf in r.files:
             line = f"  {pf.code.strip() or '??':>2} "
             if multi:
@@ -316,14 +344,22 @@ def render_cost_overview(projects: list[ProjectCost], window: str, now: datetime
     tail = "  ·  " + " · ".join(f"{_abbr_model(m)} {_money(c)}"
                                 for m, c in sorted(merged.items(), key=lambda kv: -kv[1]))
     out += ["  " + "─" * w, f"  {_money(total):>{w}}  {st.bold('total')}{st.dim(tail)}"]
+
+    overhead = sum(p.brief_overhead for p in projects)
+    n_briefs = sum(p.brief_count for p in projects)
+    if n_briefs:
+        out.append(st.dim(f"  {_money(overhead):>{w}}  brief overhead"
+                          f"  ({_plural(n_briefs, 'brief')}) — cost of keeping Session Briefs current"))
     return "\n".join(out)
 
 
 def render_cost_detail(project: ProjectCost, window: str, now: datetime) -> str:
     st = _style()
     width = _term_width()
-    out = [st.bold(project.name) + st.dim(f" — {_money(project.cost)} notional · {window}"),
-           _cost_disclaimer(st), ""]
+    head = st.bold(project.name) + st.dim(f" — {_money(project.cost)} notional · {window}")
+    if project.brief_count:
+        head += st.dim(f"  · +{_money(project.brief_overhead)} brief overhead")
+    out = [head, _cost_disclaimer(st), ""]
     w = max((len(_money(s.cost)) for s in project.sessions), default=5)
     for s in project.sessions:
         why = f"  {st.yellow(s.why)}" if s.why else ""

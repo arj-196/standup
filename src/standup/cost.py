@@ -65,6 +65,10 @@ class ProjectCost:
     name: str
     path: str
     sessions: list[SessionCost] = field(default_factory=list)
+    # Brief Overhead (ADR 0006): Notional Cost of generating this project's
+    # Session Briefs, kept separate from `cost` so it is never folded in silently.
+    brief_overhead: float = 0.0
+    brief_count: int = 0
 
     @property
     def cost(self) -> float:
@@ -187,3 +191,18 @@ def group_by_project(session_costs: list[SessionCost]) -> list[ProjectCost]:
     for proj in projects.values():
         proj.sessions.sort(key=lambda s: s.cost, reverse=True)
     return sorted(projects.values(), key=lambda p: p.cost, reverse=True)
+
+
+def attach_brief_overhead(projects: list[ProjectCost]) -> None:
+    """Price each project's Session Briefs and record it as Brief Overhead (ADR
+    0006) — attributed to the repo whose sessions the Briefs summarise. Read-only
+    and separate from Notional Cost; deliberately not folded into `cost`.
+    """
+    from . import brief as brief_mod
+    for proj in projects:
+        for sc in proj.sessions:
+            b = brief_mod.load_one(sc.session.session_id)
+            if b is None:
+                continue
+            proj.brief_overhead += brief_mod.overhead_cost(b)
+            proj.brief_count += 1
