@@ -5,6 +5,26 @@ from datetime import datetime
 
 
 @dataclass
+class Brief:
+    """A Session Brief (ADR 0006): an LLM-authored, out-of-band account of a
+    Session's objective. A *claim*, never a derived fact — always rendered
+    marked as such, and hedged (`stale`) when the log advanced past `generated`.
+    Read from ~/.standup/briefs/<sessionId>.brief.md; standup never writes it at
+    render time.
+    """
+    session_id: str
+    objective: str
+    status: str | None = None
+    generated: datetime | None = None
+    model: str | None = None
+    body: str = ""
+    stale: bool = False
+    # the generation's own token usage (from `claude -p --output-format json`),
+    # priced as Brief Overhead (ADR 0006). Shape matches rates.turn_cost's input.
+    gen_usage: dict | None = None
+
+
+@dataclass
 class Session:
     session_id: str
     log_path: str
@@ -14,6 +34,7 @@ class Session:
     slug: str | None = None
     last_prompt: str | None = None
     last_activity: datetime | None = None
+    brief: "Brief | None" = None
     branches: set[str] = field(default_factory=set)
     # absolute file path -> timestamp of most recent Edit/Write
     edited_files: dict[str, datetime] = field(default_factory=dict)

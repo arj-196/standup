@@ -1,4 +1,8 @@
-"""The Derived Cache (ADR 0003): a pure accelerator at ~/.standup/cache.db.
+"""The Derived Cache (ADR 0003): a pure accelerator at ~/.standup/cache/cache.db.
+
+The `cache/` subdirectory is deliberate: the `~/.standup` root is durable and
+holds non-recomputable data (Session Briefs, see brief.py), so only `cache/` is
+disposable. `rm -rf ~/.standup/cache` is always safe; the root is not.
 
 Holds results derived deterministically from the session logs — one row per
 session file (the fully parsed Session) plus an immutable commit_files(sha)
@@ -21,7 +25,7 @@ from pathlib import Path
 SCHEMA_VERSION = 1
 PARSER_VERSION = 1  # bump when session parse logic changes (invalidates rows)
 
-CACHE_PATH = Path(os.path.expanduser("~/.standup")) / "cache.db"
+CACHE_PATH = Path(os.path.expanduser("~/.standup")) / "cache" / "cache.db"
 
 
 class NullCache:
