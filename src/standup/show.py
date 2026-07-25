@@ -14,8 +14,10 @@ from __future__ import annotations
 import json
 import re
 import textwrap
+from datetime import datetime
 from pathlib import Path
 
+from . import brief as brief_mod
 from . import rates
 from .render import _style, _term_width
 
@@ -89,6 +91,50 @@ def _assistant_parts(content, show_thinking: bool) -> tuple[list[str], list[str]
     return texts, tools
 
 
+def _parse_ts(raw: str | None) -> datetime | None:
+    if not raw:
+        return None
+    try:
+        return datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+
+
+def _brief_block(brief, st, width: int, wrap) -> list[str]:
+    """The Session Brief header shown at the very top of a Transcript.
+
+    A *claim*, not a derived fact (CONTEXT.md → Session Brief): marked with the
+    `~` idiom and hedged when stale. Leads with the objective, then the freeform
+    body; a dim provenance line closes it. Carries no cost tag — Brief Overhead
+    stays a `cost`-view concern.
+    """
+    rule = "─" * width
+    tags = []
+    if brief.status and brief.status != "done":
+        tags.append(brief.status)
+    if brief.stale:
+        tags.append("may be stale")
+    label = "── ~ brief"
+    if tags:
+        label += " · " + " · ".join(tags)
+    label += " "
+    header = st.dim(label + rule[len(label):] if len(label) < width else label)
+    lines = [header, st.bold(wrap(brief.objective))]
+    if brief.body:
+        lines.append("")
+        lines.append(wrap(brief.body))
+    prov = []
+    if brief.generated:
+        prov.append(brief.generated.date().isoformat())
+    if brief.model:
+        prov.append(brief.model)
+    if prov:
+        lines.append("")
+        lines.append(st.dim("  " + " · ".join(prov)))
+    lines.append("")
+    return lines
+
+
 def render_transcript(path: Path, show_thinking: bool = False, raw: bool = False) -> str:
     if raw:
         return path.read_text(errors="replace")
@@ -105,7 +151,13 @@ def render_transcript(path: Path, show_thinking: bool = False, raw: bool = False
             lines.append(textwrap.fill(ln, width=width) if ln.strip() else "")
         return "\n".join(lines)
 
+    # Session Brief (ADR 0006): read-only. Shown at the top so the reader gets an
+    # instant understanding before the conversation. Absent/body-less → silent.
+    brief = brief_mod.load_one(path.stem)
+    last_ts: datetime | None = None
+
     header_done = False
+    brief_insert_idx: int | None = None
     out: list[str] = []
     # buffer consecutive assistant events into one response block (summed cost)
     block: dict | None = None
@@ -132,10 +184,15 @@ def render_transcript(path: Path, show_thinking: bool = False, raw: bool = False
             etype = obj.get("type")
             msg = obj.get("message") or {}
 
+            ts = _parse_ts(obj.get("timestamp"))
+            if ts and (last_ts is None or ts > last_ts):
+                last_ts = ts
+
             if not header_done and obj.get("cwd"):
                 out.append(st.bold(f"{path.stem[:8]}  {Path(obj['cwd']).name}"))
                 out.append("")
                 header_done = True
+                brief_insert_idx = len(out)
 
             if etype == "user":
                 if obj.get("isMeta"):  # injected skill/command bodies, not typed
@@ -160,6 +217,18 @@ def render_transcript(path: Path, show_thinking: bool = False, raw: bool = False
                     block["cost"] += c
                     block["has_cost"] = True
     flush()
+
+    if brief is not None:
+        # Stamp staleness the way the inbox does, but against the session's own
+        # last-activity timestamp scanned from this JSONL (show has no Session).
+        try:
+            if brief.generated and last_ts and last_ts > brief.generated + brief_mod.STALE_TOLERANCE:
+                brief.stale = True
+        except TypeError:  # naive vs aware in a hand-edited brief — don't crash show
+            pass
+        block_lines = _brief_block(brief, st, width, wrap)
+        idx = brief_insert_idx if brief_insert_idx is not None else 0
+        out[idx:idx] = block_lines
 
     if not out:
         return st.dim("(no readable turns in this session)")

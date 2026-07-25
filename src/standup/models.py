@@ -72,6 +72,12 @@ class Rollup:
     files: list[tuple[str, "PendingFile"]] = field(default_factory=list)  # (branch, file)
     last_activity: datetime | None = None
 
+    @property
+    def handle(self) -> str | None:
+        """The Session Handle — 8-char sessionId prefix used to address this
+        Session on the CLI (`standup show <handle>`). None when unattributed."""
+        return self.session_id[:8] if self.session_id else None
+
 
 @dataclass
 class PendingFile:

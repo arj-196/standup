@@ -152,7 +152,7 @@ def _brief_line(brief: "Brief | None", st: Style, width: int, indent: str) -> st
 def _rollup_stanza(r: Rollup, now: datetime, st: Style, width: int,
                    briefs: dict | None = None) -> list[str]:
     if r.session_id:
-        title_line = f'  ~ "{r.title}"'
+        title_line = f'  {st.dim(r.handle)}  ~ "{r.title}"'
     else:
         title_line = f"    {st.dim('unattributed')}"
     lines = [_clamp(title_line, width)]
@@ -243,7 +243,7 @@ def render_detail(entry: RepoEntry, now: datetime,
     rolls = join.rollups(entry)
     for r in rolls:
         if r.session_id:
-            head = f'~ "{r.title}"'
+            head = f'{st.dim(r.handle)}  ~ "{r.title}"'
             if r.last_activity:
                 head += st.dim(f" · {humanize(r.last_activity, now)}")
         else:
