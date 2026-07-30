@@ -363,8 +363,12 @@ def render_cost_detail(project: ProjectCost, window: str, now: datetime) -> str:
     w = max((len(_money(s.cost)) for s in project.sessions), default=5)
     for s in project.sessions:
         why = f"  {st.yellow(s.why)}" if s.why else ""
+        loop_tag = ""
+        if s.loops:  # above-floor Loops (ADR 0007) — a measured fact, not a saving
+            n = f"{len(s.loops)} loops" if len(s.loops) > 1 else "loop"
+            loop_tag = f"  {st.yellow(f'⟳ {n} {_money(s.loop_cost)}')}"
         head = (f"  {_money(s.cost):>{w}}  {st.dim(s.handle)}  \"{s.title}\""
-                f"  {st.dim(_abbr_model(s.dominant_model or '?'))}{why}")
+                f"  {st.dim(_abbr_model(s.dominant_model or '?'))}{why}{loop_tag}")
         out.append(_clamp(head, width))
         t = s.tokens
         meta = (f"in {_tok(t['input'])} · out {_tok(t['output'])} · "
@@ -373,6 +377,11 @@ def render_cost_detail(project: ProjectCost, window: str, now: datetime) -> str:
             meta += f" · {humanize(s.session.last_activity, now)}"
         indent = " " * (w + 4)
         out.append(_clamp(indent + st.dim(meta), width))
+        for l in s.loops:
+            evid = f"⟳ {l.iterations}× {l.label} — {_money(l.cost)} loop cost"
+            if l.unpriced_turns:
+                evid += f" (+{l.unpriced_turns} unpriced turns)"
+            out.append(_clamp(indent + st.dim(evid), width))
         out.append(indent + st.dim(f"standup show {s.handle}"))
         out.append("")
     return "\n".join(out)

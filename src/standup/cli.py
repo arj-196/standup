@@ -118,6 +118,17 @@ def _cost_json(projects, window_start, label, now) -> str:
                         "tokens": s.tokens,
                         "turns": s.turns,
                         "why": s.why,
+                        "loop_cost": round(s.loop_cost, 4),
+                        "loops": [
+                            {
+                                "label": l.label,
+                                "iterations": l.iterations,
+                                "turns": l.turns,
+                                "cost": round(l.cost, 4),
+                                "unpriced_turns": l.unpriced_turns,
+                            }
+                            for l in s.loops
+                        ],
                         "last_activity": s.session.last_activity.isoformat() if s.session.last_activity else None,
                     }
                     for s in p.sessions
@@ -148,6 +159,9 @@ def _cmd_cost(argv: list[str]) -> int:
     session_costs = cost.scan_session_costs(projects_dir, window_start)
     projects = cost.group_by_project(session_costs)
     cost.attach_brief_overhead(projects)
+    cache = cache_mod.open_cache()
+    cost.attach_loops(session_costs, cache)
+    cache.flush()
 
     if args.json:
         print(_cost_json(projects, window_start, label, now))

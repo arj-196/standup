@@ -32,6 +32,13 @@ class SessionCost:
     tokens: dict[str, int] = field(default_factory=lambda: {b: 0 for b in BUCKETS})
     turns: int = 0
     unpriced_turns: int = 0
+    # above-floor Loops (ADR 0007): free, derived, attached by attach_loops.
+    # Loop Cost is a carve-out of this session's Notional Cost, never a saving.
+    loops: list = field(default_factory=list)
+
+    @property
+    def loop_cost(self) -> float:
+        return sum(l.cost for l in self.loops)
 
     @property
     def title(self) -> str:
@@ -191,6 +198,15 @@ def group_by_project(session_costs: list[SessionCost]) -> list[ProjectCost]:
     for proj in projects.values():
         proj.sessions.sort(key=lambda s: s.cost, reverse=True)
     return sorted(projects.values(), key=lambda p: p.cost, reverse=True)
+
+
+def attach_loops(session_costs: list[SessionCost], cache) -> None:
+    """Attach each session's above-floor Loops (ADR 0007). Free and derived:
+    served from the Derived Cache; only changed session files are re-read."""
+    from . import loops as loops_mod
+    for sc in session_costs:
+        scan = loops_mod.for_session(Path(sc.session.log_path), cache)
+        sc.loops = loops_mod.significant(scan)
 
 
 def attach_brief_overhead(projects: list[ProjectCost]) -> None:

@@ -66,6 +66,32 @@ The model → price table that converts tokens into **Notional Cost**. Stored as
 The **Notional Cost** of producing **Session Brief**s — the token load of the background `claude -p` (Haiku) runs the Stop hook spawns. Each generation reports its own `usage` (via `claude -p --output-format json`), which is recorded in the Brief and priced by the **Rate Card** like any turn, then attributed to the **Repo Entry** whose session the Brief describes (the Brief is keyed by that session's id). Surfaced as a *separate, labelled* figure in the `cost` view — never folded silently into a repo's work cost — so the price of keeping Briefs current is always visible (and debounce tuning is self-evident). It never reaches the **Triage Inbox**: generation runs with `--no-session-persistence` and makes no Edit/Write, so it has no footprint.
 _Avoid_: folding it into Notional Cost silently, hiding it
 
+**Loop**:
+A run of repeated same-shape tool calls inside one **Session**, found by a free, deterministic detector over the JSONL (always-on, cacheable in the Derived Cache). A measured fact, not a judgment — a Loop may be perfectly legitimate work.
+_Avoid_: pattern (vague), waste (judgmental), repetition
+
+**Loop Cost**:
+A **Loop**'s share of its Session's **Notional Cost** — the summed per-turn cost of the turns identified as Loop iterations. Strictly retrospective and measured; never a projected saving. (Mirrors the Brief Overhead move: a subset of Notional Cost carved out and labelled.)
+_Avoid_: savings, waste
+
+**Handoff Prompt**:
+The paste-ready prompt a finding ends with — "build a script that does X; evidence in session `<handle>` turns N–M" — for starting a fresh Claude Code session that writes the automation script. Standup itself never writes code: it derives, it claims, it hands off.
+_Avoid_: generated script, fix
+
+**Audit**:
+The on-demand, LLM-authored judgment of one **Session** (`standup audit <handle>`): which turns are **LLM-as-CPU** work, whether the pattern recurs in sibling Sessions, and a **Handoff Prompt** for scripting it away. Produced by a fixed **Expert Panel** whose claims a concluder (Opus) weighs into solutions — the panel's *shape* lives in Standup's code, never in a model's discretion. Sibling recruitment is split honestly: Standup *gathers* deterministically (same **Repo Entry**), the Recurrence Expert *matches* semantically — from each sibling's derived title plus its **Session Brief** when one exists (Briefs are optional; titles always exist). Only the target Session gets the deep read; siblings contribute title, Brief, and **Loop** fingerprints/costs only, so recurrence is reported as measured fact ("recurred in 4 sessions, combined Loop Cost $23") without multiplying audit cost. A *claim*, `~`-marked like the Brief, stored durably (never in `cache/`).
+_Avoid_: analysis (vague), report
+
+**Expert Panel**:
+The fixed set of narrow, parallel Sonnet passes that produce an **Audit**'s raw claims — each Expert answers one question over only the evidence it needs (Loop Expert, LLM-as-CPU Expert, Prompt-Structure Expert, Recurrence Expert). Fix-proposing belongs to the Opus concluder, not an Expert: Experts claim, the concluder judges and drafts the **Handoff Prompt**. Standup's code owns the fan-out and records each Expert's own `usage`, so **Audit Overhead** is itemised per Expert.
+_Avoid_: orchestrator-driven delegation, subagents (implies the model chooses the panel)
+
+**LLM-as-CPU**:
+A turn where the model performs mechanical data transformation in its head (parsing, reformatting, arithmetic) that a script would do for ~$0. Only detectable by judging *content* — hence only ever claimed by an **Audit**, never by the deterministic **Loop** detector.
+
+**Audit Overhead**:
+The **Notional Cost** of producing Audits — each **Expert Panel** member's and the concluder's own `usage`, recorded and itemised per pass, surfaced as a separate, labelled figure in the `cost` view, exactly mirroring **Brief Overhead**. Every `standup audit` run prints the overhead it just incurred.
+
 **Session Handle**:
 The 8-character `sessionId` prefix used to address a **Session** on the CLI (the git-short-hash idiom). Intrinsic to the Session, so it is stable across runs — never a positional index. An ambiguous prefix errors, like `git`. Rendered leading and dimmed on every **Session Rollup** title line — in the **Triage Inbox** overview and the drill-down alike — so a session is addressable (`standup show <handle>`) straight from the inbox; fixed 8-char width keeps titles aligned. Omitted from the compressed unpushed/pushed lines, which name a *dominant* session plus `+N` and so address no single Session.
 
@@ -84,6 +110,10 @@ The `standup show <handle>` rendering of a **Session**'s conversation — user p
 - **Brief Overhead** is a subset of **Notional Cost** carved out and labelled: the cost of the Stop hook's brief-generation Sessions, attributed to the **Repo Entry** whose Sessions they summarise, shown separately so the tax of keeping **Session Brief**s current is never hidden
 - A **Repo Entry** aggregates one main checkout plus its worktrees; each pending/committed change carries one **Attribution Tier**
 - The **Triage Inbox** is fully derived — computed fresh from git + JSONL; there is no stored state (ADR 0002)
+- **Loop** detection is always-on, free, and deterministic (Derived Cache); the **Audit** is on-demand and paid — Loops are the free triage layer that tells you which Sessions are worth auditing
+- Loops surface as a marker on the `cost` view's Session lines and as gutter marks on the **Transcript**'s looped turns; neither Loops nor Audits ever enter the **Triage Inbox** (retrospective analytics, like Notional Cost)
+- An **Audit** consumes the target Session's transcript, its **Loops**, and its siblings' titles/**Session Brief**s/Loops; it produces `~`-marked claims, a solution, and a **Handoff Prompt** — never a script (Standup reads, it doesn't code)
+- An Audit is stored at `~/.standup/audits/`, staled by the Session continuing (same tolerance as Briefs), never by sibling drift; `--refresh` regenerates, nothing auto-regenerates
 
 - The drill-down (`standup <repo>`) is the Triage Inbox at higher magnification — the same session-major model, with each Session Rollup expanded into its file/commit evidence. A file appears under its latest Session only; the older Sessions that also touched it are named inline as `also ~"…"`.
 

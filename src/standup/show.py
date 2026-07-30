@@ -18,6 +18,7 @@ from datetime import datetime
 from pathlib import Path
 
 from . import brief as brief_mod
+from . import loops as loops_mod
 from . import rates
 from .render import _style, _term_width
 
@@ -74,7 +75,9 @@ def _tool_line(block: dict) -> str:
     return name
 
 
-def _assistant_parts(content, show_thinking: bool) -> tuple[list[str], list[str]]:
+def _assistant_parts(content, show_thinking: bool,
+                     looped_ids: set[str]) -> tuple[list[str], list[tuple[str, bool]]]:
+    """(prose texts, [(tool one-liner, is part of an above-floor Loop)])."""
     texts, tools = [], []
     if not isinstance(content, list):
         return texts, tools
@@ -87,7 +90,7 @@ def _assistant_parts(content, show_thinking: bool) -> tuple[list[str], list[str]
         elif t == "thinking" and show_thinking and b.get("thinking", "").strip():
             texts.append("[thinking] " + b["thinking"].strip())
         elif t == "tool_use":
-            tools.append(_tool_line(b))
+            tools.append((_tool_line(b), b.get("id") in looped_ids))
     return texts, tools
 
 
@@ -156,6 +159,11 @@ def render_transcript(path: Path, show_thinking: bool = False, raw: bool = False
     brief = brief_mod.load_one(path.stem)
     last_ts: datetime | None = None
 
+    # Loops (ADR 0007): gutter-mark the tool calls of above-floor Loops so the
+    # evidence is visible where you'd eyeball it. One extra pass over one file.
+    looped_ids = {tid for l in loops_mod.significant(loops_mod.detect(path))
+                  for tid in l.tool_ids}
+
     header_done = False
     brief_insert_idx: int | None = None
     out: list[str] = []
@@ -170,8 +178,8 @@ def render_transcript(path: Path, show_thinking: bool = False, raw: bool = False
         out.append(st.yellow(f"── claude {body[10:]}") + tag)
         for t in block["texts"]:
             out.append(wrap(t))
-        for tl in block["tools"]:
-            out.append(st.dim(f"  ⏺ {tl}"))
+        for tl, looped in block["tools"]:
+            out.append(st.dim(f"  ⟳ {tl}") if looped else st.dim(f"  ⏺ {tl}"))
         out.append("")
         block = None
 
@@ -204,7 +212,7 @@ def render_transcript(path: Path, show_thinking: bool = False, raw: bool = False
                     out.append(wrap(text))
                     out.append("")
             elif etype == "assistant":
-                texts, tools = _assistant_parts(msg.get("content"), show_thinking)
+                texts, tools = _assistant_parts(msg.get("content"), show_thinking, looped_ids)
                 if not texts and not tools:
                     continue
                 if block is None:
