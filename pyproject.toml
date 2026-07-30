@@ -5,7 +5,12 @@ description = "Morning triage inbox: joins Claude Code session logs with git rep
 requires-python = ">=3.11"
 # claude-agent-sdk is the Audit panel's transport (ADR 0007) — imported lazily
 # by auditgen only; the display path never touches it.
-dependencies = ["claude-agent-sdk>=0.1"]
+# textual is the Watch's UI (ADR 0008) — imported only by watchui; the event
+# stream (watchstream) and every snapshot view stay plain stdout.
+dependencies = [
+    "claude-agent-sdk>=0.1",
+    "textual>=8.2.8",
+]
 
 [project.scripts]
 standup = "standup.cli:main"

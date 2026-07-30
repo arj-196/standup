@@ -353,10 +353,52 @@ def _cmd_show(argv: list[str]) -> int:
     return 0
 
 
+def _cmd_watch(argv: list[str]) -> int:
+    p = argparse.ArgumentParser(
+        prog="standup watch",
+        description="Watch a repo live while an agent works in it: an interleaved "
+                    "feed of every Live Session's activity — file edits (typed out "
+                    "as they land), Bash one-liners, your prompts as chapter breaks, "
+                    "commits/pushes/branch switches, and Unattributed Changes the "
+                    "moment they appear. Session logs are the claim stream; git is "
+                    "the ground truth. Interactive: space pauses, 1-9/tab filters "
+                    "to one session, ↑↓ scrolls back, enter expands a block, d "
+                    "toggles stat mode, s opens the transcript, q quits with a "
+                    "parting snapshot.")
+    p.add_argument("repo", nargs="?", default=".",
+                   help="repo name (as in the inbox) or a path to a git checkout; "
+                        "defaults to the current directory")
+    p.add_argument("--quiet", action="store_true",
+                   help="files and commits only (no bash, prompts, or session marks)")
+    p.add_argument("--projects-dir", default=os.path.expanduser("~/.claude/projects"),
+                   help=argparse.SUPPRESS)
+    args = p.parse_args(argv)
+
+    if not sys.stdout.isatty():
+        print("standup watch: needs an interactive terminal", file=sys.stderr)
+        return 1
+    projects_dir = Path(args.projects_dir)
+    if not projects_dir.is_dir():
+        print(f"standup: no Claude Code logs found at {projects_dir}", file=sys.stderr)
+        return 1
+
+    from . import watchstream, watchui
+    try:
+        stream = watchstream.WatchStream(args.repo, projects_dir, quiet=args.quiet)
+    except watchstream.WatchError as e:
+        print(str(e), file=sys.stderr)
+        return 1
+    snapshot = watchui.run_watch(stream)
+    print(snapshot)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     if argv and argv[0] == "cost":
         return _cmd_cost(argv[1:])
+    if argv and argv[0] == "watch":
+        return _cmd_watch(argv[1:])
     if argv and argv[0] == "show":
         return _cmd_show(argv[1:])
     if argv and argv[0] == "audit":
@@ -394,6 +436,9 @@ def main(argv: list[str] | None = None) -> int:
             "  audit <handle>     Expert Panel audit of one session: scriptable Loops,\n"
             "                     LLM-as-CPU turns, recurrence, and a Handoff Prompt\n"
             "                     (on-demand; billed to your Claude subscription)\n"
+            "  watch [repo]       live feed of a repo while an agent works: edits\n"
+            "                     typed out as they land, commits, prompts, and\n"
+            "                     unattributed changes (interactive; q quits)\n"
             "  install            set up the Session Brief Stop hook (machine-wide)\n"
             "  uninstall          remove the Session Brief Stop hook\n"
             "\n"

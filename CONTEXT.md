@@ -98,6 +98,17 @@ The 8-character `sessionId` prefix used to address a **Session** on the CLI (the
 **Transcript**:
 The `standup show <handle>` rendering of a **Session**'s conversation — user prompts and assistant responses in reading order. It **leads with the Session Brief** (when one exists): the objective as a headline, the freeform body beneath, and the `status` — so the reader gets an instant understanding of the session *before* the conversation, and reads on only for more detail. The brief block is marked as a **claim** (the `~` idiom carried from Attribution) and hedged when stale — staleness computed in `show` from the session's own last-activity timestamp in the JSONL, against the same tolerance the inbox uses. A briefless (or body-less) session degrades silently — no placeholder, straight to the conversation — exactly as before Briefs existed. The brief carries no cost tag: its **Brief Overhead** stays a `cost`-view concern, never scattered here. Below the brief: tool calls collapse to one-liners; thinking is hidden (`--thinking` reveals); injected noise (system-reminders, hook output) is stripped so "you" is what you typed; each assistant turn is annotated with its per-turn **Notional Cost**; `--raw` dumps untouched JSONL (brief excluded — it lives in a separate file, not the JSONL). Free-flowing prose, and the one output **exempt** from the inbox's never-wrap rule. A general session-inspection view, reachable from the `cost` drill-down (its first entry point) and, later, the Triage Inbox — not a `cost`-only feature.
 
+**Watch**:
+The `standup watch <repo>` live view — an interleaved, chronological narrative of one **Repo Entry**'s activity (worktrees included), derived by tailing **Session** logs (the claim stream) and observing git (ground truth). Read-only and stateless like every view; exempt from the snapshot idioms (it renders time passing) but never from the honesty ones — claims stay claims, and **Unattributed Change**s are shown live, not hidden.
+_Avoid_: monitor, dashboard, tail
+
+**Feed Event**:
+One entry in the **Watch**: an animated file change, a Bash one-liner (command + exit status), a user-prompt chapter break, a commit/push/branch switch, a live **Unattributed Change**, or a **Live Session** appearing or going idle. Every event is tagged with its **Session Handle**. Assistant prose and thinking never appear — reading the conversation is the **Transcript**'s job.
+
+**Live Session**:
+A **Session** whose log was appended within a recency threshold (~30 minutes). A *recency claim*, not a process fact — Standup never inspects processes, and the **Watch** always displays how long ago the last append happened rather than asserting "running". Distinct from **Active Work**, which is a git dirt tier.
+_Avoid_: active session (collides with Active Work), running session
+
 ## Relationships
 
 - A **Session** belongs to exactly one working directory (`cwd`), which may be a repo checkout or a worktree
@@ -114,6 +125,9 @@ The `standup show <handle>` rendering of a **Session**'s conversation — user p
 - Loops surface as a marker on the `cost` view's Session lines and as gutter marks on the **Transcript**'s looped turns; neither Loops nor Audits ever enter the **Triage Inbox** (retrospective analytics, like Notional Cost)
 - An **Audit** consumes the target Session's transcript, its **Loops**, and its siblings' titles/**Session Brief**s/Loops; it produces `~`-marked claims, a solution, and a **Handoff Prompt** — never a script (Standup reads, it doesn't code)
 - An Audit is stored at `~/.standup/audits/`, staled by the Session continuing (same tolerance as Briefs), never by sibling drift; `--refresh` regenerates, nothing auto-regenerates
+- The **Watch** consumes the same two sources as the **Triage Inbox** (Session logs + git) with the same split: the log claims *who and what*, git confirms *ground truth* (and alone reveals live **Unattributed Change**s). It interleaves all **Live Session**s of one **Repo Entry** into a single feed, filterable down to one Session interactively
+- The **Watch**'s typing animation is presentation only, under a hard staleness bound: the display may never lag the log by more than a few seconds — the animation compresses (down to instant) to honor it. Delight never outranks truth
+- On launch the **Watch** backfills, unanimated and dimmed, from the newest **Live Session**'s current user prompt (prompts are the narrative's chapter breaks), beneath a vitals header (repo, branch, Live Sessions with recency, dirt count)
 
 - The drill-down (`standup <repo>`) is the Triage Inbox at higher magnification — the same session-major model, with each Session Rollup expanded into its file/commit evidence. A file appears under its latest Session only; the older Sessions that also touched it are named inline as `also ~"…"`.
 
