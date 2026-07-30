@@ -103,7 +103,7 @@ The `standup watch <repo>` live view — an interleaved, chronological narrative
 _Avoid_: monitor, dashboard, tail
 
 **Feed Event**:
-One entry in the **Watch**: an animated file change, a Bash one-liner (command + exit status), a user-prompt chapter break, a commit/push/branch switch, a live **Unattributed Change**, or a **Live Session** appearing or going idle. Every event is tagged with its **Session Handle**. Assistant prose and thinking never appear — reading the conversation is the **Transcript**'s job.
+One entry in the **Watch**: an animated file change (session-claimed, or `~`-marked unattributed with its git-diff content when git is the only witness), a Bash one-liner (command + exit status), a user-prompt chapter break, a commit/push/branch switch, a live **Unattributed Change**, or a **Live Session** appearing or going idle. Every event is tagged with its **Session Handle**. Assistant prose and thinking never appear — reading the conversation is the **Transcript**'s job.
 
 **Live Session**:
 A **Session** whose log was appended within a recency threshold (~30 minutes). A *recency claim*, not a process fact — Standup never inspects processes, and the **Watch** always displays how long ago the last append happened rather than asserting "running". Distinct from **Active Work**, which is a git dirt tier.
@@ -126,6 +126,7 @@ _Avoid_: active session (collides with Active Work), running session
 - An **Audit** consumes the target Session's transcript, its **Loops**, and its siblings' titles/**Session Brief**s/Loops; it produces `~`-marked claims, a solution, and a **Handoff Prompt** — never a script (Standup reads, it doesn't code)
 - An Audit is stored at `~/.standup/audits/`, staled by the Session continuing (same tolerance as Briefs), never by sibling drift; `--refresh` regenerates, nothing auto-regenerates
 - The **Watch** consumes the same two sources as the **Triage Inbox** (Session logs + git) with the same split: the log claims *who and what*, git confirms *ground truth* (and alone reveals live **Unattributed Change**s). It interleaves all **Live Session**s of one **Repo Entry** into a single feed, filterable down to one Session interactively
+- A repo with no **Live Session**s (any git checkout, even outside the **Scan Universe**) still narrates: git alone is the witness, and the Watch content-diffs its dirty files so every change appears with its added/removed text — `~`-marked unattributed, since no Session claims it
 - The **Watch**'s typing animation is presentation only, under a hard staleness bound: the display may never lag the log by more than a few seconds — the animation compresses (down to instant) to honor it. Delight never outranks truth
 - On launch the **Watch** backfills, unanimated and dimmed, from the newest **Live Session**'s current user prompt (prompts are the narrative's chapter breaks), beneath a vitals header (repo, branch, Live Sessions with recency, dirt count)
 

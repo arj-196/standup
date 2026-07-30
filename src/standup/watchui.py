@@ -103,6 +103,8 @@ class EventWidget(Static):
             t.append(f"  +{plus}", style="green")
             if minus:
                 t.append(f" −{minus}", style="red")
+            if not e.session_id:   # git is the only witness — mark the claim gap
+                t.append("  ~unattributed", style="red dim")
         elif e.kind == "bash":
             t.append("$ " + _one_line(e.command or "", 100))
             if self.bash_ok is True:

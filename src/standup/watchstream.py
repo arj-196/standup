@@ -11,6 +11,7 @@ appended within LIVE_THRESHOLD — never a process fact (CONTEXT.md).
 
 from __future__ import annotations
 
+import difflib
 import json
 import os
 import re
@@ -285,9 +286,17 @@ class _Tailer:
         return events
 
 
+MAX_SNAPSHOT_BYTES = 200_000   # dirty files beyond this aren't content-diffed
+
+
 class _GitWatcher:
-    """Polls git for ground truth: status deltas, HEAD moves, branch switches,
-    pushes. Emits Unattributed Changes for dirt no tailed Session explains."""
+    """Polls git for ground truth: content deltas of dirty files, HEAD moves,
+    branch switches, pushes. When no tailed Session explains a change, the
+    watcher itself supplies the content: it snapshots every dirty file and
+    emits a real file event with the incremental line-diff — so a repo with no
+    Claude sessions at all still narrates (status codes alone can't: a file
+    that is already ` M` and changes again never changes code). Binary or
+    oversized files degrade to a one-line Unattributed Change."""
 
     def __init__(self, checkouts: list[str]):
         self.checkouts = checkouts
@@ -296,15 +305,23 @@ class _GitWatcher:
         self.branch: dict[str, str] = {}
         self.unpushed: dict[str, int] = {}
         self._polls = 0
+        # (checkout, path) -> last-seen content / stat fingerprint of dirty files
+        self._content: dict[tuple[str, str], str | None] = {}   # None = undiffable
+        self._fp: dict[tuple[str, str], tuple[int, int] | None] = {}
         for co in checkouts:
             self.status[co] = self._status(co)
             self.head[co] = self._head(co)
             self.branch[co] = gitstate._branch(co)
             self.unpushed[co] = self._unpushed_count(co)
+            for p in self.status[co]:   # seed: startup dirt is old news, no events
+                key = (co, p)
+                self._fp[key] = self._stat(co, p)
+                self._content[key] = self._read(co, p)
 
     @staticmethod
     def _status(co: str) -> dict[str, str]:
-        out = gitstate.git(co, "status", "--porcelain") or ""
+        # -uall lists files inside untracked directories individually
+        out = gitstate.git(co, "status", "--porcelain", "-uall") or ""
         st = {}
         for line in out.splitlines():
             if len(line) >= 4:
@@ -313,6 +330,52 @@ class _GitWatcher:
                     p = p.split(" -> ", 1)[1]
                 st[p.strip('"')] = line[:2]
         return st
+
+    @staticmethod
+    def _stat(co: str, p: str) -> tuple[int, int] | None:
+        try:
+            st = os.stat(os.path.join(co, p))
+            return (st.st_mtime_ns, st.st_size)
+        except OSError:
+            return None    # gone (deleted, or a rename's old path)
+
+    @staticmethod
+    def _read(co: str, p: str) -> str | None:
+        """Current content of a dirty file; None when it can't be diffed
+        (binary, oversized, unreadable). A deleted file reads as ''."""
+        fp = os.path.join(co, p)
+        if not os.path.exists(fp):
+            return ""
+        try:
+            if os.path.getsize(fp) > MAX_SNAPSHOT_BYTES:
+                return None
+            with open(fp, errors="replace") as f:
+                text = f.read()
+        except OSError:
+            return None
+        return None if "\x00" in text else text
+
+    def _baseline(self, co: str, p: str, code: str) -> str | None:
+        """What the file looked like before it went dirty: HEAD's version for
+        tracked files, empty for untracked (brand-new) ones."""
+        if code.startswith("?"):
+            return ""
+        out = gitstate.git(co, "show", f"HEAD:{p}")
+        if out is None:
+            return ""
+        return None if "\x00" in out or len(out) > MAX_SNAPSHOT_BYTES else out
+
+    @staticmethod
+    def _line_diff(old: str, new: str) -> tuple[str, str]:
+        """(added, removed) line blocks between two snapshots."""
+        added, removed = [], []
+        for ln in difflib.unified_diff(old.splitlines(), new.splitlines(),
+                                       n=0, lineterm=""):
+            if ln.startswith("+") and not ln.startswith("+++"):
+                added.append(ln[1:])
+            elif ln.startswith("-") and not ln.startswith("---"):
+                removed.append(ln[1:])
+        return "\n".join(added), "\n".join(removed)
 
     @staticmethod
     def _head(co: str) -> str:
@@ -340,15 +403,41 @@ class _GitWatcher:
         events: list[FeedEvent] = []
         for co in self.checkouts:
             new_status = self._status(co)
-            old_status = self.status[co]
-            fresh = [p for p, code in new_status.items()
-                     if old_status.get(p) != code
-                     and os.path.realpath(os.path.join(co, p)) not in explained]
-            if fresh:
+            plain: list[str] = []    # changed but undiffable -> one-line event
+            for p, code in new_status.items():
+                key = (co, p)
+                fp = self._stat(co, p)
+                known = key in self._fp
+                if known and fp == self._fp[key]:
+                    continue          # dirty but untouched since last poll
+                self._fp[key] = fp
+                old = self._content[key] if known else self._baseline(co, p, code)
+                cur = self._read(co, p)
+                self._content[key] = cur
+                if os.path.realpath(os.path.join(co, p)) in explained:
+                    continue          # a tailed Session already narrated this
+                if old == cur:
+                    continue          # e.g. only staged/unstaged flip, same bytes
+                if old is None or cur is None:
+                    plain.append(p)
+                    continue
+                added, removed = self._line_diff(old, cur)
+                if not added and not removed:
+                    continue
+                change = ("delete" if cur == "" and code.strip().startswith("D")
+                          else "create" if old == "" and code.startswith("?")
+                          else "modify")
+                events.append(FeedEvent(
+                    kind="file", when=now, session_id=None,
+                    path=p, change=change, added=added, removed=removed))
+            for key in [k for k in self._fp if k[0] == co and k[1] not in new_status]:
+                del self._fp[key]     # went clean (committed/restored): drop and
+                del self._content[key]  # re-baseline from HEAD if it dirties again
+            if plain:
                 events.append(FeedEvent(
                     kind="unattributed", when=now,
-                    message=", ".join(sorted(fresh)[:5]) +
-                            (f" +{len(fresh) - 5} more" if len(fresh) > 5 else "")))
+                    message=", ".join(sorted(plain)[:5]) +
+                            (f" +{len(plain) - 5} more" if len(plain) > 5 else "")))
             self.status[co] = new_status
 
             new_branch = gitstate._branch(co)
