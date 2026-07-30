@@ -99,7 +99,7 @@ def _digest(path: Path) -> str:
                     texts, tools = show._assistant_parts(msg.get("content"), show_thinking=False)
                     for t in texts:
                         parts.append("CLAUDE: " + t)
-                    for tl in tools:
+                    for tl, _looped in tools:
                         parts.append("  · " + tl)
     except OSError:
         return ""

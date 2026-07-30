@@ -311,10 +311,20 @@ def _tok(n: int) -> str:
     return str(n)
 
 
+def _by_family(by_model: dict[str, float]) -> dict[str, float]:
+    """Merge model ids sharing a family label (e.g. opus-4-8 + opus-5 → opus)
+    so splits never print the same label twice."""
+    fam: dict[str, float] = {}
+    for m, c in by_model.items():
+        k = _abbr_model(m)
+        fam[k] = fam.get(k, 0.0) + c
+    return fam
+
+
 def _model_split(by_model: dict[str, float]) -> str:
     total = sum(by_model.values()) or 1
-    parts = sorted(by_model.items(), key=lambda kv: -kv[1])
-    return " · ".join(f"{_abbr_model(m)} {c / total * 100:.0f}%" for m, c in parts[:3])
+    parts = sorted(_by_family(by_model).items(), key=lambda kv: -kv[1])
+    return " · ".join(f"{f} {c / total * 100:.0f}%" for f, c in parts[:3])
 
 
 def _cost_disclaimer(st: Style) -> str:
@@ -341,8 +351,8 @@ def render_cost_overview(projects: list[ProjectCost], window: str, now: datetime
     for p in projects:
         for m, c in p.by_model.items():
             merged[m] = merged.get(m, 0.0) + c
-    tail = "  ·  " + " · ".join(f"{_abbr_model(m)} {_money(c)}"
-                                for m, c in sorted(merged.items(), key=lambda kv: -kv[1]))
+    tail = "  ·  " + " · ".join(f"{f} {_money(c)}"
+                                for f, c in sorted(_by_family(merged).items(), key=lambda kv: -kv[1]))
     out += ["  " + "─" * w, f"  {_money(total):>{w}}  {st.bold('total')}{st.dim(tail)}"]
 
     overhead = sum(p.brief_overhead for p in projects)
@@ -350,6 +360,11 @@ def render_cost_overview(projects: list[ProjectCost], window: str, now: datetime
     if n_briefs:
         out.append(st.dim(f"  {_money(overhead):>{w}}  brief overhead"
                           f"  ({_plural(n_briefs, 'brief')}) — cost of keeping Session Briefs current"))
+    audit_overhead = sum(p.audit_overhead for p in projects)
+    n_audits = sum(p.audit_count for p in projects)
+    if n_audits:
+        out.append(st.dim(f"  {_money(audit_overhead):>{w}}  audit overhead"
+                          f"  ({_plural(n_audits, 'audit')}) — cost of the Expert Panel runs"))
     return "\n".join(out)
 
 
@@ -359,6 +374,8 @@ def render_cost_detail(project: ProjectCost, window: str, now: datetime) -> str:
     head = st.bold(project.name) + st.dim(f" — {_money(project.cost)} notional · {window}")
     if project.brief_count:
         head += st.dim(f"  · +{_money(project.brief_overhead)} brief overhead")
+    if project.audit_count:
+        head += st.dim(f"  · +{_money(project.audit_overhead)} audit overhead")
     out = [head, _cost_disclaimer(st), ""]
     w = max((len(_money(s.cost)) for s in project.sessions), default=5)
     for s in project.sessions:
@@ -395,7 +412,7 @@ def render_cost_footer(session_costs: list["SessionCost"], window: str) -> str:
     for s in session_costs:
         for m, c in s.by_model.items():
             merged[m] = merged.get(m, 0.0) + c
-    split = " · ".join(f"{_abbr_model(m)} {_money(c)}"
-                       for m, c in sorted(merged.items(), key=lambda kv: -kv[1]))
+    split = " · ".join(f"{f} {_money(c)}"
+                       for f, c in sorted(_by_family(merged).items(), key=lambda kv: -kv[1]))
     tail = f"  ({split})" if split else ""
     return st.dim(f"notional load · {_window_label(window)}: {_money(total)}{tail} — not real money")

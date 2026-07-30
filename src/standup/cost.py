@@ -76,6 +76,9 @@ class ProjectCost:
     # Session Briefs, kept separate from `cost` so it is never folded in silently.
     brief_overhead: float = 0.0
     brief_count: int = 0
+    # Audit Overhead (ADR 0007): same move for the Expert Panel's own cost.
+    audit_overhead: float = 0.0
+    audit_count: int = 0
 
     @property
     def cost(self) -> float:
@@ -222,3 +225,17 @@ def attach_brief_overhead(projects: list[ProjectCost]) -> None:
                 continue
             proj.brief_overhead += brief_mod.overhead_cost(b)
             proj.brief_count += 1
+
+
+def attach_audit_overhead(projects: list[ProjectCost]) -> None:
+    """Price each project's Audits (ADR 0007) as Audit Overhead — the Expert
+    Panel's own recorded usage, attributed to the repo whose session was
+    audited. Separate and labelled, never folded into Notional Cost."""
+    from . import audit as audit_mod
+    for proj in projects:
+        for sc in proj.sessions:
+            a = audit_mod.load_one(sc.session.session_id)
+            if a is None:
+                continue
+            proj.audit_overhead += a.overhead_cost
+            proj.audit_count += 1

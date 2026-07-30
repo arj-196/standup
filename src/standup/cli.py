@@ -10,8 +10,9 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from . import cache as cache_mod
+from . import audit as audit_mod
 from . import brief as brief_mod
-from . import claude_logs, cost, gitstate, join, render, show
+from . import claude_logs, cost, gitstate, join, loops, rates, render, show
 
 RECENT_WINDOW_DAYS = 7  # the Recent Window (ADR 0002); --since overrides
 _EPOCH = datetime.min.replace(tzinfo=timezone.utc)
@@ -107,6 +108,8 @@ def _cost_json(projects, window_start, label, now) -> str:
                 "cost": round(p.cost, 4),
                 "brief_overhead": round(p.brief_overhead, 4),
                 "brief_count": p.brief_count,
+                "audit_overhead": round(p.audit_overhead, 4),
+                "audit_count": p.audit_count,
                 "by_model": {m: round(c, 4) for m, c in p.by_model.items()},
                 "sessions": [
                     {
@@ -142,10 +145,14 @@ def _cost_json(projects, window_start, label, now) -> str:
 
 def _cmd_cost(argv: list[str]) -> int:
     p = argparse.ArgumentParser(prog="standup cost",
-                                description="Notional Cost by project and session (not real money).")
+                                description="Notional Cost by project and session (not real money). "
+                                            "The per-session drill-down also flags Loops — repeated "
+                                            "tool-call grinds — with each Loop's share of the session's "
+                                            "cost (a measured carve-out, not a projected saving).")
     p.add_argument("repo", nargs="?", help="project name/path fragment for a per-session drill-down")
     p.add_argument("--since", help="window override (3d, 2w, ISO date, or 'all'); default: this calendar month")
     p.add_argument("--json", action="store_true", help="structured output")
+    p.add_argument("--no-pager", action="store_true", help="print instead of opening a pager")
     p.add_argument("--projects-dir", default=os.path.expanduser("~/.claude/projects"), help=argparse.SUPPRESS)
     args = p.parse_args(argv)
 
@@ -159,6 +166,7 @@ def _cmd_cost(argv: list[str]) -> int:
     session_costs = cost.scan_session_costs(projects_dir, window_start)
     projects = cost.group_by_project(session_costs)
     cost.attach_brief_overhead(projects)
+    cost.attach_audit_overhead(projects)
     cache = cache_mod.open_cache()
     cost.attach_loops(session_costs, cache)
     cache.flush()
@@ -176,16 +184,21 @@ def _cmd_cost(argv: list[str]) -> int:
             print("known projects: " + ", ".join(sorted(p_.name for p_ in projects)), file=sys.stderr)
             return 1
         exact = [p_ for p_ in matches if p_.name.lower() == needle]
-        print(render.render_cost_detail(exact[0] if exact else matches[0], label, now))
-        return 0
-
-    print(render.render_cost_overview(projects, label, now))
+        text = render.render_cost_detail(exact[0] if exact else matches[0], label, now)
+    else:
+        text = render.render_cost_overview(projects, label, now)
+    if args.no_pager:
+        print(text)
+    else:
+        _page(text, less_flags="-RF")  # F: short output prints straight through
     return 0
 
 
-def _page(text: str) -> None:
-    """Print through a pager when stdout is a terminal (less -R by default);
-    plain print otherwise, or if the pager can't be launched."""
+def _page(text: str, less_flags: str = "-R") -> None:
+    """Print through a pager when stdout is a terminal (less by default);
+    plain print otherwise, or if the pager can't be launched. `less_flags`
+    is the fallback when $LESS is unset (-R keeps colors; add F to quit
+    immediately when the content fits one screen)."""
     import shutil
     import subprocess
 
@@ -196,11 +209,11 @@ def _page(text: str) -> None:
     if pager:
         cmd, shell = pager, True
     elif shutil.which("less"):
-        cmd, shell = ["less", "-R"], False
+        cmd, shell = ["less", less_flags], False
     else:
         print(text)
         return
-    env = {**os.environ, "LESS": os.environ.get("LESS", "-R")}  # -R: keep colors
+    env = {**os.environ, "LESS": os.environ.get("LESS", less_flags)}
     try:
         proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, shell=shell, env=env, text=True)
         proc.communicate(text)
@@ -208,9 +221,114 @@ def _page(text: str) -> None:
         pass  # user quit the pager early, or it couldn't start
 
 
+def _render_audit(a, st, width: int) -> str:
+    tags = [a.generated.date().isoformat() if a.generated else None,
+            "may be stale — session continued after this audit" if a.stale else None]
+    label = "── ~ audit · " + " · ".join(t for t in tags if t) + " "
+    rule = "─" * width
+    out = [st.dim(label + rule[len(label):] if len(label) < width else label), ""]
+    out.append(a.body)
+    items = " · ".join(f"{lbl} ${c:.2f}" for lbl, c in a.overhead_items())
+    out += ["", st.dim(f"audit overhead: ${a.overhead_cost:.2f}  ({items})"
+                       + (f" · {a.siblings_considered} siblings considered"
+                          if a.siblings_considered else ""))]
+    return "\n".join(out)
+
+
+def _cmd_audit(argv: list[str]) -> int:
+    p = argparse.ArgumentParser(
+        prog="standup audit",
+        description="Audit one session for automatable cost (ADR 0007): prints its "
+                    "free deterministic Loops, then a fixed Expert Panel "
+                    "(4 parallel Sonnet Experts + an Opus concluder, billed to "
+                    "your Claude subscription) judges LLM-as-CPU turns, prompt "
+                    "structure, and recurrence across same-repo siblings, ending "
+                    "in a paste-ready Handoff Prompt. Standup never writes the "
+                    "script itself. The Audit is stored durably and re-rendered "
+                    "on later runs; its cost is recorded as Audit Overhead.")
+    p.add_argument("handle", help="8-char session id prefix (from `standup cost <repo>`)")
+    p.add_argument("--refresh", action="store_true",
+                   help="regenerate even if a stored Audit exists")
+    p.add_argument("--no-pager", action="store_true", help="print instead of paging")
+    p.add_argument("--projects-dir", default=os.path.expanduser("~/.claude/projects"),
+                   help=argparse.SUPPRESS)
+    args = p.parse_args(argv)
+
+    projects_dir = Path(args.projects_dir)
+    if not projects_dir.is_dir():
+        print(f"standup: no Claude Code logs found at {projects_dir}", file=sys.stderr)
+        return 1
+    try:
+        log_path = show.resolve_handle(projects_dir, args.handle)
+    except show.HandleError as e:
+        print(str(e), file=sys.stderr)
+        return 1
+    sid = log_path.stem
+
+    st = render._style()
+    width = render._term_width()
+    cache = cache_mod.open_cache()
+
+    # the free layer first — always, generation or not (ADR 0007)
+    scan = loops.for_session(log_path, cache)
+    sig = loops.significant(scan)
+    head = [st.bold(f"{sid[:8]}") + st.dim(f"  ${scan.session_cost:,.2f} notional"), ""]
+    if sig:
+        for l in sig:
+            evid = f"⟳ {l.iterations}× {l.label} — ${l.cost:.2f} loop cost"
+            if l.unpriced_turns:
+                evid += f" (+{l.unpriced_turns} unpriced turns)"
+            head.append("  " + evid)
+    else:
+        head.append(st.dim("  no above-floor Loops detected"))
+    head.append("")
+    print("\n".join(head))
+
+    existing = None if args.refresh else audit_mod.load_one(sid)
+    if existing is None:
+        n_experts = 4
+        print(st.dim(f"running Expert Panel: {n_experts}× {'sonnet'} experts "
+                     f"+ opus concluder (billed to your subscription)…"))
+
+        def progress(res: dict) -> None:
+            c = rates.turn_cost(res["model"], res["usage"]) if res.get("usage") else None
+            tag = f"  ${c:.2f}" if c is not None else ""
+            print(st.dim(f"  ✓ {res['label']}{tag}"))
+
+        from . import auditgen
+        try:
+            auditgen.generate(log_path, projects_dir, cache, progress)
+        except auditgen.AuditError as e:
+            print(f"standup audit: {e}", file=sys.stderr)
+            cache.flush()
+            return 1
+        existing = audit_mod.load_one(sid)
+        if existing is None:
+            print("standup audit: generation produced no readable Audit", file=sys.stderr)
+            cache.flush()
+            return 1
+        print()
+    cache.flush()
+
+    try:
+        mtime = datetime.fromtimestamp(log_path.stat().st_mtime, tz=timezone.utc)
+    except OSError:
+        mtime = None
+    audit_mod.stamp_staleness(existing, mtime)
+    text = _render_audit(existing, st, min(width, 100))
+    if args.no_pager or not sys.stdout.isatty():
+        print(text)
+    else:
+        _page(text)
+    return 0
+
+
 def _cmd_show(argv: list[str]) -> int:
     p = argparse.ArgumentParser(prog="standup show",
-                                description="Read a session's transcript (prompts + responses).")
+                                description="Read a session's transcript (prompts + responses). "
+                                            "Leads with the Session Brief when one exists; tool calls "
+                                            "collapse to one-liners, and calls belonging to a detected "
+                                            "Loop are gutter-marked ⟳.")
     p.add_argument("handle", help="8-char session id prefix (from `standup cost <repo>`)")
     p.add_argument("--thinking", action="store_true", help="include hidden thinking blocks")
     p.add_argument("--raw", action="store_true", help="dump the untouched session JSONL")
@@ -241,6 +359,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_cost(argv[1:])
     if argv and argv[0] == "show":
         return _cmd_show(argv[1:])
+    if argv and argv[0] == "audit":
+        return _cmd_audit(argv[1:])
     if argv and argv[0] == "_brief":  # hidden: the Stop hook's entry point (ADR 0006)
         from . import briefgen
         return briefgen.run_from_hook_stdin()
@@ -267,8 +387,13 @@ def main(argv: list[str] | None = None) -> int:
         description="Morning triage inbox for Claude Code activity across your repos.",
         epilog=(
             "subcommands:\n"
-            "  cost [repo]        Notional Cost by project/session (not real money)\n"
-            "  show <handle>      read a session's transcript (prompts + responses)\n"
+            "  cost [repo]        Notional Cost by project/session (not real money);\n"
+            "                     the drill-down flags Loops (repeated tool-call grinds)\n"
+            "  show <handle>      read a session's transcript (prompts + responses);\n"
+            "                     Loop calls are gutter-marked ⟳\n"
+            "  audit <handle>     Expert Panel audit of one session: scriptable Loops,\n"
+            "                     LLM-as-CPU turns, recurrence, and a Handoff Prompt\n"
+            "                     (on-demand; billed to your Claude subscription)\n"
             "  install            set up the Session Brief Stop hook (machine-wide)\n"
             "  uninstall          remove the Session Brief Stop hook\n"
             "\n"
@@ -303,7 +428,9 @@ def main(argv: list[str] | None = None) -> int:
 
     # Session Briefs (ADR 0006): read-only join, then drop briefs for dead logs.
     briefs = brief_mod.load_for_sessions(sessions)
-    brief_mod.prune_orphans({s.session_id for s in sessions})
+    live_ids = {s.session_id for s in sessions}
+    brief_mod.prune_orphans(live_ids)
+    audit_mod.prune_orphans(live_ids)  # Audits mirror the Brief lifecycle (ADR 0007)
 
     if args.json:
         print(_to_json(entries, sessions, since, now))

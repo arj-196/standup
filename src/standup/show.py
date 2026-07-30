@@ -76,7 +76,8 @@ def _tool_line(block: dict) -> str:
 
 
 def _assistant_parts(content, show_thinking: bool,
-                     looped_ids: set[str]) -> tuple[list[str], list[tuple[str, bool]]]:
+                     looped_ids: frozenset[str] | set[str] = frozenset(),
+                     ) -> tuple[list[str], list[tuple[str, bool]]]:
     """(prose texts, [(tool one-liner, is part of an above-floor Loop)])."""
     texts, tools = [], []
     if not isinstance(content, list):

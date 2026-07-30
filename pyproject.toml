@@ -3,7 +3,9 @@ name = "standup"
 version = "0.1.0"
 description = "Morning triage inbox: joins Claude Code session logs with git repo state"
 requires-python = ">=3.11"
-dependencies = []
+# claude-agent-sdk is the Audit panel's transport (ADR 0007) — imported lazily
+# by auditgen only; the display path never touches it.
+dependencies = ["claude-agent-sdk>=0.1"]
 
 [project.scripts]
 standup = "standup.cli:main"

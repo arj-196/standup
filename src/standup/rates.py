@@ -7,14 +7,16 @@ Base input + output are stored per model; cache rates are *derived* by the
 published multipliers, and per-turn modifiers (fast mode, batch tier, US
 inference geo, web search) are read from the turn's own `usage` object.
 
-Source: platform.claude.com/docs/en/about-claude/pricing (captured 2026-07-22).
-Update the numbers and the date when Anthropic changes prices.
+Source: platform.claude.com/docs/en/about-claude/pricing (captured 2026-07-22;
+claude-opus-5 added 2026-07-30). Update the numbers and the date when Anthropic
+changes prices.
 """
 
 from __future__ import annotations
 
 # per-million-token base rates; "fast" is the Opus fast-mode (input, output) pair
 CARD: dict[str, dict] = {
+    "claude-opus-5":    {"in": 5.0,  "out": 25.0, "fast": (10.0, 50.0)},
     "claude-opus-4-8":  {"in": 5.0,  "out": 25.0, "fast": (10.0, 50.0)},
     "claude-fable-5":   {"in": 10.0, "out": 50.0},
     "claude-mythos-5":  {"in": 10.0, "out": 50.0},
