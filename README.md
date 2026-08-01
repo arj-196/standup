@@ -31,9 +31,19 @@ standup show <handle> --thinking   # include hidden thinking
 standup show <handle> --raw        # untouched session JSONL
 standup show <handle> --no-pager   # print instead of opening the pager
 
+standup watch            # live feed of this repo while an agent works in it
+standup watch <repo>     # watch a named repo (or a path) instead
+standup watch --quiet    # files and commits only
+
 standup install          # set up the Session Brief Stop hook (once, machine-wide)
 standup uninstall        # remove it
 ```
+
+`standup watch` is the one live view — an interleaved feed of every Live
+Session's edits (typed out as they land), Bash one-liners, your prompts as
+chapter breaks, commits/pushes, and Unattributed Changes as they appear. It's
+interactive; [docs/watch-manual.md](docs/watch-manual.md) is the full guide to
+the screen and the keys.
 
 `standup show` opens in your pager (`$PAGER`, or `less -R`) when writing to a
 terminal — scroll and `/`-search from the top of the conversation. It prints
