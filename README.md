@@ -40,7 +40,8 @@ standup uninstall        # remove it
 ```
 
 `standup watch` is the one live view — an interleaved feed of every Live
-Session's edits (typed out as they land), Bash one-liners, your prompts as
+Session's edits (typed out as they land, syntax-highlighted by file type,
+with a `+`/`-` gutter carrying the diff), Bash one-liners, your prompts as
 chapter breaks, commits/pushes, and Unattributed Changes as they appear. It's
 interactive; [docs/watch-manual.md](docs/watch-manual.md) is the full guide to
 the screen and the keys.

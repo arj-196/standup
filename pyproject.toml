@@ -7,8 +7,11 @@ requires-python = ">=3.11"
 # by auditgen only; the display path never touches it.
 # textual is the Watch's UI (ADR 0008) — imported only by watchui; the event
 # stream (watchstream) and every snapshot view stay plain stdout.
+# pygments colors the Watch's diff bodies (monokai); rich already ships it
+# transitively — declared because watchui imports it directly.
 dependencies = [
     "claude-agent-sdk>=0.1",
+    "pygments>=2.13",
     "textual>=8.2.8",
 ]
 

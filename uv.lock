@@ -788,12 +788,14 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "claude-agent-sdk" },
+    { name = "pygments" },
     { name = "textual" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "claude-agent-sdk", specifier = ">=0.1" },
+    { name = "pygments", specifier = ">=2.13" },
     { name = "textual", specifier = ">=8.2.8" },
 ]
 

@@ -12,7 +12,12 @@ import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
-from rich.text import Text
+from pygments.lexers import get_lexer_for_filename
+from pygments.util import ClassNotFound
+from rich.style import Style
+from rich.syntax import Syntax
+from rich.text import Span, Text
+from textual import events
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import VerticalScroll
@@ -29,6 +34,7 @@ SNAP_SPEED = 8000.0        # beyond this, blocks land instantly (flash, no typin
 HEAD_LINES = 12            # animated head of a large block; rest collapses
 REMOVED_LINES = 4          # removed-text lines shown collapsed
 MAX_EVENTS = 500           # DOM cap; oldest events beyond it are dropped
+SYNTAX_THEME = "monokai"   # diff bodies pop on purpose — not matched to the TUI
 
 _KIND_MARK = {
     "file": ("✎", "green"),
@@ -60,6 +66,35 @@ def _one_line(s: str, limit: int = 120) -> str:
     return s[: limit - 1] + "…" if len(s) > limit else s
 
 
+def _no_bg(style: Style | str) -> Style | str:
+    # token styles carry the theme's page background; the feed supplies its
+    # own, and the selection highlight must show through
+    if not isinstance(style, Style) or style.bgcolor is None:
+        return style
+    return Style(color=style.color, bold=style.bold,
+                 italic=style.italic, underline=style.underline)
+
+
+def _styled_lines(code: str, path: str | None) -> list[Text]:
+    """Syntax-highlighted lines of a diff block. Change semantics live in the
+    gutter, never in these colors. Plain lines when no lexer fits the path or
+    the lex round-trip doesn't reproduce the text exactly."""
+    raw = code.split("\n")
+    plain = [Text(ln) for ln in raw]
+    if not code or not path:
+        return plain
+    try:
+        lexer = get_lexer_for_filename(path)
+    except ClassNotFound:
+        return plain
+    lines = Syntax("", lexer, theme=SYNTAX_THEME).highlight(code).split("\n")
+    if [t.plain for t in lines] != raw:   # animation slices by char count
+        return plain
+    for t in lines:
+        t.spans = [Span(s.start, s.end, _no_bg(s.style)) for s in t.spans]
+    return list(lines)
+
+
 class EventWidget(Static):
     """One Feed Event. File events own a typed-animation body; everything else
     renders as a single header line (prompts expand to their full text)."""
@@ -71,6 +106,12 @@ class EventWidget(Static):
         self.bash_ok: bool | None = None
         # animation state: how many chars of the (collapsed) body are visible
         self.head_text, self.hidden_lines = self._split_body()
+        if event.kind == "file":
+            self.added_lines = _styled_lines(event.added, event.path) if event.added else []
+            self.removed_lines = _styled_lines(event.removed, event.path) if event.removed else []
+        else:
+            self.added_lines, self.removed_lines = [], []
+        self.head_lines = self.added_lines[:HEAD_LINES]
         self.total_chars = len(self.head_text)
         self.shown_chars = self.total_chars  # instant by default; app may reset to 0
         if event.backfill:
@@ -143,30 +184,35 @@ class EventWidget(Static):
                 out.append(e.command, style="dim")
             return out
 
-        # file event body
+        # file event body: the gutter says what changed, the colors say what it is
         if self.expanded:
-            if e.removed:
-                for ln in e.removed.split("\n"):
-                    out.append("\n")
-                    out.append("- " + ln, style="red dim")
-            for ln in e.added.split("\n"):
+            for ln in self.removed_lines:
                 out.append("\n")
-                out.append("+ " + ln, style="green")
+                out.append("- ", style="red")
+                out.append_text(ln)
+            for ln in self.added_lines:
+                out.append("\n")
+                out.append("+ ", style="green")
+                out.append_text(ln)
             return out
 
-        if e.removed:
-            removed = e.removed.split("\n")
-            for ln in removed[:REMOVED_LINES]:
+        if self.removed_lines:
+            for ln in self.removed_lines[:REMOVED_LINES]:
                 out.append("\n")
-                out.append("- " + ln, style="red dim")
-            if len(removed) > REMOVED_LINES:
+                out.append("- ", style="red")
+                out.append_text(ln)
+            if len(self.removed_lines) > REMOVED_LINES:
                 out.append("\n")
-                out.append(f"  … −{len(removed) - REMOVED_LINES} more lines", style="red dim")
-        typed = self.head_text[: int(self.shown_chars)]
+                out.append(f"  … −{len(self.removed_lines) - REMOVED_LINES} more lines", style="red dim")
+        shown = int(self.shown_chars)
         animating = self.shown_chars < self.total_chars
-        for ln in (typed.split("\n") if typed else []):
+        for ln in self.head_lines:
+            if shown <= 0:
+                break
             out.append("\n")
-            out.append("+ " + ln, style="green")
+            out.append("+ ", style="green")
+            out.append_text(ln if shown >= len(ln.plain) else ln.divide([shown])[0])
+            shown -= len(ln.plain) + 1   # +1 spends the newline
         if animating:
             out.append("▌", style="green blink")
         elif self.hidden_lines:
@@ -177,6 +223,12 @@ class EventWidget(Static):
     def refresh_event(self) -> None:
         app = self.app
         self.update(self.render_event(getattr(app, "stat_mode", False)))
+
+    def on_click(self, event: events.Click) -> None:
+        event.stop()
+        app = self.app
+        if isinstance(app, WatchApp):
+            app.click_select(self)
 
 
 class WatchApp(App):
@@ -478,6 +530,15 @@ class WatchApp(App):
 
     def on_mouse_scroll_up(self, event) -> None:
         self._pause_for_scroll()
+
+    def click_select(self, w: EventWidget) -> None:
+        """A click selects the clicked event and toggles its expansion in one
+        gesture — click to expand, click again to collapse. Clicks outside any
+        event do nothing."""
+        self._pause_for_scroll()
+        if self.selected is not w:
+            self._select(w)
+        self.action_toggle_expand()
 
     # -- hand off to `standup show` --------------------------------------------------
 

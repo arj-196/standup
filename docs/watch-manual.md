@@ -129,10 +129,20 @@ Two markings carry the honesty rules:
 A file event's header reads `path  change  +added −removed`, where `change` is
 `create`, `modify`, or `delete`, and the counts are lines.
 
-Below the header, a file event shows its body: up to 4 removed lines (red,
-`-`), then the added text (green, `+`) typing itself out with a `▌` cursor.
-Long blocks animate their first 12 lines and collapse the rest to
-`… +N more lines (enter expands)`.
+Below the header, a file event shows its body: up to 4 removed lines, then the
+added text typing itself out with a `▌` cursor. Long blocks animate their
+first 12 lines and collapse the rest to `… +N more lines (enter expands)`.
+
+The body separates two kinds of information into two channels. The left
+gutter carries *what changed*: a green `+` on added lines, a red `-` on
+removed ones. The code text carries *what it is*: both added and removed
+lines are syntax-highlighted (monokai, chosen per file extension), at full
+strength — only the gutter distinguishes them. Colors appear live as the text
+types. The monokai palette is deliberately not matched to the rest of the
+TUI: diff bodies are meant to pop. Files with no recognizable extension fall
+back to plain text; the gutter still tells the story. There are no line
+numbers in the gutter — the stream can't know them for session edits, and a
+number that's sometimes missing or wrong would be a lie.
 
 ### The status bar
 
@@ -168,14 +178,19 @@ queue, drops your selection, and scrolls to the bottom. One key back to now.
 | `↓` | select the next event |
 | `PageUp` | scroll up a page |
 | `PageDown` | scroll down a page |
+| mouse click | select the clicked event and expand / collapse it |
 
-**Any scroll back implies a pause** — `↑`, `PageUp`, and the mouse wheel all
-pause for you, so the feed doesn't yank itself out from under you while you're
-reading. (`PageDown` deliberately does *not* unpause; use `G` for that.)
+**Any scrollback gesture implies a pause** — `↑`, `PageUp`, the mouse wheel,
+and clicking an event all pause for you, so the feed doesn't yank itself out
+from under you while you're reading. (`PageDown` deliberately does *not*
+unpause; use `G` for that.)
 
 The first `↑` selects the newest event and highlights it. Selection is what
-`enter` and `s` act on. Walk `↓` past the last event and the Watch takes it as
-"I'm done reading" and goes live.
+`enter` and `s` act on. A mouse click selects the clicked event directly — no
+walking — and expands it in the same gesture, exactly as if you'd pressed
+`enter` on it; clicking it again collapses it. Clicks anywhere else (empty
+feed space, the vitals header, the status bar) do nothing. Walk `↓` past the
+last event and the Watch takes it as "I'm done reading" and goes live.
 
 The feed keeps the last 500 events. Scroll far enough back and the oldest ones
 are simply gone — the Watch is a live view, not an archive. The **Transcript**
@@ -196,7 +211,8 @@ it appear.
 
 With nothing selected, `enter` expands the newest expandable event, which is
 usually the one still typing. So `enter` alone is "show me all of that", no
-selection needed.
+selection needed. Clicking an event is select-plus-`enter` in one gesture —
+click to expand, click again to collapse.
 
 `d` is the opposite move: it strips every body from the feed and leaves one
 line per event. Use it when you want the shape of the last few minutes — which
@@ -267,7 +283,8 @@ activity as a one-line-per-event log; press `d` again to get the text back.
 **2. Read something that scrolled past.** When an interesting edit flies by:
 `↑` (this pauses you), `↑` again until it's highlighted, `enter` to see the
 whole diff, `s` to read what the agent was told. Then `G` — one key, back to
-live, backlog flushed.
+live, backlog flushed. Or do it all with the mouse: wheel up to it (pauses),
+click it — one click selects *and* expands.
 
 **3. Untangle two sessions.** With two sessions in one repo, note their numbers
 in the header, press `2` to watch only the second, `Tab` to swap, `Esc` for
@@ -331,6 +348,7 @@ q            quit (prints a parting snapshot)
 space        pause / resume            G, End   go live (flush + scroll to now)
 ↑ ↓          select prev / next event  PageUp   scroll up a page (pauses)
              (↑ and PageUp pause)      PageDown scroll down a page
+click        select + expand the clicked event; click again collapses (pauses)
 enter        expand / collapse         d        stat mode (headers only)
 1-9          filter to that session    Tab      next session
 Esc, 0       all sessions              s        open the Transcript in less
