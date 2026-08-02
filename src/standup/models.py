@@ -110,7 +110,10 @@ class RepoEntry:
     name: str
     main_path: str
     checkouts: list[Checkout] = field(default_factory=list)  # main first
-    done: list[Commit] = field(default_factory=list)  # pushed within the Recent Window
+    # terminal-state commits within the Recent Window: pushed, or — in a
+    # Remoteless Repo — merely committed (ADR 0010)
+    done: list[Commit] = field(default_factory=list)
+    has_remote: bool = True
 
     @property
     def needs_decision(self) -> bool:

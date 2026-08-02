@@ -197,6 +197,12 @@ def _unpushed_total(e: RepoEntry) -> int:
     return sum(len(co.unpushed) for co in e.checkouts)
 
 
+def _terminal_verb(e: RepoEntry) -> str:
+    """How this repo's Done work reached its terminal state. The tier is
+    neutral ("done"); the line stays precise (ADR 0010)."""
+    return "pushed" if e.has_remote else "committed · no remote"
+
+
 def _by_recency(entries: list[RepoEntry]) -> list[RepoEntry]:
     return sorted(entries, key=lambda e: e.latest_activity or _EPOCH, reverse=True)
 
@@ -253,15 +259,15 @@ def render_overview(entries: list[RepoEntry], since: datetime, now: datetime,
         out.append("")
 
     if show_all:
-        out.append(st.bold(st.green(f"PUSHED · {_window_label(window)}")))
-        pushed = [e for e in entries if e.done]
-        if pushed:
-            for e in _by_recency(pushed):
-                line = (f"{st.green('✓')} {st.bold(named(e))} · {_plural(len(e.done), 'commit')} pushed"
-                        f" · {_dominant_sessions(e.done, st)}")
+        out.append(st.bold(st.green(f"DONE · {_window_label(window)}")))
+        done = [e for e in entries if e.done]
+        if done:
+            for e in _by_recency(done):
+                line = (f"{st.green('✓')} {st.bold(named(e))} · {_plural(len(e.done), 'commit')} "
+                        f"{_terminal_verb(e)} · {_dominant_sessions(e.done, st)}")
                 out.append(_clamp(line, width))
         else:
-            out.append(st.dim("  nothing pushed in the window"))
+            out.append(st.dim("  nothing done in the window"))
         out.append("")
 
     return "\n".join(out)
@@ -272,7 +278,12 @@ def render_detail(entry: RepoEntry, now: datetime,
                   briefs: dict | None = None) -> str:
     st = _style()
     width = _term_width()
-    out = [st.bold(entry.name) + "  " + st.dim(_shorten_home(entry.main_path)), ""]
+    # a Remoteless Repo states it here, unconditionally: the drill-down is the
+    # one view you asked for by name, and the inbox stays silent (ADR 0010)
+    head = st.bold(entry.name) + "  " + st.dim(_shorten_home(entry.main_path))
+    if not entry.has_remote:
+        head += st.dim(" · no remote")
+    out = [_clamp(head, width), ""]
     multi = len(entry.checkouts) > 1
 
     rolls = join.rollups(entry)
@@ -310,16 +321,18 @@ def render_detail(entry: RepoEntry, now: datetime,
         out.append("")
 
     if not rolls and not any(co.unpushed for co in entry.checkouts):
-        out.append(st.dim("clean, nothing unpushed"))
+        # "nothing unpushed" is vacuous for a Remoteless Repo — it has no
+        # Unpushed tier to be empty; the header already carried `no remote`
+        out.append(st.dim("clean, nothing unpushed" if entry.has_remote else "clean"))
         out.append("")
 
     if show_all:
-        out.append(st.bold(st.green(f"pushed · {_window_label(window)}")))
+        out.append(st.bold(st.green(f"done · {_window_label(window)}")))
         if entry.done:
             for c in entry.done:
                 out.append(_clamp(_commit_line(c, st, "  "), width))
         else:
-            out.append(st.dim("  nothing pushed in the window"))
+            out.append(st.dim("  nothing done in the window"))
         out.append("")
 
     return "\n".join(out)

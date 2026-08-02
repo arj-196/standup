@@ -1,4 +1,4 @@
-"""Git state per repo: discovery, status, unpushed and pushed commits.
+"""Git state per repo: discovery, status, unpushed and done commits.
 
 Repo identity is `git rev-parse --git-common-dir` (worktrees roll up under
 their main checkout; independent clones stay separate).
@@ -78,7 +78,12 @@ def _pending(path: str) -> list[tuple[str, str]]:
     return items
 
 
-def _unpushed(path: str) -> list[Commit]:
+def _unpushed(path: str, has_remote: bool) -> list[Commit]:
+    """Committed-but-not-pushed work. Empty for a Remoteless Repo: with nowhere
+    to push, committed is already terminal, so those commits are Done, not
+    Needs-Decision (ADR 0010)."""
+    if not has_remote:
+        return []
     out = git(path, "log", f"--format={LOG_FORMAT}", "@{upstream}..HEAD")
     if out is None:
         # no upstream: anything not reachable from any remote ref
@@ -88,16 +93,26 @@ def _unpushed(path: str) -> list[Commit]:
 
 
 def _has_remote(path: str) -> bool:
+    """Whether the repo has any remote configured. Repo-level, never
+    branch-level: a branch with no upstream in a repo that *does* have a remote
+    is genuinely pending a push, and stays in the Unpushed tier (ADR 0010).
+    Worktrees share `git-common-dir`, so this cannot split across a Repo Entry."""
     out = git(path, "remote")
     return bool(out and out.strip())
 
 
-def _done(path: str, since: datetime, user_email: str | None) -> list[Commit]:
-    """Commits pushed (reachable from a remote ref) within the Recent Window."""
-    if not _has_remote(path):
-        return []
+def _done(path: str, since: datetime, user_email: str | None,
+          has_remote: bool) -> list[Commit]:
+    """My commits that reached their terminal state within the Recent Window.
+
+    Terminal is repo-relative (ADR 0010): pushed (reachable from a remote ref)
+    for a normal repo, merely committed for a Remoteless Repo — `--branches` is
+    the local mirror of `--remotes`, "everywhere this repo's work has landed".
+    Do not "fix" this back to an early return: a Remoteless Repo has no Unpushed
+    tier, so this is the only place its commits are ever reported."""
+    scope = "--remotes" if has_remote else "--branches"
     out = git(path, "log", f"--format={LOG_FORMAT}",
-              f"--since={since.isoformat()}", "--remotes")
+              f"--since={since.isoformat()}", scope)
     commits = _parse_commits(out)
     if user_email:
         commits = [c for c in commits if c.author_email == user_email]
@@ -127,8 +142,11 @@ def _resolve(cwd: str) -> tuple[str, str] | None:
 def _build_entry(toplevel: str, since: datetime) -> RepoEntry:
     worktrees = [w for w in _worktrees(toplevel) if os.path.isdir(w)]
     main = worktrees[0]
-    entry = RepoEntry(name=os.path.basename(main), main_path=main)
     user_email = (git(main, "config", "user.email") or "").strip() or None
+    # asked once at the repo, not once per worktree: remote config is common
+    has_remote = _has_remote(main)
+    entry = RepoEntry(name=os.path.basename(main), main_path=main,
+                      has_remote=has_remote)
 
     seen: set[str] = set()
     for wt in worktrees:
@@ -138,10 +156,10 @@ def _build_entry(toplevel: str, since: datetime) -> RepoEntry:
         seen.add(real)
         checkout = Checkout(path=wt, branch=_branch(wt), is_main=(wt == main))
         checkout.pending = [PendingFile(code=c, path=p) for c, p in _pending(wt)]
-        checkout.unpushed = _unpushed(wt)
+        checkout.unpushed = _unpushed(wt, has_remote)
         entry.checkouts.append(checkout)
 
-    entry.done = _done(main, since, user_email)
+    entry.done = _done(main, since, user_email, has_remote)
     # drop done commits that are still sitting in an unpushed list (belt & braces)
     unpushed_shas = {c.sha for co in entry.checkouts for c in co.unpushed}
     entry.done = [c for c in entry.done if c.sha not in unpushed_shas]

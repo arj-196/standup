@@ -17,7 +17,7 @@ uv tool install --editable .
 
 ```sh
 standup                  # the triage inbox: active work + unpushed
-standup -a               # also show work pushed within the recent window (7d)
+standup -a               # also show work done within the recent window (7d)
 standup <repo>           # drill-down: one repo's rollups expanded into files/commits
 standup --since 3d       # override the recent window (yesterday, 12h, 2w, ISO date)
 standup --json           # collect-layer output for scripts/TUI
@@ -112,9 +112,14 @@ drill-down.
   under both — standup never fakes a single winner); the repo header carries
   the true git totals.
 - **UNPUSHED ONLY** — repos whose only pending work is committed-but-local,
-  compressed to one line each. Also ageless.
-- **PUSHED** (`-a` only) — commits pushed within the recent window; a
-  retrospective, not a decision queue.
+  compressed to one line each. Also ageless. A repo with no remote configured
+  never appears here: with nowhere to push, committing *is* the terminal state,
+  so its commits are Done rather than Needs-Decision (ADR 0010).
+- **DONE** (`-a` only) — work that reached its terminal state within the recent
+  window; a retrospective, not a decision queue. Each line names how it got
+  there: `N commits pushed`, or `N commits committed · no remote` for a repo
+  that has none. The drill-down states `· no remote` in its header
+  unconditionally, so a local-only repo says so even when it is clean.
 - Two short hexes, coloured by rank: a **session handle** is the cyan 8-char id
   on a session's title line, and it's an address — `standup show <handle>`. A
   **commit hash** renders `@6a4eeef` in grey, because it's only a reference and

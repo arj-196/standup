@@ -374,7 +374,7 @@ _standup() {
   local context state state_descr line
   typeset -A opt_args
   _arguments -C \
-    '(-a --all)'{-a,--all}'[also show work pushed within the recent window]' \
+    '(-a --all)'{-a,--all}'[also show work done within the recent window]' \
     '--since[override the recent window]:when (3d, 2w, yesterday, ISO date):' \
     '--json[structured output for scripts/TUI]' \
     '1: :->first' \
@@ -668,7 +668,9 @@ def main(argv: list[str] | None = None) -> int:
                         help="Project Handle (the underlined letters of a name in the "
                              "inbox), full name, or a path, for a drill-down")
     parser.add_argument("-a", "--all", action="store_true",
-                        help="also show work pushed within the recent window (default %dd)" % RECENT_WINDOW_DAYS)
+                        help="also show work done — pushed, or committed in a "
+                             "repo with no remote — within the recent window "
+                             "(default %dd)" % RECENT_WINDOW_DAYS)
     parser.add_argument("--since", help="override the recent window (yesterday, 3d, 12h, 2w, ISO date)")
     parser.add_argument("--json", action="store_true", help="structured output for scripts/TUI")
     parser.add_argument("--projects-dir", default=os.path.expanduser("~/.claude/projects"),
