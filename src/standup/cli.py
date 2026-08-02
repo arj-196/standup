@@ -540,8 +540,12 @@ def _cmd_show(argv: list[str]) -> int:
             path = Path(session.log_path)
             if not args.raw:   # --raw must stay an untouched dump (CONTEXT.md)
                 st = render._style()
-                header = st.dim(f'{session.session_id[:8]}  ~ "{session.title}"'
-                                "  — newest session here; name a handle for another") + "\n\n"
+                # the handle keeps its own colour — nesting it inside the dim
+                # would need the reset that ends the dim for the rest of the line
+                header = (render._session_ref(session.session_id[:8], st)
+                          + st.dim(f'  ~ "{session.title}"'
+                                   "  — newest session here; name a handle for another")
+                          + "\n\n")
     except show.HandleError as e:
         print(str(e), file=sys.stderr)
         return 1

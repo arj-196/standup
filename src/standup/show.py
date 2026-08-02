@@ -20,13 +20,14 @@ from pathlib import Path
 from . import brief as brief_mod
 from . import loops as loops_mod
 from . import rates
-from .render import _style, _term_width
+from .render import _session_ref, _style, _term_width
 
 _REMINDER_RE = re.compile(r"<system-reminder>.*?</system-reminder>", re.DOTALL)
 _CMD_NAME_RE = re.compile(r"<command-name>(.*?)</command-name>", re.DOTALL)
 _CMD_ARGS_RE = re.compile(r"<command-args>(.*?)</command-args>", re.DOTALL)
 _CMD_TAG_RE = re.compile(r"</?command-[^>]*>", re.DOTALL)
 _TOOL_KEYS = ("file_path", "notebook_path", "command", "path", "pattern", "query", "url", "prompt")
+_HEXISH = re.compile(r"[0-9a-f]{4,40}\Z")
 
 
 class HandleError(Exception):
@@ -36,7 +37,14 @@ class HandleError(Exception):
 def resolve_handle(projects_dir: Path, handle: str) -> Path:
     matches = [p for p in projects_dir.glob("*/*.jsonl") if p.stem.startswith(handle)]
     if not matches:
-        raise HandleError(f"standup: no session matches {handle!r}")
+        # A git commit hash and a Session Handle are both short lowercase hex,
+        # so the most likely miss here is a hash pasted out of a commit line.
+        # Name the distinction rather than claim which one this was.
+        hint = ""
+        if _HEXISH.match(handle):
+            hint = ("\n  a Session Handle is the cyan 8-char id on a Session's title line;"
+                    "\n  a git commit hash (rendered @" + handle + ") addresses nothing here")
+        raise HandleError(f"standup: no session matches {handle!r}{hint}")
     # a full session id can appear under more than one project dir; dedup by stem
     stems = {p.stem for p in matches}
     if len(stems) > 1:
@@ -198,7 +206,8 @@ def render_transcript(path: Path, show_thinking: bool = False, raw: bool = False
                 last_ts = ts
 
             if not header_done and obj.get("cwd"):
-                out.append(st.bold(f"{path.stem[:8]}  {Path(obj['cwd']).name}"))
+                out.append(_session_ref(path.stem[:8], st) + "  "
+                           + st.bold(Path(obj["cwd"]).name))
                 out.append("")
                 header_done = True
                 brief_insert_idx = len(out)

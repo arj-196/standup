@@ -115,8 +115,31 @@ def _attr_label(attrs: list[Attribution], st: Style) -> str:
     return label
 
 
+def _session_ref(handle: str, st: Style) -> str:
+    """A Session Handle — the only short hex in Standup you can actually type.
+
+    It gets the *stronger* of the two treatments (see `_commit_ref`) because it
+    outranks a commit hash: it is an address, not a reference. Cyan is the
+    colour Standup already gives the human's side of a session.
+    """
+    return st.cyan(handle)
+
+
+def _commit_ref(short: str, st: Style) -> str:
+    """A commit's short hash, marked so it can never read as a Session Handle.
+
+    The Session Handle borrows the git-short-hash idiom deliberately
+    (CONTEXT.md), so both are short lowercase hex in a leading column — and a
+    bare hash here invites `standup show 6a4eeef`, which addresses nothing.
+    Grey is the point: a commit hash recedes behind the handle beside it. The
+    `@` sigil carries the distinction on its own when colour cannot (piped
+    output, NO_COLOR).
+    """
+    return st.dim("@" + short)
+
+
 def _commit_line(c: Commit, st: Style, indent: str) -> str:
-    return f"{indent}{st.dim(c.short)} {c.subject}  {_attr_label(c.attributions, st)}"
+    return f"{indent}{_commit_ref(c.short, st)} {c.subject}  {_attr_label(c.attributions, st)}"
 
 
 def _dominant_sessions(commits: list[Commit], st: Style) -> str:
@@ -152,7 +175,7 @@ def _brief_line(brief: "Brief | None", st: Style, width: int, indent: str) -> st
 def _rollup_stanza(r: Rollup, now: datetime, st: Style, width: int,
                    briefs: dict | None = None) -> list[str]:
     if r.session_id:
-        title_line = f'  {st.dim(r.handle)}  ~ "{r.title}"'
+        title_line = f'  {_session_ref(r.handle, st)}  ~ "{r.title}"'
     else:
         title_line = f"    {st.dim('unattributed')}"
     lines = [_clamp(title_line, width)]
@@ -255,7 +278,7 @@ def render_detail(entry: RepoEntry, now: datetime,
     rolls = join.rollups(entry)
     for r in rolls:
         if r.session_id:
-            head = f'{st.dim(r.handle)}  ~ "{r.title}"'
+            head = f'{_session_ref(r.handle, st)}  ~ "{r.title}"'
             if r.last_activity:
                 head += st.dim(f" · {humanize(r.last_activity, now)}")
         else:
@@ -397,7 +420,7 @@ def render_cost_detail(project: ProjectCost, window: str, now: datetime) -> str:
         if s.loops:  # above-floor Loops (ADR 0007) — a measured fact, not a saving
             n = f"{len(s.loops)} loops" if len(s.loops) > 1 else "loop"
             loop_tag = f"  {st.yellow(f'⟳ {n} {_money(s.loop_cost)}')}"
-        head = (f"  {_money(s.cost):>{w}}  {st.dim(s.handle)}  \"{s.title}\""
+        head = (f"  {_money(s.cost):>{w}}  {_session_ref(s.handle, st)}  \"{s.title}\""
                 f"  {st.dim(_abbr_model(s.dominant_model or '?'))}{why}{loop_tag}")
         out.append(_clamp(head, width))
         t = s.tokens

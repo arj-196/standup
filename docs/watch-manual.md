@@ -86,7 +86,7 @@ standup  ⑂ main  ✎ 3 dirty                        ← vitals header
 14:22:31  a1b2c3d4  ✎ docs/watch-manual.md  create  +48
                     + # `standup watch` — user manual
                     + ▌
-14:22:44  ········  ⚑ commit 3712aaa Watch: content-diff…   2 files  +31 −4
+14:22:44  ········  ⚑ commit @3712aaa Watch: content-diff…  2 files  +31 −4
 ─────────────────────────────────────────────────
 ● live   speed 160c/s   ↑↓ scrollback · enter expand · …   ← status bar
 ```
@@ -119,7 +119,7 @@ then the content.
 | `✎` green | file | a file was written, edited, or deleted |
 | `⏺` dim | bash | a shell command, `✓` or `✗` appended when it returns |
 | `──` cyan | prompt | **you** typed something — a chapter break |
-| `⚑` yellow | commit | a new commit reached HEAD, with its diff |
+| `⚑` yellow | commit | a new commit reached HEAD, `@<sha>` and its diff |
 | `⇧` yellow | push | commits left for the remote |
 | `⑂` magenta | branch | branch switch, `old → new` |
 | `~` red | unattributed | changed files git can't diff (binary, huge, unreadable) |
@@ -133,6 +133,14 @@ Two markings carry the honesty rules:
   The Watch shows it live rather than hiding it.
 - **dimmed events** are backfill: history replayed at launch, not things
   happening now. See §6.
+
+One more marking keeps two lookalikes apart, and it ranks them. The **cyan hex
+in the handle column is a session handle**: an address you can hand to
+`standup show <handle>`. A **git commit hash is always written `@<sha>`, in
+grey** — here and everywhere else Standup prints one — because it is only a
+reference, addresses nothing, and should recede behind the handle beside it.
+`standup show` says as much if you hand it one. The colour is what makes the
+rank instant on a terminal; the `@` is what survives piping and `NO_COLOR`.
 
 A file event's header reads `path  change  +added −removed`, where `change` is
 `create`, `modify`, or `delete`, and the counts are lines.
@@ -153,12 +161,15 @@ numbers in the gutter — the stream can't know them for session edits, and a
 number that's sometimes missing or wrong would be a lie.
 
 A commit event carries the commit's own diff, so committing a change doesn't
-make it unreadable. Its header reads `commit <sha> <subject>  N files +added
-−removed`; collapsed, its body lists the files it touched, one line each —
-`path  change  +added −removed`, the same shape a file event's header uses:
+make it unreadable. Its header reads `commit @<sha> <subject>  N files +added
+−removed` — the `@` and the grey mark the hash as a *commit* hash, never the
+session handle in the cyan column to its left, which is the same shape and the
+only one of the two you can hand to `standup show`. Collapsed, its body lists
+the files it touched, one line each — `path  change  +added −removed`, the same
+shape a file event's header uses:
 
 ```
-14:22:44  a1b2c3d4  ⚑ commit 3712aaa Watch: content-diff git-only…  3 files  +371
+14:22:44  a1b2c3d4  ⚑ commit @3712aaa Watch: content-diff git-only…  3 files  +371
                       CLAUDE.md              modify  +23
                       README.md              modify  +10
                       docs/watch-manual.md   create  +338

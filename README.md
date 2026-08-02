@@ -115,6 +115,10 @@ drill-down.
   compressed to one line each. Also ageless.
 - **PUSHED** (`-a` only) — commits pushed within the recent window; a
   retrospective, not a decision queue.
+- Two short hexes, coloured by rank: a **session handle** is the cyan 8-char id
+  on a session's title line, and it's an address — `standup show <handle>`. A
+  **commit hash** renders `@6a4eeef` in grey, because it's only a reference and
+  addresses nothing. The `@` keeps them apart when piped or under `NO_COLOR`.
 - Attribution: `[exact]` = commit hash captured in the session log,
   `~"title"` = likely (the session edited those files), `unattributed` =
   no session explains it (hand-made or squashed). Unattributed dirt is

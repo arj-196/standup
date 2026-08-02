@@ -155,7 +155,13 @@ class EventWidget(Static):
         mark, color = _KIND_MARK.get(e.kind, ("·", "white"))
         t = Text()
         t.append(_hms(e.when) + " ", style="dim")
-        t.append((e.handle or "········") + " ", style="dim")
+        # The handle outranks everything else in its column: it is the one
+        # token here you can hand to `standup show`. Its absence is the
+        # opposite — a claim gap — so the placeholder stays grey.
+        if e.handle:
+            t.append(e.handle + " ", style="cyan")
+        else:
+            t.append("········ ", style="dim")
         t.append(mark + " ", style=color)
         if e.kind == "file":
             plus = len(e.added.split("\n")) if e.added else 0
@@ -177,7 +183,7 @@ class EventWidget(Static):
             t.append("you: ", style="cyan bold")
             t.append(_one_line(e.message, 100), style="cyan")
         elif e.kind == "commit":
-            t.append(f"commit {e.sha} ", style="yellow")
+            t.append(f"commit @{e.sha} ", style="dim")
             t.append(_one_line(e.message, 90))
             if e.files:   # only when a diff was actually read (see _commit_files)
                 plus = sum(len(f.added.split("\n")) for f in e.files if f.added)
@@ -446,7 +452,7 @@ class WatchApp(App):
             t.append("\n")
             marker = "▶" if self.filter_sid == ls.session_id else " "
             t.append(f"{marker}[{i}] ", style="dim")
-            t.append(ls.handle + "  ", style="dim")
+            t.append(ls.handle + "  ", style="cyan")
             t.append(_one_line(ls.title, 50), style="bold")
             if ls.objective:
                 t.append("  ~" + _one_line(ls.objective, 60), style="italic dim")
