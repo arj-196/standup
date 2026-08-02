@@ -29,6 +29,7 @@ LIVE_THRESHOLD = timedelta(minutes=30)  # Live Session recency claim (CONTEXT.md
 GIT_POLL_INTERVAL = 2.0        # seconds between git status/HEAD polls
 PUSH_POLL_EVERY = 5            # push check once per N git polls
 DISCOVERY_INTERVAL = 10.0      # seconds between scans for new session logs
+BACKFILL_CAP = 400             # newest events replayed at launch, all sessions
 EDIT_TOOLS = claude_logs.EDIT_TOOLS
 
 _COMMIT_RE = claude_logs.COMMIT_LINE_RE
@@ -40,6 +41,17 @@ _CMD_TAG_RE = re.compile(r"</?command-[^>]*>", re.DOTALL)
 
 class WatchError(Exception):
     pass
+
+
+@dataclass
+class CommitFile:
+    """One file's contribution to a commit: the same added/removed shape a file
+    event carries, so the Watch renders committed and uncommitted change the
+    same way. Committing must not make a change unreadable."""
+    path: str
+    change: str                  # create | modify | delete | rename
+    added: str = ""
+    removed: str = ""
 
 
 @dataclass
@@ -59,6 +71,7 @@ class FeedEvent:
     tool_id: str | None = None   # joins bash -> bash_result
     message: str = ""            # prompt text / commit subject / free text
     sha: str | None = None
+    files: list[CommitFile] = field(default_factory=list)  # commit events' diff
     backfill: bool = False
 
     @property
@@ -287,6 +300,16 @@ class _Tailer:
 
 
 MAX_SNAPSHOT_BYTES = 200_000   # dirty files beyond this aren't content-diffed
+MAX_COMMIT_DIFF_BYTES = 400_000  # commits beyond this aren't diffed (header only)
+
+
+def _diff_git_path(line: str) -> str:
+    """`diff --git a/x b/x` -> `x`. A provisional read: the following `+++ b/x`
+    line is authoritative when there is one (it survives spaces in paths)."""
+    rest = line[len("diff --git "):].strip()
+    i = rest.find(" b/")
+    b = rest[i + 3:] if i > 0 else rest.split(" ", 1)[-1].removeprefix("b/")
+    return b.strip().strip('"')
 
 
 class _GitWatcher:
@@ -382,6 +405,64 @@ class _GitWatcher:
         return (gitstate.git(co, "rev-parse", "HEAD") or "").strip()
 
     @staticmethod
+    def _commit_files(co: str, sha: str) -> list[CommitFile]:
+        """One commit's per-file added/removed blocks, parsed from a `-U0` diff
+        — the same context-free shape `_line_diff` produces for dirty files, so
+        a committed change reads exactly like an uncommitted one.
+
+        Returns `[]` when there is nothing to show rather than guessing: a merge
+        commit (git's default `show` prints no combined diff), a diff past
+        MAX_COMMIT_DIFF_BYTES, or an unreadable object. The Watch then renders
+        the commit as a bare header line, which is honest — no diff was read."""
+        out = gitstate.git(co, "show", "--format=", "-U0", "--no-color",
+                           "--no-ext-diff", "--find-renames", sha)
+        if not out or len(out) > MAX_COMMIT_DIFF_BYTES:
+            return []
+        files: list[CommitFile] = []
+        path: str | None = None
+        change = "modify"
+        added: list[str] = []
+        removed: list[str] = []
+
+        def flush() -> None:
+            nonlocal path, change, added, removed
+            if path and (added or removed or change == "rename"):
+                files.append(CommitFile(path=path, change=change,
+                                        added="\n".join(added),
+                                        removed="\n".join(removed)))
+            path, change, added, removed = None, "modify", [], []
+
+        for line in out.splitlines():
+            if line.startswith("diff --git "):
+                flush()
+                path = _diff_git_path(line)
+            elif path is None:
+                continue
+            elif line.startswith("+++"):
+                # unambiguous post-image path (spaces and all); /dev/null on delete
+                p = line[4:].strip()
+                if p != "/dev/null":
+                    path = (p[2:] if p.startswith("b/") else p).strip('"')
+            elif line.startswith("new file mode"):
+                change = "create"
+            elif line.startswith("deleted file mode"):
+                change = "delete"
+            elif line.startswith("rename to "):
+                change = "rename"
+            elif line.startswith(("---", "@@", "index ", "old mode", "new mode",
+                                  "similarity ", "dissimilarity ", "rename from ",
+                                  "copy ", "Binary files ")):
+                continue
+            elif line.startswith("+"):
+                added.append(line[1:])
+            elif line.startswith("-"):
+                removed.append(line[1:])
+        flush()
+        # deliberately uncapped: MAX_COMMIT_DIFF_BYTES already bounds the work,
+        # and a truncated list would make the header's "N files" a lie
+        return files
+
+    @staticmethod
     def _unpushed_count(co: str) -> int:
         out = gitstate.git(co, "rev-list", "--count", "HEAD", "--not", "--remotes")
         try:
@@ -461,7 +542,8 @@ class _GitWatcher:
                     sha, short, subject = parts
                     sid = attribute(sha)
                     events.append(FeedEvent(kind="commit", when=now, session_id=sid,
-                                            sha=short, message=subject))
+                                            sha=short, message=subject,
+                                            files=self._commit_files(co, sha)))
                 self.head[co] = new_head
 
             if self._polls % PUSH_POLL_EVERY == 0:
@@ -563,18 +645,19 @@ class WatchStream:
     # -- the stream ----------------------------------------------------------
 
     def start(self) -> list[FeedEvent]:
-        """Backfill: the newest Live Session replays from its current prompt;
-        the others tail from EOF."""
-        newest: _Tailer | None = None
-        for t in self.tailers.values():
-            if newest is None or t.last_append > newest.last_append:
-                newest = t
+        """Backfill: *every* Live Session replays its current chapter — the
+        events since its own latest user prompt — interleaved chronologically.
+
+        Per-session rather than newest-only, so filtering to `[2]` has something
+        to show: a session that committed its work and went quiet still has a
+        chapter, and its edits are the only place that change is legible once
+        the tree is clean. Oldest events past BACKFILL_CAP are dropped."""
         events: list[FeedEvent] = []
         for t in self.tailers.values():
-            if t is newest:
-                events = t.backfill()
-            else:
-                t.seek_to_end()
+            events.extend(t.backfill())
+        events.sort(key=lambda e: e.when)
+        if len(events) > BACKFILL_CAP:
+            events = events[-BACKFILL_CAP:]
         return self._filtered(events)
 
     def poll(self) -> list[FeedEvent]:

@@ -19,7 +19,7 @@ plus its worktrees) into a single chronological feed:
 - **file edits**, typed out character by character as they land
 - **Bash one-liners**, with their exit status
 - **your prompts**, as the chapter breaks of the narrative
-- **commits, pushes, branch switches**
+- **commits** — each carrying its own diff — **pushes, branch switches**
 - **Unattributed Changes** — dirt that no session claims — the moment they appear
 
 It reads two sources, exactly as the **Triage Inbox** does: the Claude Code
@@ -78,9 +78,9 @@ standup  ⑂ main  ✎ 3 dirty                        ← vitals header
 14:22:31  a1b2c3d4  ✎ docs/watch-manual.md  create  +48
                     + # `standup watch` — user manual
                     + ▌
-14:22:44  ········  ⚑ commit 3712aaa Watch: content-diff…
+14:22:44  ········  ⚑ commit 3712aaa Watch: content-diff…   2 files  +31 −4
 ─────────────────────────────────────────────────
-● live   speed 160c/s   space pause · ↑↓ scrollback · …   ← status bar
+● live   speed 160c/s   ↑↓ scrollback · enter expand · …   ← status bar
 ```
 
 ### The vitals header
@@ -111,7 +111,7 @@ then the content.
 | `✎` green | file | a file was written, edited, or deleted |
 | `⏺` dim | bash | a shell command, `✓` or `✗` appended when it returns |
 | `──` cyan | prompt | **you** typed something — a chapter break |
-| `⚑` yellow | commit | a new commit reached HEAD |
+| `⚑` yellow | commit | a new commit reached HEAD, with its diff |
 | `⇧` yellow | push | commits left for the remote |
 | `⑂` magenta | branch | branch switch, `old → new` |
 | `~` red | unattributed | changed files git can't diff (binary, huge, unreadable) |
@@ -144,31 +144,62 @@ back to plain text; the gutter still tells the story. There are no line
 numbers in the gutter — the stream can't know them for session edits, and a
 number that's sometimes missing or wrong would be a lie.
 
+A commit event carries the commit's own diff, so committing a change doesn't
+make it unreadable. Its header reads `commit <sha> <subject>  N files +added
+−removed`; collapsed, its body lists the files it touched, one line each —
+`path  change  +added −removed`, the same shape a file event's header uses:
+
+```
+14:22:44  a1b2c3d4  ⚑ commit 3712aaa Watch: content-diff git-only…  3 files  +371
+                      CLAUDE.md              modify  +23
+                      README.md              modify  +10
+                      docs/watch-manual.md   create  +338
+                      (enter expands the diff)
+```
+
+`enter` replaces that list with every file's full added and removed text, in
+the same `+`/`-` gutter and the same monokai highlighting a live edit gets — the
+only difference is that git, not a session, supplied it. Past six files the
+collapsed list truncates to `… +N more files (enter expands)` — but the header's
+`N files` is always the real count, and expanding always shows every file.
+
+Two kinds of commit carry **no** diff, and show only the header line — no file
+count, no `+`/`−` totals:
+
+- a **merge commit** — `git show` prints no combined diff by default, and the
+  Watch would rather show nothing than invent a reading of one
+- a commit whose diff exceeds ~400 KB, for the same reason very large dirty
+  files aren't content-diffed
+
+Neither case is an error, and neither is dressed up as one: the counts and the
+file list simply aren't there, because no diff was read.
+
 ### The status bar
 
-`● live` or `▮▮ paused — 12 queued`, the active filter, whether stat mode is
-on, the current typing speed, and the key hints. When something surprises you,
-read this line first — it always says which mode you're in.
+`● live` or `▲ scrolled back (G live)`, the active filter, whether stat mode
+is on, the current typing speed, and the key hints. When something surprises
+you, read this line first — it always says which mode you're in.
 
 ## 4. The keys
 
 Nothing is modal and nothing needs confirmation; every key is a toggle or a
 jump. Grouped by what you're trying to do:
 
-### Stop the world
+### Follow, or hold still
+
+There is no pause. The feed **follows** the bottom while you're at the bottom;
+the moment you scroll up, select, or click an event, it stops following and
+the view holds still — events keep landing beneath you, nothing queues,
+nothing is deferred. Scroll back down to the bottom and it follows again by
+itself.
 
 | Key | Does |
 |---|---|
-| `space` | pause / resume |
 | `End` or `G` | go live |
 
-Pausing freezes the display, not the stream. Events keep arriving and queue up
-behind the scenes — the status bar counts them (`▮▮ paused — 12 queued`).
-Resuming lands the whole backlog **instantly**, with no animation: catching up
-matters more than the typewriter.
-
-`G` (capital G, or the `End` key) is the panic button: it unpauses, flushes the
-queue, drops your selection, and scrolls to the bottom. One key back to now.
+`G` (capital G, or the `End` key) is the one key back to now: it drops your
+selection, finishes any in-progress typing instantly, and scrolls to the
+bottom, where the feed follows again.
 
 ### Look back
 
@@ -180,10 +211,11 @@ queue, drops your selection, and scrolls to the bottom. One key back to now.
 | `PageDown` | scroll down a page |
 | mouse click | select the clicked event and expand / collapse it |
 
-**Any scrollback gesture implies a pause** — `↑`, `PageUp`, the mouse wheel,
-and clicking an event all pause for you, so the feed doesn't yank itself out
-from under you while you're reading. (`PageDown` deliberately does *not*
-unpause; use `G` for that.)
+**Any scrollback gesture stops the follow** — `↑`, `PageUp`, the mouse wheel,
+and clicking an event all hold the view still, so the feed doesn't yank
+itself out from under you while you're reading. The stream never stops: new
+events keep appearing below, and the status bar flips to `▲ scrolled back`
+so you know the bottom is moving on without you.
 
 The first `↑` selects the newest event and highlights it. Selection is what
 `enter` and `s` act on. A mouse click selects the clicked event directly — no
@@ -194,7 +226,9 @@ last event and the Watch takes it as "I'm done reading" and goes live.
 
 The feed keeps the last 500 events. Scroll far enough back and the oldest ones
 are simply gone — the Watch is a live view, not an archive. The **Transcript**
-(`s`, or `standup show`) is where the full history lives.
+(`s`, or `standup show`) is where the full history lives. While you're reading
+scrollback the trim is deferred (up to 200 extra events) so dropping old
+events can't shift the view under you; going back to live drops the excess.
 
 ### See more of one thing
 
@@ -204,10 +238,11 @@ are simply gone — the Watch is a live view, not an archive. The **Transcript**
 | `d` | stat mode: headers only |
 
 `enter` on a file event drops the 12-line/4-line collapse and shows the whole
-added and removed text. On a prompt it shows your full message; on a Bash event
-it shows the untruncated command. Expanding also finishes any in-progress
-typing immediately — if you want to *read* it, you've stopped wanting to watch
-it appear.
+added and removed text. On a **commit** it replaces the file list with every
+file's full diff. On a prompt it shows your full message; on a Bash event it
+shows the untruncated command. Expanding also finishes any in-progress typing
+immediately — if you want to *read* it, you've stopped wanting to watch it
+appear.
 
 With nothing selected, `enter` expands the newest expandable event, which is
 usually the one still typing. So `enter` alone is "show me all of that", no
@@ -246,7 +281,8 @@ filtered away.
 
 `s` suspends the Watch and hands the session's transcript to `less -R` — the
 same rendering as `standup show <handle>`. Search it with `/`, quit `less` with
-`q`, and the Watch resumes exactly where it was (paused, if you'd paused it).
+`q`, and the Watch resumes exactly where it was (still scrolled back, if you
+were reading).
 
 It picks the session from your selection first, then your filter, then the
 newest Live Session. So `↑` to an interesting edit and `s` reads *that*
@@ -281,9 +317,9 @@ watch` there. Every Edit appears as it lands. Press `d` and watch the same
 activity as a one-line-per-event log; press `d` again to get the text back.
 
 **2. Read something that scrolled past.** When an interesting edit flies by:
-`↑` (this pauses you), `↑` again until it's highlighted, `enter` to see the
-whole diff, `s` to read what the agent was told. Then `G` — one key, back to
-live, backlog flushed. Or do it all with the mouse: wheel up to it (pauses),
+`↑` (the view holds still), `↑` again until it's highlighted, `enter` to see
+the whole diff, `s` to read what the agent was told. Then `G` — one key, back
+to live. Or do it all with the mouse: wheel up to it (the view holds still),
 click it — one click selects *and* expands.
 
 **3. Untangle two sessions.** With two sessions in one repo, note their numbers
@@ -297,24 +333,36 @@ where a handle would be and a red `~unattributed`, and its actual added and
 removed lines — the Watch content-diffs dirty files itself, so a repo with no
 Claude session at all still narrates.
 
-**5. Commit while watching.** `git commit` in the repo. A `⚑` event appears. If
+**5. Commit while watching.** `git commit` in the repo. A `⚑` event appears with
+the commit's file list and its `+`/`−` totals; `enter` opens the whole diff. If
 the commit's hash was captured in a session's log it carries that session's
 handle; otherwise `········`. Push, and `⇧` follows within ten seconds.
 
 ## 6. Behaviors that surprise people
 
-**The first screenful is dimmed.** At launch the Watch backfills the newest
-Live Session from its *current* user prompt — prompts are chapter breaks, so
-you get the chapter in progress, not the whole book. Backfill is dimmed and
-never animated, precisely so you can tell replay from now. Other live sessions
-start from their end-of-log; they only appear once they do something new.
+**The first screenful is dimmed.** At launch the Watch backfills **every** Live
+Session from its *own* current user prompt — prompts are chapter breaks, so you
+get each session's chapter in progress, not the whole book. The chapters are
+interleaved chronologically into one feed, exactly as live events are. Backfill
+is dimmed and never animated, precisely so you can tell replay from now.
+
+Backfilling every session is what makes `1`–`9` and `Tab` useful on arrival:
+filter to `[2]` and you see what that session did, even if it finished its work,
+committed, and went quiet before you opened the Watch. Once a session's changes
+are committed the tree is clean, so its **edits** are the only place that work is
+still legible — which is why they're replayed rather than skipped.
+
+If the sessions' chapters add up to more than 400 events, the **oldest** are
+dropped and the newest 400 are replayed.
 
 **A session that says `28m ago` is still listed.** Live means "appended within
 30 minutes", nothing more. Standup never inspects processes, so it shows you
 the recency and lets you judge.
 
-**Events pause but don't stop.** `▮▮ paused — 12 queued` is a display state.
-Nothing is dropped, and resuming lands everything at once.
+**Scrollback holds the view, never the stream.** There is no pause and no
+queue: while you read, new events keep landing below your viewport in real
+time. `▲ scrolled back` in the status bar means the bottom is moving on
+without you; `G` (or scrolling back down) rejoins it.
 
 **New sessions join by themselves.** The Watch rescans for new session logs
 every ten seconds; a session started after you opened the Watch shows up as a
@@ -339,17 +387,19 @@ files and diffs them itself.
 | `watching — no live session` | nothing live; git-only narration is working as designed |
 | `s` does nothing | the selected event has no session (git-only), or its log isn't tailed |
 | everything is `~unattributed` | no session log covers this repo — expected outside the Scan Universe |
+| a commit shows no file list | it's a merge (no combined diff by default) or its diff is over ~400 KB — no diff was read, so none is shown |
 | typing looks instant | the staleness bound is compressing it; the log is ahead of the display |
 
 ## 8. One-page key reference
 
 ```
 q            quit (prints a parting snapshot)
-space        pause / resume            G, End   go live (flush + scroll to now)
-↑ ↓          select prev / next event  PageUp   scroll up a page (pauses)
-             (↑ and PageUp pause)      PageDown scroll down a page
-click        select + expand the clicked event; click again collapses (pauses)
+G, End       go live (drop selection, scroll to now)
+↑ ↓          select prev / next event  PageUp   scroll up a page
+             (both hold the view)      PageDown scroll down a page
+click        select + expand the clicked event; click again collapses
 enter        expand / collapse         d        stat mode (headers only)
+             (on a commit: its diff)
 1-9          filter to that session    Tab      next session
 Esc, 0       all sessions              s        open the Transcript in less
 + =          type faster               -        type slower

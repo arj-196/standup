@@ -42,9 +42,13 @@ standup uninstall        # remove it
 `standup watch` is the one live view — an interleaved feed of every Live
 Session's edits (typed out as they land, syntax-highlighted by file type,
 with a `+`/`-` gutter carrying the diff), Bash one-liners, your prompts as
-chapter breaks, commits/pushes, and Unattributed Changes as they appear. It's
-interactive; [docs/watch-manual.md](docs/watch-manual.md) is the full guide to
-the screen and the keys.
+chapter breaks, commits/pushes, and Unattributed Changes as they appear. A
+commit carries its own diff, in the same gutter and highlighting as a live
+edit, so committing a change doesn't make it unreadable; and on launch every
+Live Session replays its current chapter, so filtering to a session that has
+already committed and gone quiet still shows its work. It's interactive;
+[docs/watch-manual.md](docs/watch-manual.md) is the full guide to the screen
+and the keys.
 
 `standup show` opens in your pager (`$PAGER`, or `less -R`) when writing to a
 terminal — scroll and `/`-search from the top of the conversation. It prints

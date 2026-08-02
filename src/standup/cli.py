@@ -359,10 +359,13 @@ def _cmd_watch(argv: list[str]) -> int:
         description="Watch a repo live while an agent works in it: an interleaved "
                     "feed of every Live Session's activity — file edits (typed out "
                     "as they land), Bash one-liners, your prompts as chapter breaks, "
-                    "commits/pushes/branch switches, and Unattributed Changes the "
+                    "commits (with their diff), pushes, branch switches, and "
+                    "Unattributed Changes the "
                     "moment they appear. Session logs are the claim stream; git is "
-                    "the ground truth. Interactive: space pauses, 1-9/tab filters "
-                    "to one session, ↑↓ scrolls back, enter expands a block, d "
+                    "the ground truth. Interactive: 1-9/tab filters to one "
+                    "session, ↑↓ scrolls back (the view holds still while the "
+                    "feed keeps flowing; G returns to live), enter expands a "
+                    "block or a commit's diff, d "
                     "toggles stat mode, s opens the transcript, q quits with a "
                     "parting snapshot.")
     p.add_argument("repo", nargs="?", default=".",

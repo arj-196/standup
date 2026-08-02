@@ -33,7 +33,9 @@ SPEED_MIN, SPEED_MAX = 40.0, 2000.0
 SNAP_SPEED = 8000.0        # beyond this, blocks land instantly (flash, no typing)
 HEAD_LINES = 12            # animated head of a large block; rest collapses
 REMOVED_LINES = 4          # removed-text lines shown collapsed
+COMMIT_FILE_LINES = 6      # commit's file list shown collapsed; rest counted
 MAX_EVENTS = 500           # DOM cap; oldest events beyond it are dropped
+TRIM_SLACK = 200           # extra events tolerated while reading scrollback
 SYNTAX_THEME = "monokai"   # diff bodies pop on purpose — not matched to the TUI
 
 _KIND_MARK = {
@@ -114,6 +116,10 @@ class EventWidget(Static):
         self.head_lines = self.added_lines[:HEAD_LINES]
         self.total_chars = len(self.head_text)
         self.shown_chars = self.total_chars  # instant by default; app may reset to 0
+        # commit diffs are highlighted lazily: a commit can carry many files, and
+        # lexing them all at mount time would stall the feed for a body nobody
+        # has asked to see yet
+        self._commit_lines: list[tuple[str, str, list[Text], list[Text]]] | None = None
         if event.backfill:
             self.add_class("backfill")
 
@@ -126,6 +132,18 @@ class EventWidget(Static):
         lines = self.event.added.split("\n")
         head = lines[:HEAD_LINES]
         return "\n".join(head), max(0, len(lines) - HEAD_LINES)
+
+    def commit_lines(self) -> list[tuple[str, str, list[Text], list[Text]]]:
+        """(path, change, added lines, removed lines) per file of a commit,
+        syntax-highlighted on first use and cached thereafter."""
+        if self._commit_lines is None:
+            self._commit_lines = [
+                (f.path, f.change,
+                 _styled_lines(f.added, f.path) if f.added else [],
+                 _styled_lines(f.removed, f.path) if f.removed else [])
+                for f in self.event.files
+            ]
+        return self._commit_lines
 
     # -- rendering --------------------------------------------------------------
 
@@ -158,6 +176,14 @@ class EventWidget(Static):
         elif e.kind == "commit":
             t.append(f"commit {e.sha} ", style="yellow")
             t.append(_one_line(e.message, 90))
+            if e.files:   # only when a diff was actually read (see _commit_files)
+                plus = sum(len(f.added.split("\n")) for f in e.files if f.added)
+                minus = sum(len(f.removed.split("\n")) for f in e.files if f.removed)
+                t.append(f"  {len(e.files)} file{'s' if len(e.files) != 1 else ''}",
+                         style="dim")
+                t.append(f"  +{plus}", style="green")
+                if minus:
+                    t.append(f" −{minus}", style="red")
             if not e.session_id:
                 t.append("  ~unattributed", style="red dim")
         elif e.kind == "unattributed":
@@ -168,11 +194,50 @@ class EventWidget(Static):
             t.append(_one_line(e.message, 90))
         return t
 
+    def _commit_body(self, out: Text) -> Text:
+        """A commit's diff: its file list collapsed, every file's added and
+        removed text expanded. Same gutter and same highlighting as a live file
+        event — the only difference is that git, not a session, supplied it."""
+        blocks = self.event.files
+        if not self.expanded:
+            for f in blocks[:COMMIT_FILE_LINES]:
+                plus = len(f.added.split("\n")) if f.added else 0
+                minus = len(f.removed.split("\n")) if f.removed else 0
+                out.append("\n  ")
+                out.append(f.path, style="bold")
+                out.append(f"  {f.change}", style="dim")
+                out.append(f"  +{plus}", style="green")
+                if minus:
+                    out.append(f" −{minus}", style="red")
+            if len(blocks) > COMMIT_FILE_LINES:
+                out.append("\n")
+                out.append(f"  … +{len(blocks) - COMMIT_FILE_LINES} more files"
+                           f" (enter expands)", style="dim")
+            else:
+                out.append("\n")
+                out.append("  (enter expands the diff)", style="dim")
+            return out
+        for path, change, added, removed in self.commit_lines():
+            out.append("\n  ")
+            out.append(path, style="bold")
+            out.append(f"  {change}", style="dim")
+            for ln in removed:
+                out.append("\n")
+                out.append("- ", style="red")
+                out.append_text(ln)
+            for ln in added:
+                out.append("\n")
+                out.append("+ ", style="green")
+                out.append_text(ln)
+        return out
+
     def render_event(self, stat_mode: bool) -> Text:
         e = self.event
         out = self._header()
-        if stat_mode or e.kind not in ("file", "prompt", "bash"):
+        if stat_mode or e.kind not in ("file", "prompt", "bash", "commit"):
             return out
+        if e.kind == "commit":
+            return self._commit_body(out) if e.files else out
         if e.kind == "prompt":
             if self.expanded and len(" ".join(e.message.split())) > 100:
                 out.append("\n")
@@ -246,7 +311,6 @@ class WatchApp(App):
 
     BINDINGS = [
         Binding("q", "quit", "quit", priority=True),
-        Binding("space", "toggle_pause", "pause", priority=True),
         Binding("escape,0", "filter_all", "all sessions", show=False, priority=True),
         Binding("tab", "cycle_filter", "next session", show=False, priority=True),
         Binding("enter", "toggle_expand", "expand", show=False, priority=True),
@@ -264,11 +328,9 @@ class WatchApp(App):
     def __init__(self, stream: WatchStream) -> None:
         super().__init__()
         self.stream = stream
-        self.paused = False
         self.stat_mode = False
         self.speed = BASE_SPEED
         self.filter_sid: str | None = None
-        self.pending: list[FeedEvent] = []     # queued while paused
         self.anim_queue: list[EventWidget] = []
         self.bash_widgets: dict[str, EventWidget] = {}
         self.selected: EventWidget | None = None
@@ -289,20 +351,15 @@ class WatchApp(App):
         self.set_interval(POLL_INTERVAL, self._poll)
         self.set_interval(1 / FPS, self._tick_animation)
         self.set_interval(1.0, self._refresh_vitals)
-        self.query_one("#feed", VerticalScroll).scroll_end(animate=False)
+        # the feed follows the bottom while you're there; any scroll up releases
+        # it, and returning to the bottom (or G) re-engages it — nothing pauses
+        self.query_one("#feed", VerticalScroll).anchor()
 
     # -- the feed ---------------------------------------------------------------
 
     def _poll(self) -> None:
-        events = self.stream.poll()
-        if not events:
-            self._refresh_status()
-            return
-        if self.paused:
-            self.pending.extend(events)
-        else:
-            for ev in events:
-                self._add_event(ev, animate=True)
+        for ev in self.stream.poll():
+            self._add_event(ev, animate=True)
         self._refresh_status()
 
     def _add_event(self, ev: FeedEvent, animate: bool) -> None:
@@ -323,14 +380,28 @@ class WatchApp(App):
             self.anim_queue.append(w)
         feed.mount(w)
         w.refresh_event()
+        self._trim(feed)
+
+    def _following(self) -> bool:
+        """Is the feed following live (anchored to the bottom)?"""
+        feed = self.query_one("#feed", VerticalScroll)
+        return not getattr(feed, "_anchor_released", False)
+
+    def _trim(self, feed: VerticalScroll) -> None:
+        """Cap the DOM at MAX_EVENTS. While the reader is scrolled back the trim
+        is deferred (dropping events above them would shift the view) up to
+        TRIM_SLACK extra events — a hard bound so a busy feed can't grow
+        without limit."""
         children = list(feed.children)
-        if len(children) > MAX_EVENTS:
-            for old in children[: len(children) - MAX_EVENTS]:
-                if isinstance(old, EventWidget) and old.event.tool_id:
-                    self.bash_widgets.pop(old.event.tool_id, None)
-                old.remove()
-        if not self.paused:
-            feed.scroll_end(animate=False)
+        cap = MAX_EVENTS if self._following() else MAX_EVENTS + TRIM_SLACK
+        if len(children) <= cap:
+            return
+        for old in children[: len(children) - MAX_EVENTS]:
+            if isinstance(old, EventWidget) and old.event.tool_id:
+                self.bash_widgets.pop(old.event.tool_id, None)
+            if old is self.selected:
+                self._select(None)
+            old.remove()
 
     # -- the animation engine -----------------------------------------------------
 
@@ -356,8 +427,6 @@ class WatchApp(App):
                 head.refresh_event()
                 if head.shown_chars >= head.total_chars:
                     self.anim_queue.pop(0)
-        if not self.paused:
-            self.query_one("#feed", VerticalScroll).scroll_end(animate=False)
 
     # -- header + status bar ------------------------------------------------------
 
@@ -383,41 +452,31 @@ class WatchApp(App):
 
     def _refresh_status(self) -> None:
         parts = []
-        if self.paused:
-            parts.append(f"▮▮ paused — {len(self.pending)} queued (space resumes, G live)")
-        else:
+        if self._following():
             parts.append("● live")
+        else:
+            parts.append("▲ scrolled back (G live)")
         if self.filter_sid:
             parts.append(f"filter: {self.filter_sid[:8]} (esc clears)")
         if self.stat_mode:
             parts.append("stat mode (d toggles)")
         parts.append(f"speed {int(self.speed)}c/s")
-        parts.append("space pause · ↑↓ scrollback · enter expand · d detail · s show · q quit")
+        parts.append("↑↓ scrollback · enter expand · d detail · s show · q quit")
         self.query_one("#status", Static).update("  ".join(parts))
 
     # -- controls -----------------------------------------------------------------
 
-    def action_toggle_pause(self) -> None:
-        self.paused = not self.paused
-        if not self.paused:
-            self._go_live_flush()
-        self._refresh_status()
-
-    def _go_live_flush(self) -> None:
-        # snap catch-up: queued events land instantly, no animation debt
+    def action_go_live(self) -> None:
+        # one key back to now: snap animation debt, drop the selection,
+        # re-anchor at the bottom, and trim any scrollback overflow
         for w in self.anim_queue:
             w.shown_chars = w.total_chars
             w.refresh_event()
         self.anim_queue.clear()
-        for ev in self.pending:
-            self._add_event(ev, animate=False)
-        self.pending.clear()
         self._select(None)
-        self.query_one("#feed", VerticalScroll).scroll_end(animate=False)
-
-    def action_go_live(self) -> None:
-        self.paused = False
-        self._go_live_flush()
+        feed = self.query_one("#feed", VerticalScroll)
+        feed.scroll_end(animate=False)   # also re-engages the anchor
+        self._trim(feed)
         self._refresh_status()
 
     def action_filter_all(self) -> None:
@@ -448,8 +507,6 @@ class WatchApp(App):
                          or w.event.session_id == self.filter_sid)
         self._refresh_vitals()
         self._refresh_status()
-        if not self.paused:
-            self.query_one("#feed", VerticalScroll).scroll_end(animate=False)
 
     def action_toggle_stat(self) -> None:
         self.stat_mode = not self.stat_mode
@@ -469,7 +526,9 @@ class WatchApp(App):
 
     def _last_expandable(self) -> EventWidget | None:
         for w in reversed(list(self.query(EventWidget))):
-            if w.display and (w.hidden_lines or w.event.kind in ("prompt", "bash")):
+            if not w.display:
+                continue
+            if w.hidden_lines or w.event.kind in ("prompt", "bash") or w.event.files:
                 return w
         return None
 
@@ -481,7 +540,7 @@ class WatchApp(App):
         self.speed = max(SPEED_MIN, self.speed / 1.5)
         self._refresh_status()
 
-    # -- scrollback (any scroll implies pause) --------------------------------------
+    # -- scrollback (reading releases the live follow; G re-engages it) -------------
 
     def _visible_events(self) -> list[EventWidget]:
         return [w for w in self.query(EventWidget) if w.display]
@@ -491,19 +550,16 @@ class WatchApp(App):
             self.selected.remove_class("selected")
         self.selected = w
         if w is not None:
+            # reading intent: stop following so the feed holds still under you
+            self.query_one("#feed", VerticalScroll).release_anchor()
             w.add_class("selected")
             w.scroll_visible(animate=False)
-
-    def _pause_for_scroll(self) -> None:
-        if not self.paused:
-            self.paused = True
             self._refresh_status()
 
     def action_select_prev(self) -> None:
         events = self._visible_events()
         if not events:
             return
-        self._pause_for_scroll()
         if self.selected is None or self.selected not in events:
             self._select(events[-1])
             return
@@ -522,20 +578,15 @@ class WatchApp(App):
             self.action_go_live()
 
     def action_page_up(self) -> None:
-        self._pause_for_scroll()
         self.query_one("#feed", VerticalScroll).scroll_page_up(animate=False)
 
     def action_page_down(self) -> None:
         self.query_one("#feed", VerticalScroll).scroll_page_down(animate=False)
 
-    def on_mouse_scroll_up(self, event) -> None:
-        self._pause_for_scroll()
-
     def click_select(self, w: EventWidget) -> None:
         """A click selects the clicked event and toggles its expansion in one
         gesture — click to expand, click again to collapse. Clicks outside any
         event do nothing."""
-        self._pause_for_scroll()
         if self.selected is not w:
             self._select(w)
         self.action_toggle_expand()
