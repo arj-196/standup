@@ -89,7 +89,10 @@ def _styled_lines(code: str, path: str | None) -> list[Text]:
         lexer = get_lexer_for_filename(path)
     except ClassNotFound:
         return plain
-    lines = Syntax("", lexer, theme=SYNTAX_THEME).highlight(code).split("\n")
+    lines = list(Syntax("", lexer, theme=SYNTAX_THEME).highlight(code).split("\n"))
+    # highlight() drops trailing blank lines; session Write events end in "\n"
+    while len(lines) < len(raw) and raw[len(lines)] == "":
+        lines.append(Text())
     if [t.plain for t in lines] != raw:   # animation slices by char count
         return plain
     for t in lines:
