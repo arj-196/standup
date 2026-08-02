@@ -17,7 +17,7 @@ import sys
 from collections import Counter
 from datetime import datetime, timezone
 
-from . import join
+from . import handles, join
 from .cost import ProjectCost, SessionCost
 from .models import Attribution, Commit, RepoEntry, Rollup
 
@@ -178,12 +178,24 @@ def _by_recency(entries: list[RepoEntry]) -> list[RepoEntry]:
     return sorted(entries, key=lambda e: e.latest_activity or _EPOCH, reverse=True)
 
 
+def _namer(items, name_of, path_of, st: Style):
+    """A `item -> styled name` function with the item's Project Handle
+    underlined inside it (CONTEXT.md → Project Handle). Costs no width, which
+    is what the never-wrap rule makes scarce. Computed once per view: a handle
+    is only unique relative to the whole set."""
+    targets = {id(i): handles.Target(name_of(i), path_of(i)) for i in items}
+    universe = list(targets.values())
+    enabled = st.bold("x") != "x"   # styling off (piped, NO_COLOR) → plain names
+    return lambda i: handles.marked(targets[id(i)], universe, enabled)
+
+
 def render_overview(entries: list[RepoEntry], since: datetime, now: datetime,
                     show_all: bool = False, window: str = "7d",
                     briefs: dict | None = None) -> str:
     st = _style()
     width = _term_width()
     out: list[str] = [st.bold(f"standup · {now.astimezone().strftime('%a %b %d')}"), ""]
+    named = _namer(entries, lambda e: e.name, lambda e: e.main_path, st)
 
     active = [e for e in entries if _pending_total(e)]
     unpushed_only = [e for e in entries if not _pending_total(e) and _unpushed_total(e)]
@@ -193,7 +205,7 @@ def render_overview(entries: list[RepoEntry], since: datetime, now: datetime,
         for e in _by_recency(active):
             rolls = join.rollups(e)
             n_sessions = sum(1 for r in rolls if r.session_id)
-            head = f"{st.yellow('●')} {st.bold(e.name)} · {_plural(_pending_total(e), 'file')} uncommitted"
+            head = f"{st.yellow('●')} {st.bold(named(e))} · {_plural(_pending_total(e), 'file')} uncommitted"
             head += f" · {_plural(n_sessions, 'session')}" if n_sessions else " · unattributed"
             if _unpushed_total(e):
                 head += f" · {_plural(_unpushed_total(e), 'commit')} unpushed"
@@ -212,7 +224,7 @@ def render_overview(entries: list[RepoEntry], since: datetime, now: datetime,
         for e in _by_recency(unpushed_only):
             commits = [c for co in e.checkouts for c in co.unpushed]
             branches = list(dict.fromkeys(co.branch for co in e.checkouts if co.unpushed))
-            line = (f"○ {st.bold(e.name)} · {_plural(len(commits), 'commit')} unpushed"
+            line = (f"○ {st.bold(named(e))} · {_plural(len(commits), 'commit')} unpushed"
                     f" on {', '.join(branches)} · {_dominant_sessions(commits, st)}")
             out.append(_clamp(line, width))
         out.append("")
@@ -222,7 +234,7 @@ def render_overview(entries: list[RepoEntry], since: datetime, now: datetime,
         pushed = [e for e in entries if e.done]
         if pushed:
             for e in _by_recency(pushed):
-                line = (f"{st.green('✓')} {st.bold(e.name)} · {_plural(len(e.done), 'commit')} pushed"
+                line = (f"{st.green('✓')} {st.bold(named(e))} · {_plural(len(e.done), 'commit')} pushed"
                         f" · {_dominant_sessions(e.done, st)}")
                 out.append(_clamp(line, width))
         else:
@@ -341,8 +353,9 @@ def render_cost_overview(projects: list[ProjectCost], window: str, now: datetime
 
     total = sum(p.cost for p in projects)
     w = max(len(_money(p.cost)) for p in projects)
+    named = _namer(projects, lambda p: p.name, lambda p: p.path, st)
     for p in projects:
-        line = (f"  {_money(p.cost):>{w}}  {st.bold(p.name)}"
+        line = (f"  {_money(p.cost):>{w}}  {st.bold(named(p))}"
                 f"   {_plural(len(p.sessions), 'session')}"
                 f"   {st.dim(_model_split(p.by_model))}")
         out.append(_clamp(line, width))

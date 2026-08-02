@@ -12,10 +12,24 @@ from pathlib import Path
 from . import cache as cache_mod
 from . import audit as audit_mod
 from . import brief as brief_mod
-from . import claude_logs, cost, gitstate, join, loops, rates, render, show
+from . import claude_logs, cost, gitstate, handles, join, loops, rates, render, show
 
 RECENT_WINDOW_DAYS = 7  # the Recent Window (ADR 0002); --since overrides
 _EPOCH = datetime.min.replace(tzinfo=timezone.utc)
+
+# Subcommand aliases: a fixed table, so each letter is owned forever and a
+# future subcommand can never quietly steal one (ADR 0009). `install` and
+# `uninstall` are deliberately unaliased — a mistyped letter should not be able
+# to rip out the machine-wide Stop hook.
+ALIASES = {"c": "cost", "w": "watch", "s": "show", "a": "audit"}
+
+
+def _resolve_repo(arg: str, targets: list[handles.Target], prog: str) -> handles.Target:
+    """A CLI repo argument -> one project. A path (`.`, `../x`, `~/y`) resolves
+    through git; anything else is a Project Handle."""
+    if handles.looks_like_path(arg):
+        return handles.resolve_target_path(arg, targets, prog)
+    return handles.resolve(arg, targets, prog)
 
 
 def _month_start(now: datetime) -> datetime:
@@ -149,7 +163,9 @@ def _cmd_cost(argv: list[str]) -> int:
                                             "The per-session drill-down also flags Loops — repeated "
                                             "tool-call grinds — with each Loop's share of the session's "
                                             "cost (a measured carve-out, not a projected saving).")
-    p.add_argument("repo", nargs="?", help="project name/path fragment for a per-session drill-down")
+    p.add_argument("repo", nargs="?",
+                   help="Project Handle (the underlined letters of a name in the "
+                        "overview), full name, or a path, for a per-session drill-down")
     p.add_argument("--since", help="window override (3d, 2w, ISO date, or 'all'); default: this calendar month")
     p.add_argument("--json", action="store_true", help="structured output")
     p.add_argument("--no-pager", action="store_true", help="print instead of opening a pager")
@@ -176,15 +192,13 @@ def _cmd_cost(argv: list[str]) -> int:
         return 0
 
     if args.repo:
-        needle = args.repo.rstrip("/").lower()
-        matches = [p_ for p_ in projects
-                   if needle == p_.name.lower() or needle in p_.path.lower()]
-        if not matches:
-            print(f"standup cost: no project matches {args.repo!r}", file=sys.stderr)
-            print("known projects: " + ", ".join(sorted(p_.name for p_ in projects)), file=sys.stderr)
+        by_target = {handles.Target(p_.name, p_.path): p_ for p_ in projects}
+        try:
+            hit = _resolve_repo(args.repo, list(by_target), "standup cost")
+        except handles.HandleError as e:
+            print(str(e), file=sys.stderr)
             return 1
-        exact = [p_ for p_ in matches if p_.name.lower() == needle]
-        text = render.render_cost_detail(exact[0] if exact else matches[0], label, now)
+        text = render.render_cost_detail(by_target[hit], label, now)
     else:
         text = render.render_cost_overview(projects, label, now)
     if args.no_pager:
@@ -246,7 +260,8 @@ def _cmd_audit(argv: list[str]) -> int:
                     "in a paste-ready Handoff Prompt. Standup never writes the "
                     "script itself. The Audit is stored durably and re-rendered "
                     "on later runs; its cost is recorded as Audit Overhead.")
-    p.add_argument("handle", help="8-char session id prefix (from `standup cost <repo>`)")
+    p.add_argument("handle",
+                   help="any unambiguous session id prefix (from `standup cost <repo>`)")
     p.add_argument("--refresh", action="store_true",
                    help="regenerate even if a stored Audit exists")
     p.add_argument("--no-pager", action="store_true", help="print instead of paging")
@@ -323,13 +338,189 @@ def _cmd_audit(argv: list[str]) -> int:
     return 0
 
 
+_ZSH_COMPLETION = r"""#compdef standup
+# zsh completion for standup — print with `standup completion zsh`.
+# Candidates come from `standup _complete`, so this script stays dumb: new
+# projects and sessions need no regeneration, only new flags do.
+
+_standup_projects() {
+  local -a items
+  items=("${(@f)$(standup _complete projects 2>/dev/null)}")
+  _describe -t projects 'project' items
+}
+
+_standup_sessions() {
+  local -a items
+  items=("${(@f)$(standup _complete sessions 2>/dev/null)}")
+  _describe -t sessions 'session' items
+}
+
+_standup() {
+  local -a subs
+  subs=(
+    'cost:Notional Cost by project and session (c)'
+    'c:Notional Cost by project and session'
+    'show:read a session transcript (s)'
+    's:read a session transcript'
+    'audit:Expert Panel audit of one session (a)'
+    'a:Expert Panel audit of one session'
+    'watch:live feed of a repo while an agent works (w)'
+    'w:live feed of a repo while an agent works'
+    'completion:print the shell completion script'
+    'install:set up the Session Brief Stop hook'
+    'uninstall:remove the Session Brief Stop hook'
+  )
+
+  local context state state_descr line
+  typeset -A opt_args
+  _arguments -C \
+    '(-a --all)'{-a,--all}'[also show work pushed within the recent window]' \
+    '--since[override the recent window]:when (3d, 2w, yesterday, ISO date):' \
+    '--json[structured output for scripts/TUI]' \
+    '1: :->first' \
+    '*:: :->rest'
+
+  case $state in
+    first)
+      _describe -t commands 'subcommand' subs
+      _standup_projects
+      ;;
+    rest)
+      case $words[1] in
+        cost|c)
+          _arguments \
+            '--since[window override]:when (3d, 2w, all, ISO date):' \
+            '--json[structured output]' \
+            '--no-pager[print instead of paging]' \
+            '1:project:_standup_projects'
+          ;;
+        show|s)
+          _arguments \
+            '--thinking[include hidden thinking blocks]' \
+            '--raw[dump the untouched session JSONL]' \
+            '--no-pager[print instead of paging]' \
+            '1:session:_standup_sessions'
+          ;;
+        audit|a)
+          _arguments \
+            '--refresh[regenerate even if a stored Audit exists]' \
+            '--no-pager[print instead of paging]' \
+            '1:session:_standup_sessions'
+          ;;
+        watch|w)
+          _arguments \
+            '--quiet[files and commits only]' \
+            '1:project:_standup_projects'
+          ;;
+        completion)
+          _values 'shell' zsh
+          ;;
+      esac
+      ;;
+  esac
+}
+
+_standup "$@"
+"""
+
+
+def _cmd_completion(argv: list[str]) -> int:
+    p = argparse.ArgumentParser(
+        prog="standup completion",
+        description="Print a shell completion script on stdout. It completes "
+                    "subcommands, flags, Project Handles, and Session Handles — "
+                    "the two things worth not typing. See the README for where "
+                    "to install it.")
+    p.add_argument("shell", choices=["zsh"], help="the shell to generate for (zsh only)")
+    p.parse_args(argv)
+    print(_ZSH_COMPLETION)
+    return 0
+
+
+def _cmd_complete(argv: list[str]) -> int:
+    """Hidden: the candidate source the completion script shells out to.
+
+    Hidden by decision, like `_brief` — it is a machine interface, and listing
+    it in the help would invite it to be used as one by hand.
+    """
+    what = argv[0] if argv else ""
+    projects_dir = Path(os.path.expanduser("~/.claude/projects"))
+    if not projects_dir.is_dir():
+        return 0
+    clean = lambda s: (s or "").replace(":", " ").replace("\n", " ")
+
+    if what == "projects":
+        # Built from the cached session scan, not the cost scan: a tab press
+        # must not pay for pricing every turn of every log (1.4s vs 0.2s).
+        cache = cache_mod.open_cache()
+        sessions = claude_logs.scan_sessions(projects_dir, cache)
+        cache.flush()
+        seen: dict[str, handles.Target] = {}
+        for cwd in dict.fromkeys(s.cwd for s in sessions if s.cwd):
+            res = gitstate._resolve(cwd)
+            key = res[1] if res else os.path.realpath(cwd)
+            path = res[0] if res else cwd
+            seen.setdefault(key, handles.Target(
+                os.path.basename(path.rstrip("/")) or path, path))
+        targets = list(seen.values())
+        for t in targets:
+            h = handles.handle_of(t, targets)
+            print(f"{h[0] if h else t.name}:{clean(t.name)}")
+        return 0
+
+    if what == "sessions":
+        cache = cache_mod.open_cache()
+        sessions = claude_logs.scan_sessions(projects_dir, cache)
+        cache.flush()
+        for s in sorted(sessions, key=lambda s: s.last_activity or _EPOCH, reverse=True):
+            print(f"{s.session_id[:8]}:{clean(s.title)}")
+        return 0
+    return 2
+
+
+def _newest_session_here(projects_dir: Path):
+    """The most recently appended Session whose cwd belongs to the current Repo
+    Entry — what `standup show` means with no handle.
+
+    Deliberately no fallback to "newest session anywhere": handing back a
+    transcript from an unrelated repo is the kind of silent misdirection every
+    other view is built to avoid. Standing outside the Scan Universe is an
+    error, and says so.
+    """
+    here = gitstate._resolve(os.getcwd())
+    if not here:
+        raise show.HandleError("standup show: not inside a git repo — name a session handle")
+    _, key = here
+    cache = cache_mod.open_cache()
+    sessions = claude_logs.scan_sessions(projects_dir, cache)
+    cache.flush()
+
+    keys = {}   # cwd -> repo key, resolved once per distinct cwd
+    mine = []
+    for s in sessions:
+        if not s.cwd or not s.last_activity:
+            continue
+        if s.cwd not in keys:
+            res = gitstate._resolve(s.cwd)
+            keys[s.cwd] = res[1] if res else None
+        if keys[s.cwd] == key:
+            mine.append(s)
+    if not mine:
+        raise show.HandleError(
+            f"standup show: no sessions recorded for {render._shorten_home(os.getcwd())}")
+    return max(mine, key=lambda s: s.last_activity)
+
+
 def _cmd_show(argv: list[str]) -> int:
     p = argparse.ArgumentParser(prog="standup show",
                                 description="Read a session's transcript (prompts + responses). "
                                             "Leads with the Session Brief when one exists; tool calls "
                                             "collapse to one-liners, and calls belonging to a detected "
-                                            "Loop are gutter-marked ⟳.")
-    p.add_argument("handle", help="8-char session id prefix (from `standup cost <repo>`)")
+                                            "Loop are gutter-marked ⟳. With no handle: the most recent "
+                                            "session in the repo you are standing in.")
+    p.add_argument("handle", nargs="?",
+                   help="any unambiguous session id prefix (from `standup cost <repo>`); "
+                        "omit for the newest session in the current repo")
     p.add_argument("--thinking", action="store_true", help="include hidden thinking blocks")
     p.add_argument("--raw", action="store_true", help="dump the untouched session JSONL")
     p.add_argument("--no-pager", action="store_true", help="print instead of opening a pager")
@@ -340,12 +531,21 @@ def _cmd_show(argv: list[str]) -> int:
     if not projects_dir.is_dir():
         print(f"standup: no Claude Code logs found at {projects_dir}", file=sys.stderr)
         return 1
+    header = ""
     try:
-        path = show.resolve_handle(projects_dir, args.handle)
+        if args.handle:
+            path = show.resolve_handle(projects_dir, args.handle)
+        else:
+            session = _newest_session_here(projects_dir)
+            path = Path(session.log_path)
+            if not args.raw:   # --raw must stay an untouched dump (CONTEXT.md)
+                st = render._style()
+                header = st.dim(f'{session.session_id[:8]}  ~ "{session.title}"'
+                                "  — newest session here; name a handle for another") + "\n\n"
     except show.HandleError as e:
         print(str(e), file=sys.stderr)
         return 1
-    text = show.render_transcript(path, show_thinking=args.thinking, raw=args.raw)
+    text = header + show.render_transcript(path, show_thinking=args.thinking, raw=args.raw)
     if args.no_pager:
         print(text)
     else:
@@ -369,7 +569,8 @@ def _cmd_watch(argv: list[str]) -> int:
                     "toggles stat mode, s opens the transcript, q quits with a "
                     "parting snapshot.")
     p.add_argument("repo", nargs="?", default=".",
-                   help="repo name (as in the inbox) or a path to a git checkout; "
+                   help="Project Handle (the underlined letters of a name in the "
+                        "inbox), full name, or a path to a git checkout; "
                         "defaults to the current directory")
     p.add_argument("--quiet", action="store_true",
                    help="files and commits only (no bash, prompts, or session marks)")
@@ -398,19 +599,23 @@ def _cmd_watch(argv: list[str]) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
-    if argv and argv[0] == "cost":
+    sub = ALIASES.get(argv[0], argv[0]) if argv else None
+    if sub == "cost":
         return _cmd_cost(argv[1:])
-    if argv and argv[0] == "watch":
+    if sub == "watch":
         return _cmd_watch(argv[1:])
-    if argv and argv[0] == "show":
+    if sub == "show":
         return _cmd_show(argv[1:])
-    if argv and argv[0] == "audit":
+    if sub == "audit":
         return _cmd_audit(argv[1:])
-    if argv and argv[0] == "_brief":  # hidden: the Stop hook's entry point (ADR 0006)
+    if sub == "completion":
+        return _cmd_completion(argv[1:])
+    if sub == "_brief":  # hidden: the Stop hook's entry point (ADR 0006)
         from . import briefgen
         return briefgen.run_from_hook_stdin()
-    if argv and argv[0] in ("install", "uninstall"):
-        sub = argv[0]
+    if sub == "_complete":  # hidden: the completion script's candidate source
+        return _cmd_complete(argv[1:])
+    if sub in ("install", "uninstall"):
         if "-h" in argv[1:] or "--help" in argv[1:]:
             print(f"usage: standup {sub}\n")
             if sub == "install":
@@ -432,24 +637,32 @@ def main(argv: list[str] | None = None) -> int:
         description="Morning triage inbox for Claude Code activity across your repos.",
         epilog=(
             "subcommands:\n"
-            "  cost [repo]        Notional Cost by project/session (not real money);\n"
+            "  cost, c [repo]     Notional Cost by project/session (not real money);\n"
             "                     the drill-down flags Loops (repeated tool-call grinds)\n"
-            "  show <handle>      read a session's transcript (prompts + responses);\n"
-            "                     Loop calls are gutter-marked ⟳\n"
-            "  audit <handle>     Expert Panel audit of one session: scriptable Loops,\n"
+            "  show, s [handle]   read a session's transcript (prompts + responses);\n"
+            "                     Loop calls are gutter-marked ⟳. No handle: the newest\n"
+            "                     session in the repo you're standing in\n"
+            "  audit, a <handle>  Expert Panel audit of one session: scriptable Loops,\n"
             "                     LLM-as-CPU turns, recurrence, and a Handoff Prompt\n"
             "                     (on-demand; billed to your Claude subscription)\n"
-            "  watch [repo]       live feed of a repo while an agent works: edits\n"
+            "  watch, w [repo]    live feed of a repo while an agent works: edits\n"
             "                     typed out as they land, commits, prompts, and\n"
             "                     unattributed changes (interactive; q quits)\n"
+            "  completion zsh     print the zsh completion script (see the README)\n"
             "  install            set up the Session Brief Stop hook (machine-wide)\n"
             "  uninstall          remove the Session Brief Stop hook\n"
+            "\n"
+            "a [repo] is a Project Handle — the underlined letters of a project's name\n"
+            "in the inbox (`pm` for ProjectManagement, `st` for standup) — or a path\n"
+            "(`.`, ../other). An ambiguous handle errors and lists the candidates.\n"
             "\n"
             "run `standup <subcommand> -h` for a subcommand's options."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("repo", nargs="?", help="repo name or path fragment for a drill-down")
+    parser.add_argument("repo", nargs="?",
+                        help="Project Handle (the underlined letters of a name in the "
+                             "inbox), full name, or a path, for a drill-down")
     parser.add_argument("-a", "--all", action="store_true",
                         help="also show work pushed within the recent window (default %dd)" % RECENT_WINDOW_DAYS)
     parser.add_argument("--since", help="override the recent window (yesterday, 3d, 12h, 2w, ISO date)")
@@ -485,16 +698,14 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.repo:
-        needle = args.repo.rstrip("/").lower()
-        matches = [e for e in entries
-                   if needle == e.name.lower() or needle in e.main_path.lower()]
-        if not matches:
-            print(f"standup: no scanned repo matches {args.repo!r}", file=sys.stderr)
-            print("known repos: " + ", ".join(sorted(e.name for e in entries)), file=sys.stderr)
+        by_target = {handles.Target(e.name, e.main_path): e for e in entries}
+        try:
+            hit = _resolve_repo(args.repo, list(by_target), "standup")
+        except handles.HandleError as e:
+            print(str(e), file=sys.stderr)
             return 1
-        exact = [e for e in matches if e.name.lower() == needle]
-        entry = exact[0] if exact else matches[0]
-        print(render.render_detail(entry, now, show_all=args.all, window=window, briefs=briefs))
+        print(render.render_detail(by_target[hit], now, show_all=args.all,
+                                   window=window, briefs=briefs))
         return 0
 
     print(render.render_overview(entries, since, now, show_all=args.all, window=window, briefs=briefs))

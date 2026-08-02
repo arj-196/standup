@@ -22,7 +22,7 @@ from pathlib import Path
 
 from . import brief as brief_mod
 from . import cache as cache_mod
-from . import claude_logs, gitstate
+from . import claude_logs, gitstate, handles
 from .models import Session
 
 LIVE_THRESHOLD = timedelta(minutes=30)  # Live Session recency claim (CONTEXT.md)
@@ -558,9 +558,17 @@ class _GitWatcher:
 
 
 def _resolve_target(repo_arg: str, sessions: list[Session]) -> tuple[str, list[str]]:
-    """repo name / path fragment / filesystem path -> (name, checkout toplevels)."""
-    if os.path.isdir(repo_arg):
-        res = gitstate._resolve(os.path.abspath(repo_arg))
+    """Project Handle / name / filesystem path -> (name, checkout toplevels).
+
+    A path is resolved through git directly, so a repo with no sessions yet is
+    still watchable; a bare word goes through the shared Project Handle
+    resolver, so `pm` means here exactly what it means in the inbox.
+    """
+    if handles.looks_like_path(repo_arg):
+        path = os.path.abspath(os.path.expanduser(repo_arg))
+        if not os.path.isdir(path):
+            raise WatchError(f"standup watch: no such directory: {repo_arg}")
+        res = gitstate._resolve(path)
         if not res:
             raise WatchError(f"standup watch: {repo_arg!r} is not inside a git repo")
         toplevel, _ = res
@@ -568,7 +576,6 @@ def _resolve_target(repo_arg: str, sessions: list[Session]) -> tuple[str, list[s
         return os.path.basename(worktrees[0]), worktrees
 
     # a name: resolve against the Scan Universe, same matching as the drill-down
-    needle = repo_arg.rstrip("/").lower()
     by_key: dict[str, str] = {}
     order: list[str] = []
     for cwd in dict.fromkeys(s.cwd for s in sessions if s.cwd):
@@ -580,21 +587,17 @@ def _resolve_target(repo_arg: str, sessions: list[Session]) -> tuple[str, list[s
             by_key[key] = toplevel
             order.append(key)
     # map each key to its main checkout (first worktree)
-    candidates: list[tuple[str, str]] = []   # (name, main toplevel)
+    candidates: list[handles.Target] = []
     for key in order:
         worktrees = gitstate._worktrees(by_key[key])
         main = worktrees[0] if worktrees else by_key[key]
-        candidates.append((os.path.basename(main), main))
-    matches = [(n, p) for n, p in candidates
-               if needle == n.lower() or needle in p.lower()]
-    if not matches:
-        known = ", ".join(sorted({n for n, _ in candidates}))
-        raise WatchError(f"standup watch: no scanned repo matches {repo_arg!r}\n"
-                         f"known repos: {known}")
-    exact = [m for m in matches if m[0].lower() == needle]
-    name, main = (exact[0] if exact else matches[0])
-    worktrees = [w for w in gitstate._worktrees(main) if os.path.isdir(w)]
-    return name, worktrees
+        candidates.append(handles.Target(os.path.basename(main), main))
+    try:
+        hit = handles.resolve(repo_arg, candidates, "standup watch")
+    except handles.HandleError as e:
+        raise WatchError(str(e)) from None
+    worktrees = [w for w in gitstate._worktrees(hit.path) if os.path.isdir(w)]
+    return hit.name, worktrees
 
 
 class WatchStream:

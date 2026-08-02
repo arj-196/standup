@@ -26,6 +26,7 @@ standup cost             # notional cost by project (this calendar month)
 standup cost <repo>      # drill-down: that project's sessions, priced and ranked
 standup cost --since all # widen the window (3d, 2w, ISO date, or 'all')
 standup cost --json      # structured cost output
+standup show             # the newest session in the repo you're standing in
 standup show <handle>    # read a session's transcript (prompts + responses)
 standup show <handle> --thinking   # include hidden thinking
 standup show <handle> --raw        # untouched session JSONL
@@ -35,9 +36,48 @@ standup watch            # live feed of this repo while an agent works in it
 standup watch <repo>     # watch a named repo (or a path) instead
 standup watch --quiet    # files and commits only
 
+standup completion zsh   # print the zsh completion script (see Typing less)
 standup install          # set up the Session Brief Stop hook (once, machine-wide)
 standup uninstall        # remove it
 ```
+
+## Typing less
+
+Every subcommand has a one-letter alias — `c` cost, `w` watch, `s` show,
+`a` audit — so the common views are two keystrokes past the binary name.
+`install` and `uninstall` are deliberately unaliased: a machine-wide mutation
+should cost you the whole word.
+
+Every project has a **Project Handle**: a short, derived address shown as the
+**underlined letters of its name** wherever the name appears in the inbox and
+the cost overview. It is the acronym for a multi-word name and the shortest
+unique prefix otherwise, so `pm` is ProjectManagement, `cd` is
+ClientDeployment, `st` is standup. Handles are not registered anywhere — they
+fall out of the names currently in the **Scan Universe**, so one can grow a
+letter when a colliding project appears (ADR 0009). Nothing is ever silently
+resolved: a fragment that fits two projects errors and lists both.
+
+```sh
+standup c pm             # ProjectManagement's cost drill-down
+standup w st             # watch standup
+standup s                # read the newest session here
+```
+
+A `<repo>` argument also takes a full name or a path — `.`, `../other`,
+`~/code/thing`. A **bare word is always a handle**, never a directory, so a
+folder sitting in your cwd can never shadow a project; write `./name` when you
+mean the path. `<handle>` for a session is any unambiguous prefix of its id,
+not necessarily the 8 characters the inbox prints — `standup s 3b0a` is enough.
+
+Shell completion covers subcommands, flags, Project Handles, and Session
+Handles (with their titles, so the menu is readable):
+
+```sh
+standup completion zsh > /opt/homebrew/share/zsh/site-functions/_standup
+```
+
+Then restart your shell. If you alias the binary (`alias s=standup`), point
+completion at the alias too with `compdef s=standup` in your `.zshrc`.
 
 `standup watch` is the one live view — an interleaved feed of every Live
 Session's edits (typed out as they land, syntax-highlighted by file type,

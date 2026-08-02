@@ -36,16 +36,24 @@ touches the session, and quitting it loses nothing.
 standup watch
 ```
 
-That watches the repo you're standing in. You can also name one:
+That watches the repo you're standing in. You can also name one — `w` is the
+alias for `watch`, and `st` is standup's **Project Handle**:
 
 ```bash
-standup watch standup
+standup w st
 ```
 
-The argument is a repo name (as it appears in the inbox) or a path to a git
-checkout; it defaults to `.`. Naming a repo resolves it against the **Scan
-Universe** — the repos some Claude session has visited — and the error lists
-the known names when nothing matches. A path works even for a repo no session
+The argument is a **Project Handle**, a full repo name, or a path to a git
+checkout; it defaults to `.`. A handle is the underlined letters of a project's
+name in the inbox — the acronym for a multi-word name (`pm` for
+ProjectManagement), the shortest unique prefix otherwise (`st` for standup) —
+and it resolves against the **Scan Universe**, the repos some Claude session
+has visited. A fragment that fits two projects is an error listing both, never
+a silent pick; nothing matching at all lists the known names.
+
+A bare word is always a handle, never a directory, so a folder in your cwd can
+never shadow a project. To force the path reading, write it as a path: `.`,
+`./robin`, `../other`, `~/code/thing`. A path works even for a repo no session
 has ever touched: git alone can narrate.
 
 Files and commits only, no Bash/prompt/session noise:
