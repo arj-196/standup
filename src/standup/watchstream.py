@@ -85,6 +85,8 @@ class LiveSessionInfo:
     title: str
     objective: str | None        # Session Brief claim, when one exists
     last_append: datetime
+    num: int = 0                 # stable lane number, assigned first-seen —
+                                 # never re-sorted, so `[2]` stays session 2
 
     @property
     def handle(self) -> str:
@@ -99,6 +101,10 @@ class Vitals:
     branch: str
     dirty: int
     live: list[LiveSessionInfo] = field(default_factory=list)
+    # the most recently appended Session even when nothing is live, so the
+    # quiet header can state the absence with its last handle ("no live
+    # session · last log append 42m ago")
+    last: LiveSessionInfo | None = None
 
 
 def _parse_ts(raw: str | None) -> datetime | None:
@@ -550,9 +556,12 @@ class _GitWatcher:
                 n = self._unpushed_count(co)
                 if n < self.unpushed[co] and self.head[co] == new_head:
                     pushed = self.unpushed[co] - n
+                    # the branch, never "origin/…": the count comes from
+                    # --not --remotes, which doesn't say *which* remote took it
                     events.append(FeedEvent(
-                        kind="push", when=now,
-                        message=f"pushed {pushed} commit{'s' if pushed != 1 else ''} ({self.branch[co]})"))
+                        kind="push", when=now, sha=new_head[:7],
+                        message=f"{self.branch[co]}  "
+                                f"{pushed} commit{'s' if pushed != 1 else ''}"))
                 self.unpushed[co] = n
         return events
 
@@ -616,6 +625,7 @@ class WatchStream:
         self.name, self.checkouts = _resolve_target(repo_arg, sessions)
         self._roots = [os.path.realpath(c).rstrip("/") for c in self.checkouts]
         self.tailers: dict[str, _Tailer] = {}
+        self._nums: dict[str, int] = {}        # session_id -> stable lane number
         self._known_logs: set[str] = {s.log_path for s in sessions}
         self._briefs: dict[str, str] = {}
         self._counts: dict[str, int] = {}      # parting-snapshot tallies
@@ -625,10 +635,14 @@ class WatchStream:
         self._last_discovery = time.monotonic()
 
         now = _now()
-        for s in sessions:
-            if s.cwd and self._in_repo(s.cwd):
-                if s.last_activity and now - s.last_activity <= LIVE_THRESHOLD:
-                    self._add_tailer(s)
+        here = [s for s in sessions
+                if s.cwd and self._in_repo(s.cwd)
+                and s.last_activity and now - s.last_activity <= LIVE_THRESHOLD]
+        # oldest first: lane numbers are first-seen and never re-sorted, so the
+        # longest-running session is [1] and stays [1]
+        here.sort(key=lambda s: s.last_activity)
+        for s in here:
+            self._add_tailer(s)
         self.git = _GitWatcher(self.checkouts)
 
     # -- setup helpers -------------------------------------------------------
@@ -640,10 +654,15 @@ class WatchStream:
     def _add_tailer(self, session: Session) -> _Tailer:
         t = _Tailer(session, self.checkouts)
         self.tailers[session.session_id] = t
+        self._nums[session.session_id] = len(self._nums) + 1
         b = brief_mod.load_one(session.session_id)
         if b:
             self._briefs[session.session_id] = b.objective
         return t
+
+    def session_num(self, session_id: str) -> int:
+        """The session's stable lane number (1-based, first-seen order)."""
+        return self._nums.get(session_id, 0)
 
     # -- the stream ----------------------------------------------------------
 
@@ -737,17 +756,26 @@ class WatchStream:
 
     # -- vitals + parting snapshot -------------------------------------------
 
+    def _info(self, sid: str) -> LiveSessionInfo:
+        t = self.tailers[sid]
+        return LiveSessionInfo(session_id=sid, title=t.session.title,
+                               objective=self._briefs.get(sid),
+                               last_append=t.last_append,
+                               num=self._nums.get(sid, 0))
+
     def vitals(self) -> Vitals:
         now = _now()
-        live = [LiveSessionInfo(session_id=sid, title=t.session.title,
-                                objective=self._briefs.get(sid),
-                                last_append=t.last_append)
-                for sid, t in self.tailers.items()
+        # stable order (first-seen lane number), never recency-sorted: the
+        # header's [n] is an address the feed's lane digits reuse, and an
+        # address that re-sorts under you is no address at all
+        live = [self._info(sid) for sid, t in self.tailers.items()
                 if now - t.last_append <= LIVE_THRESHOLD]
-        live.sort(key=lambda l: l.last_append, reverse=True)
+        last_sid = max(self.tailers, key=lambda s: self.tailers[s].last_append,
+                       default=None)
         return Vitals(repo=self.name, path=self.checkouts[0],
                       branch=self.git.main_branch(),
-                      dirty=self.git.dirty_count(), live=live)
+                      dirty=self.git.dirty_count(), live=live,
+                      last=self._info(last_sid) if last_sid else None)
 
     def parting_snapshot(self) -> str:
         """The plain-stdout lines printed after the alt-screen closes."""

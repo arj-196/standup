@@ -35,6 +35,7 @@ standup show <handle> --no-pager   # print instead of opening the pager
 standup watch            # live feed of this repo while an agent works in it
 standup watch <repo>     # watch a named repo (or a path) instead
 standup watch --quiet    # files and commits only
+standup watch --light    # light-terminal palette (default assumes dark)
 
 standup completion zsh   # print the zsh completion script (see Typing less)
 standup install          # set up the Session Brief Stop hook (once, machine-wide)
@@ -81,12 +82,17 @@ completion at the alias too with `compdef s=standup` in your `.zshrc`.
 
 `standup watch` is the one live view — an interleaved feed of every Live
 Session's edits (typed out as they land, syntax-highlighted by file type,
-with a `+`/`-` gutter carrying the diff), Bash one-liners, your prompts as
-chapter breaks, commits/pushes, and Unattributed Changes as they appear. A
-commit carries its own diff, in the same gutter and highlighting as a live
-edit, so committing a change doesn't make it unreadable; and on launch every
-Live Session replays its current chapter, so filtering to a session that has
-already committed and gone quiet still shows its work. It's interactive;
+with a `+`/`−` gutter carrying the diff), Bash one-liners, your prompts as
+full-width chapter rules, commits/pushes, and Unattributed Changes as they
+appear. Each session gets a lane (a numbered, hue-tinted bar down the left),
+the clock is a gap gutter (quiet rows are quiet; a 40-second think is a
+visible `+40s`), and every color is a role with a glyph or attribute that
+survives `NO_COLOR`. A commit carries its own diff, in the same gutter and
+highlighting as a live edit, so committing a change doesn't make it
+unreadable; and on launch every Live Session replays its current chapter at
+full strength behind a boundary rule, so filtering to a session that has
+already committed and gone quiet still shows its work, as legibly as if you
+had watched it happen. It's interactive;
 [docs/watch-manual.md](docs/watch-manual.md) is the full guide to the screen
 and the keys.
 

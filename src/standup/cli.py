@@ -562,22 +562,26 @@ def _cmd_watch(argv: list[str]) -> int:
         prog="standup watch",
         description="Watch a repo live while an agent works in it: an interleaved "
                     "feed of every Live Session's activity — file edits (typed out "
-                    "as they land), Bash one-liners, your prompts as chapter breaks, "
-                    "commits (with their diff), pushes, branch switches, and "
-                    "Unattributed Changes the "
+                    "as they land), Bash one-liners, your prompts as chapter "
+                    "rules, commits (with their diff), pushes, branch switches, "
+                    "and Unattributed Changes the "
                     "moment they appear. Session logs are the claim stream; git is "
                     "the ground truth. Interactive: 1-9/tab filters to one "
-                    "session, ↑↓ scrolls back (the view holds still while the "
-                    "feed keeps flowing; G returns to live), enter expands a "
-                    "block or a commit's diff, d "
-                    "toggles stat mode, s opens the transcript, q quits with a "
-                    "parting snapshot.")
+                    "session (repo facts always stay), ↑↓/j/k scrolls back (the "
+                    "view holds still while the feed keeps flowing; G returns to "
+                    "live), [ ] jumps between chapters, enter expands a block or "
+                    "steps a commit through its file list and diff, d toggles "
+                    "stat mode, s opens the transcript, ? shows the key map, "
+                    "q quits with a parting snapshot.")
     p.add_argument("repo", nargs="?", default=".",
                    help="Project Handle (the underlined letters of a name in the "
                         "inbox), full name, or a path to a git checkout; "
                         "defaults to the current directory")
     p.add_argument("--quiet", action="store_true",
                    help="files and commits only (no bash, prompts, or session marks)")
+    p.add_argument("--light", action="store_true",
+                   help="light-terminal palette (same roles, light values); "
+                        "the default assumes a dark terminal")
     p.add_argument("--projects-dir", default=os.path.expanduser("~/.claude/projects"),
                    help=argparse.SUPPRESS)
     args = p.parse_args(argv)
@@ -596,7 +600,7 @@ def _cmd_watch(argv: list[str]) -> int:
     except watchstream.WatchError as e:
         print(str(e), file=sys.stderr)
         return 1
-    snapshot = watchui.run_watch(stream)
+    snapshot = watchui.run_watch(stream, light=args.light)
     print(snapshot)
     return 0
 
