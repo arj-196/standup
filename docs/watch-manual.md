@@ -103,7 +103,7 @@ everything else is foreground on the terminal surface.
         ▏     + ▌
   +2m  ·· ⚑  commit @3712aaa  Watch: content-diff…  2 files +31 −4   ▸ 2 files
  ─────────────────────────────────────────────────────────────────────
-  ● LIVE   3s since last event         ⏎ expand · d stat · [ ] chapter · ? keys
+  ● LIVE   [2] ⠹ writing 3s            ⏎ expand · d stat · [ ] chapter · ? keys
 ```
 
 ### The vitals band
@@ -311,9 +311,10 @@ working:
 
 This is the segment that answers "do I need to go back to the terminal yet".
 It is deliberately one-sided: a session that has **finished its turn shows
-nothing at all**. There is no `finished`, no `done`, no `waiting on you` — the
-absence *is* the answer, so the bar stays quiet when the work is quiet. With
-nothing acting, this falls back to `Ns since last event`.
+nothing at all**. There is no `finished`, no `done`, no `waiting on you`, and no
+recency in its place — the absence *is* the answer, so with nothing acting this
+segment is simply **empty**. The bar is quiet when the work is quiet, which is
+what makes anything appearing there worth a glance.
 
 | Verb | Means |
 |---|---|

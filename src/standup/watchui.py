@@ -1004,11 +1004,10 @@ class WatchApp(App):
             if not following:
                 bar.append("  ·  ", style=t.style("faint"))
             bar.append_text(act)
-        elif following and v.live and self._last_event_at is not None:
-            # nothing is acting: the settled sessions say nothing at all, so the
-            # band falls back to the plain recency it showed before
-            s = max(0, int((now - self._last_event_at).total_seconds()))
-            bar.append(f"{s}s since last event", style=t.style("muted"))
+        # nothing acting: the band says nothing at all. There is no fallback
+        # recency here — "how long since something happened" is not the question
+        # the band answers, and a number that is always present trains you to
+        # stop reading the one segment that matters when it is.
         bar.append_text(tail)
 
         pad = width - bar.cell_len - hints.cell_len - 1
