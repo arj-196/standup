@@ -583,9 +583,6 @@ def _cmd_watch(argv: list[str]) -> int:
                         "defaults to the current directory")
     p.add_argument("--quiet", action="store_true",
                    help="files and commits only (no bash, prompts, or session marks)")
-    p.add_argument("--light", action="store_true",
-                   help="light-terminal palette (same roles, light values); "
-                        "the default assumes a dark terminal")
     p.add_argument("--projects-dir", default=os.path.expanduser("~/.claude/projects"),
                    help=argparse.SUPPRESS)
     args = p.parse_args(argv)
@@ -604,7 +601,7 @@ def _cmd_watch(argv: list[str]) -> int:
     except watchstream.WatchError as e:
         print(str(e), file=sys.stderr)
         return 1
-    snapshot = watchui.run_watch(stream, light=args.light)
+    snapshot = watchui.run_watch(stream)
     print(snapshot)
     return 0
 

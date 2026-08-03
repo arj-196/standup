@@ -1,15 +1,25 @@
 """The Watch's chrome palette: every color is a role, never a decoration.
 
-Source of truth: the "Watch Redesign v2 — Color" design spec. Two channels,
-never one — the gutter says *what changed*, the text says *what it is* — and
-every role also carries a glyph or attribute (its NO_COLOR carrier), so no
-distinction lives in color alone.
+Source of truth: the "Watch Redesign v2 — Color" design spec, as amended by
+ADR 0012. Three channels, never fewer — the gutter says *what changed*, the
+text says *what it is*, and on removed rows the surface says *what changed* a
+second time. Every role also carries a glyph or attribute (its NO_COLOR
+carrier), so no distinction lives in color alone.
 
 Three tiers of fallback, straight from the spec's palette table: truecolor
 hexes, explicit 256-color indices, and named 16-color approximations. Under
 NO_COLOR only the attributes (bold / dim / italic) remain. The syntax palette
 (monokai, foreground-only) is a separate, licensed system and lives in
 watchui, not here.
+
+The light values are kept and still resolve, but nothing reaches them: the
+`--light` flag was withdrawn from `standup watch`. The chrome was not the
+problem — the blocker is that the syntax palette has no light variant, so
+monokai's near-white plain foreground disappeared into the light surface and
+took the code bodies with it, which is worse than no light mode at all. These
+values are the spec's, they are correct, and they are what a future light
+mode would be built from once a light-page syntax theme is chosen. Reaching
+them is deliberately not possible until then.
 """
 
 from __future__ import annotations
@@ -56,6 +66,14 @@ ROLES: dict[str, Role] = {
     # file extensions: a desaturated alias in the address family (spec census);
     # the light value is derived — the spec defines only the dark alias
     "ext":       Role("#6FA8B8", "#3E7280", 109, 24, "cyan"),
+    # the removed-row wash (ADR 0012): a red tint one step off `surface`, not a
+    # shade of `removed` — monokai's foregrounds are bright and need a dark
+    # substrate, so the dark value darkens and only the light value lightens.
+    # Deliberately quieter than `selection`, which outranks it. The 256 value is
+    # the one place the whisper can't be honoured: the color cube's darkest red
+    # is #5f0000, dark in luminance but saturated, so a 256-color terminal shows
+    # a louder wash than a truecolor one.
+    "removed_bg": Role("#291A1E", "#FCEBEB", 52, 224),
 }
 
 # Identity palette: per-session hues, aid-only — the carrier is the lane digit,
@@ -79,7 +97,10 @@ def _detect_depth() -> str:
 
 
 class Theme:
-    """Resolves roles to rich Styles for one (variant, depth) pair."""
+    """Resolves roles to rich Styles for one (variant, depth) pair.
+
+    `light` is unreachable from the CLI by design (see the module docstring);
+    every caller gets the dark variant."""
 
     def __init__(self, light: bool = False, depth: str | None = None):
         self.light = light
@@ -105,6 +126,15 @@ class Theme:
                      bold=bold or role.bold or None,
                      dim=dim or None,
                      italic=italic or role.italic or None)
+
+    def background(self, name: str) -> Style | None:
+        """A role as a background wash, or None where backgrounds don't exist
+        (16 colors and NO_COLOR — there the glyph is the only carrier). Sets
+        bgcolor alone, so it composes with the foreground-only syntax spans in
+        either order."""
+        if not self.paints_backgrounds:
+            return None
+        return Style(bgcolor=self._color(ROLES[name]))
 
     def hex(self, name: str) -> str:
         """The truecolor value for CSS — bands and selection degrade to

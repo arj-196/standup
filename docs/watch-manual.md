@@ -68,12 +68,12 @@ Files and commits only, no Bash/prompt/session noise:
 standup watch --quiet
 ```
 
-The palette assumes a dark terminal; on a light one, `--light` swaps every
-color role to its light-surface value (same roles, same meanings):
-
-```bash
-standup watch --light
-```
+The palette assumes a dark terminal, and there is no light variant — a
+`--light` flag existed and was withdrawn. The chrome converted cleanly; the
+code bodies did not, because the syntax palette (monokai) has no light-page
+counterpart, so on a light surface the diff text faded to near-invisible. A
+Watch you can't read the diffs in is worse than one that assumes the wrong
+background, so the flag is gone until a light syntax theme goes with it.
 
 The Watch needs an interactive terminal. Piped or redirected, it refuses
 rather than printing something half-alive.
@@ -178,6 +178,7 @@ chapters are full-width rules, and dim/bold are attributes, not colors.
 | chapter (violet) | prompt rules, branch switches | full-width rule / `⑂` |
 | added (green) | `+` gutter, `+N` counts, `✓`, `● LIVE`, fresh recency | sign glyphs |
 | removed (red) | `−` gutter, `−N` counts, `✗` | sign glyphs |
+| removed-field | the faint wash behind removed code | `−` gutter (it only repeats it) |
 | file | `✎` marks, bold basenames | bold weight |
 | git-truth (gold) | `⚑` commits, `⇧` pushes — facts outshine claims | marks |
 | session hues (blue/pink/teal) | lane digit + bar, header number — aid only | lane digit |
@@ -227,14 +228,32 @@ Below the header, a file event shows its body: up to 4 removed lines, then the
 added text typing itself out with a `▌` cursor. Long blocks animate their
 first 12 lines and collapse the rest to `… ▸ N more lines`.
 
-The body separates two kinds of information into two channels — two channels,
-never one. The left gutter carries *what changed*: a green `+` on added lines,
-a red `−` on removed ones. The code text carries *what it is*: both added and
-removed lines are syntax-highlighted (monokai, chosen per file extension,
-foreground only — no line washes), at identical full strength — the gutter
-alone distinguishes them. Colors appear live as the text types; a half-typed
-line is half-colored. The monokai palette is deliberately a third system,
-licensed next to the chrome: UI colors are desaturated, so code bodies are
+The body separates two kinds of information into three channels — three
+channels, never fewer. The left gutter carries *what changed*: a green `+` on
+added lines, a red `−` on removed ones. The code text carries *what it is*:
+both added and removed lines are syntax-highlighted (monokai, chosen per file
+extension, foreground only), at identical full strength — the text never says
+which of the two it is. And the surface carries *what changed* a second time:
+removed rows sit on a faint red field, a block you can find without reading
+(ADR 0012). Colors appear live as the text types; a half-typed line is
+half-colored.
+
+The field is a rectangle, running from the `−` column to the right edge of the
+feed, so a run of removed lines reads as one shape however ragged the code is.
+It never covers the gap gutter or the session lane — the lane's identity hue
+stays on clean surface. It appears on every removed row, in a collapsed body,
+an expanded one, and an expanded commit's diffs alike, but not on the
+`… ▸ N more lines` row, which is a count rather than removed code. Two places
+it deliberately isn't there: on the **selected** event, where the selection
+band owns the background and the `−` carries the row alone; and on 16-color and
+`NO_COLOR` terminals, which never paint backgrounds at all. Nothing is lost in
+either case — the field only ever repeats what the `−` already said. Added
+lines get no field of their own: they type themselves out a character at a
+time, and a rectangle behind a line that hasn't arrived yet would give the
+ending away.
+
+The monokai palette is deliberately its own system, licensed next to the
+chrome: UI colors are desaturated, so code bodies are
 the saturated register and pop on purpose. Files with no recognizable
 extension fall back to plain text; the gutter still tells the story. There
 are no line numbers in the gutter — the stream can't know them for session

@@ -6,8 +6,10 @@ rules, the clock is a gap gutter, sessions get a lane (digit + bar), and every
 color is a role from theme.py with a glyph or attribute carrier that survives
 NO_COLOR. Diff bodies are the one saturated register: per-token monokai at
 full strength on added and removed lines alike, backfilled or live — the
-±gutter alone carries change-semantics, backgrounds are reserved for the
-header/status bands and the selection.
+foreground never carries change-semantics. Those live in the ±gutter and, on
+removed rows only, in a faint background wash that restates it (ADR 0012);
+otherwise backgrounds are reserved for the header/status bands and the
+selection, which the wash yields to.
 
 The typing animation is presentation-only under a hard staleness bound: the
 display may lag the log by at most STALENESS_BOUND seconds — typing speed
@@ -409,26 +411,42 @@ class EventWidget(Static):
             left.append_text(right)
         return left
 
-    def _sign_row(self, out: Text, sign: str | None, code: Text) -> None:
+    def _sign_row(self, out: Text, sign: str | None, code: Text,
+                  width: int) -> None:
         """One body line: cols 15–16 carry the ± sign, code starts at col 17.
-        The gutter says what changed; the code colors say what it is."""
+        The gutter says what changed, the code colors say what it is, and a
+        removed row's surface says what changed a second time — the wash of
+        ADR 0012, redundant by construction so nothing lives in it alone.
+
+        Three bounds on the wash. It spans the sign column to `width`, because a
+        block is only findable if it is a rectangle and a diff's line lengths
+        are ragged. It never reaches the gap gutter or the session lane, whose
+        identity hue has to sit on clean surface. And it is dropped on the
+        selected row: the selection band carries information the wash does
+        not, so the wash is the channel that yields."""
         t = self.t
-        out.append("\n")
-        out.append_text(self._prefix(first=False))
+        row = self._prefix(first=False)
+        sign_col = len(row.plain) + 5     # cols 10–14 are dead space
         if sign == "+":
-            out.append("     + ", style=t.style("added", bold=True))
+            row.append("     + ", style=t.style("added", bold=True))
         elif sign == "-":
-            out.append("     − ", style=t.style("removed", bold=True))
+            row.append("     − ", style=t.style("removed", bold=True))
         else:
-            out.append("       ")
-        out.append_text(code)
+            row.append("       ")
+        row.append_text(code)
+        wash = t.background("removed_bg") if sign == "-" else None
+        if wash is not None and not self.has_class("selected"):
+            row.append(" " * max(0, width - row.cell_len))
+            row.stylize(wash, sign_col)
+        out.append("\n")
+        out.append_text(row)
 
     def _more_row(self, out: Text, n: int, noun: str = "lines") -> None:
         out.append("\n")
         out.append_text(self._prefix(first=False))
         out.append(f"     … ▸ {n} more {noun}", style=self.t.style("faint"))
 
-    def _commit_body(self, out: Text) -> Text:
+    def _commit_body(self, out: Text, width: int) -> Text:
         """Two shallow levels: the file list (level 1), then every file's diff
         (level 2) — same gutter and same highlighting as a live file event; the
         only difference is that git, not a session, supplied it."""
@@ -455,9 +473,9 @@ class EventWidget(Static):
             out.append_text(self._path_text(path))
             out.append(f"  {change}", style=t.style("muted"))
             for ln in removed:
-                self._sign_row(out, "-", ln)
+                self._sign_row(out, "-", ln, width)
             for ln in added:
-                self._sign_row(out, "+", ln)
+                self._sign_row(out, "+", ln, width)
         return out
 
     def render_event(self, stat_mode: bool, width: int) -> Text:
@@ -489,24 +507,26 @@ class EventWidget(Static):
         if stat_mode or e.kind not in ("file", "bash", "commit"):
             return out
         if e.kind == "commit":
-            return self._commit_body(out) if self.expanded and e.files else out
+            return self._commit_body(out, width) if self.expanded and e.files else out
         if e.kind == "bash":
             if self.expanded and e.command and len(_one_line(e.command)) < len(e.command):
                 for raw in e.command.splitlines():
-                    self._sign_row(out, None, _lexed_command(raw, t.depth == "none"))
+                    self._sign_row(out, None, _lexed_command(raw, t.depth == "none"),
+                                   width)
             return out
 
-        # file event body: the gutter says what changed, the colors say what it is
+        # file event body: the gutter says what changed, the colors say what it
+        # is, and a removed row's surface says what changed a second time
         if self.expanded:
             for ln in self.removed_lines:
-                self._sign_row(out, "-", ln)
+                self._sign_row(out, "-", ln, width)
             for ln in self.added_lines:
-                self._sign_row(out, "+", ln)
+                self._sign_row(out, "+", ln, width)
             return out
 
         if self.removed_lines:
             for ln in self.removed_lines[:REMOVED_LINES]:
-                self._sign_row(out, "-", ln)
+                self._sign_row(out, "-", ln, width)
             if len(self.removed_lines) > REMOVED_LINES:
                 self._more_row(out, len(self.removed_lines) - REMOVED_LINES)
         shown = int(self.shown_chars)
@@ -515,7 +535,8 @@ class EventWidget(Static):
             if shown <= 0:
                 break
             self._sign_row(out, "+",
-                           ln if shown >= len(ln.plain) else ln.divide([shown])[0])
+                           ln if shown >= len(ln.plain) else ln.divide([shown])[0],
+                           width)
             shown -= len(ln.plain) + 1   # +1 spends the newline
         if animating:
             out.append("▌", style=t.style("added", bold=True) + Style(blink=True))
@@ -1261,9 +1282,12 @@ def _css(t: Theme) -> str:
     """
 
 
-def run_watch(stream: WatchStream, light: bool = False) -> str:
-    """Run the app; returns the parting snapshot to print on plain stdout."""
-    theme_ = Theme(light=light)
+def run_watch(stream: WatchStream) -> str:
+    """Run the app; returns the parting snapshot to print on plain stdout.
+
+    Always the dark palette: `Theme` still resolves light values, but nothing
+    exposes them — see theme.py on why the light variant is withdrawn."""
+    theme_ = Theme()
     WatchApp.CSS = _css(theme_)
     WatchApp(stream, theme_).run()
     return stream.parting_snapshot()

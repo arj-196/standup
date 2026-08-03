@@ -35,7 +35,6 @@ standup show <handle> --no-pager   # print instead of opening the pager
 standup watch            # live feed of this repo while an agent works in it
 standup watch <repo>     # watch a named repo (or a path) instead
 standup watch --quiet    # files and commits only
-standup watch --light    # light-terminal palette (default assumes dark)
 
 standup completion zsh   # print the zsh completion script (see Typing less)
 standup install          # set up the Session Brief Stop hook (once, machine-wide)
@@ -82,9 +81,11 @@ completion at the alias too with `compdef s=standup` in your `.zshrc`.
 
 `standup watch` is the one live view — an interleaved feed of every Live
 Session's edits (typed out as they land, syntax-highlighted by file type,
-with a `+`/`−` gutter carrying the diff), Bash one-liners, your prompts as
-full-width chapter rules, commits/pushes, and Unattributed Changes as they
-appear. Each session gets a lane (a numbered, hue-tinted bar down the left),
+with a `+`/`−` gutter carrying the diff and a faint red field behind removed
+code, so a deletion is findable without reading), Bash one-liners, your
+prompts as full-width chapter rules, commits/pushes, and Unattributed
+Changes as they appear. Each session gets a lane (a numbered, hue-tinted bar
+down the left),
 the clock is a gap gutter (quiet rows are quiet; a 40-second think is a
 visible `+40s`), and every color is a role with a glyph or attribute that
 survives `NO_COLOR`. A commit carries its own diff, in the same gutter and
