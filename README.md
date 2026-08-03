@@ -35,6 +35,7 @@ standup show <handle> --no-pager   # print instead of opening the pager
 standup watch            # live feed of this repo while an agent works in it
 standup watch <repo>     # watch a named repo (or a path) instead
 standup watch --quiet    # files and commits only
+standup watch --no-wrap  # start with long body lines clipped, not folded
 
 standup completion zsh   # print the zsh completion script (see Typing less)
 standup install          # set up the Session Brief Stop hook (once, machine-wide)
@@ -104,6 +105,15 @@ verb is read from the log's own `stop_reason` and pending tool call, except
 `thinking`, which is inferred from silence and documented as such; the spinner
 freezes when nothing has been appended for 30 seconds, so motion never outlives
 the data ([ADR 0011](docs/adr/0011-activity-state-inferred-motion-never-outlives-data.md)).
+
+A body line wider than your terminal **folds** rather than running off the
+right edge: it continues onto as many rows as it needs, each continuation marked
+`↳` in the gutter and starting in the same code column, so a 300-character line
+can be read whole. Nothing about the change is off-screen. This applies to diff
+bodies, an expanded command, and an expanded prompt — never to headers, which
+stay one row per event. `w` (or starting with `--no-wrap`) turns folding off and
+clips instead, which gives every event a fixed row count when you want the shape
+of the last few minutes rather than the content.
 
 It's interactive; [docs/watch-manual.md](docs/watch-manual.md) is the full guide
 to the screen and the keys.

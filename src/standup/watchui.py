@@ -11,6 +11,11 @@ removed rows only, in a faint background wash that restates it (ADR 0012);
 otherwise backgrounds are reserved for the header/status bands and the
 selection, which the wash yields to.
 
+Body lines fold by default and header lines clip (ADR 0013): the feed's own
+prose about an event may be shortened, the code it is quoting may not. The
+folding is done here, row by row, so a continuation row still carries the gap
+gutter and the session lane.
+
 The typing animation is presentation-only under a hard staleness bound: the
 display may lag the log by at most STALENESS_BOUND seconds — typing speed
 compresses (down to instant landing) to honor it. Delight never outranks
@@ -28,6 +33,7 @@ from pathlib import Path
 from pygments.lexers import get_lexer_for_filename
 from pygments.lexers.shell import BashLexer
 from pygments.util import ClassNotFound
+from rich.console import Console
 from rich.style import Style
 from rich.syntax import Syntax
 from rich.text import Span, Text
@@ -63,6 +69,9 @@ SPIN_FPS = 4               # spinner frame rate — wall-clock driven, so an
                            # 1/POLL_INTERVAL so no frame is skipped
 SPIN_STALL = "⠿"           # frozen spinner: nothing appended for FRESH seconds
 ACTS_SHOWN = 3             # acting sessions named in the footer; rest counted
+CODE_COL = 16              # cells left of a body line's first character
+PROMPT_COL = 12            # ditto, for an expanded prompt's own text
+WRAP_ROWS = 40             # rows one wrapped body line may occupy; rest counted
 
 _MARKS = {
     "file": "✎", "bash": "⏺", "commit": "⚑", "push": "⇧",
@@ -149,6 +158,22 @@ def _styled_lines(code: str, path: str | None, no_color: bool) -> list[Text]:
     return list(lines)
 
 
+# rich needs a console to wrap against; this one exists to measure and never
+# prints — the fixed width keeps it from touching the real terminal at all
+_MEASURE = Console(width=200, quiet=True)
+
+
+def _wrap_lines(line: Text, width: int) -> list[Text]:
+    """One body line as the rows it folds into, styles intact.
+
+    The fold is word-aware and only breaks inside a token when the token itself
+    is longer than the row — a path or a long string then continues rather than
+    disappearing off the right edge."""
+    if width <= 0 or line.cell_len <= width:
+        return [line]
+    return list(line.wrap(_MEASURE, width, overflow="fold"))
+
+
 def _lexed_command(cmd: str, no_color: bool) -> Text:
     """One bash command, monokai-lexed like any diff body."""
     line = Syntax("", _BASH_LEXER, theme=SYNTAX_THEME).highlight(cmd)
@@ -173,6 +198,7 @@ class EventWidget(Static):
         self.t = theme
         self.num = num                    # stable session lane number, 0 = none
         self.expand_level = 0             # files/prompts/bash: 0|1 · commits: 0|1|2
+        self.wrap = True                  # app-wide; refresh_event syncs it
         self.bash_ok: bool | None = None
         self.gap_seconds: float | None = None   # set by the app (visible-chain gap)
         self.lane_head = True                   # digit vs bar — set by the app
@@ -411,6 +437,25 @@ class EventWidget(Static):
             left.append_text(right)
         return left
 
+    def _fold(self, line: Text, avail: int) -> list[Text]:
+        """A body line as the rows it occupies.
+
+        Wrap — the default — continues the line onto further rows, because a
+        body line you cannot read the end of is the one thing the feed owes you:
+        it is the changed code itself. It is bounded at WRAP_ROWS rows with the
+        tail *counted* rather than dropped silently (a minified file is one line
+        and would otherwise fill the feed). Wrap off is one row that clips at
+        the right edge — a fixed row count per event, for reading the shape of
+        the last few minutes rather than the content."""
+        if not self.wrap:
+            return [line]
+        rows = _wrap_lines(line, avail)
+        if len(rows) <= WRAP_ROWS:
+            return rows
+        dropped = sum(len(r.plain) for r in rows[WRAP_ROWS:])
+        return rows[:WRAP_ROWS] + [Text(f"… +{dropped} chars",
+                                        style=self.t.style("faint"))]
+
     def _sign_row(self, out: Text, sign: str | None, code: Text,
                   width: int) -> None:
         """One body line: cols 15–16 carry the ± sign, code starts at col 17.
@@ -423,23 +468,32 @@ class EventWidget(Static):
         are ragged. It never reaches the gap gutter or the session lane, whose
         identity hue has to sit on clean surface. And it is dropped on the
         selected row: the selection band carries information the wash does
-        not, so the wash is the channel that yields."""
+        not, so the wash is the channel that yields.
+
+        Under wrap (the default) a long line becomes several rows and is still
+        one line. The continuation rows carry a faint `↳` where the sign would
+        be — the sign states a change once, and a fold is the same source line,
+        not another one — and start in the same code column, so indentation
+        still lines up. The wash spans them too: the block stays a rectangle."""
         t = self.t
-        row = self._prefix(first=False)
-        sign_col = len(row.plain) + 5     # cols 10–14 are dead space
-        if sign == "+":
-            row.append("     + ", style=t.style("added", bold=True))
-        elif sign == "-":
-            row.append("     − ", style=t.style("removed", bold=True))
-        else:
-            row.append("       ")
-        row.append_text(code)
-        wash = t.background("removed_bg") if sign == "-" else None
-        if wash is not None and not self.has_class("selected"):
-            row.append(" " * max(0, width - row.cell_len))
-            row.stylize(wash, sign_col)
-        out.append("\n")
-        out.append_text(row)
+        for i, chunk in enumerate(self._fold(code, width - CODE_COL)):
+            row = self._prefix(first=False)
+            sign_col = len(row.plain) + 5     # cols 10–14 are dead space
+            if i:
+                row.append("     ↳ ", style=t.style("faint"))
+            elif sign == "+":
+                row.append("     + ", style=t.style("added", bold=True))
+            elif sign == "-":
+                row.append("     − ", style=t.style("removed", bold=True))
+            else:
+                row.append("       ")
+            row.append_text(chunk)
+            wash = t.background("removed_bg") if sign == "-" else None
+            if wash is not None and not self.has_class("selected"):
+                row.append(" " * max(0, width - row.cell_len))
+                row.stylize(wash, sign_col)
+            out.append("\n")
+            out.append_text(row)
 
     def _more_row(self, out: Text, n: int, noun: str = "lines") -> None:
         out.append("\n")
@@ -489,10 +543,13 @@ class EventWidget(Static):
                     or len(" ".join(e.message.split())) > max(10, width - 45))
             if self.expanded and long and not stat_mode:
                 for raw in e.message.splitlines():
-                    out.append("\n")
-                    out.append_text(self._prefix(first=False))
-                    out.append("   ")
-                    out.append(raw, style=t.style("primary"))
+                    chunks = self._fold(Text(raw, style=t.style("primary")),
+                                        width - PROMPT_COL)
+                    for i, chunk in enumerate(chunks):
+                        out.append("\n")
+                        out.append_text(self._prefix(first=False))
+                        out.append(" ↳ " if i else "   ", style=t.style("faint"))
+                        out.append_text(chunk)
             return out
 
         head, right = self._header()
@@ -509,8 +566,13 @@ class EventWidget(Static):
         if e.kind == "commit":
             return self._commit_body(out, width) if self.expanded and e.files else out
         if e.kind == "bash":
-            if self.expanded and e.command and len(_one_line(e.command)) < len(e.command):
-                for raw in e.command.splitlines():
+            # the body is worth having whenever the header row can't carry the
+            # whole command — because it was folded to one line, or because the
+            # row simply isn't that wide
+            cmd = e.command or ""
+            clipped = len(_one_line(cmd)) < len(cmd) or out.cell_len > width
+            if self.expanded and cmd and clipped:
+                for raw in cmd.splitlines():
                     self._sign_row(out, None, _lexed_command(raw, t.depth == "none"),
                                    width)
             return out
@@ -546,6 +608,7 @@ class EventWidget(Static):
 
     def refresh_event(self) -> None:
         app = self.app
+        self.wrap = getattr(app, "wrap", True)
         self.update(self.render_event(getattr(app, "stat_mode", False),
                                       getattr(app, "content_width", lambda: 98)()))
 
@@ -578,6 +641,7 @@ class WatchApp(App):
         Binding("tab", "cycle_filter", "next session", show=False, priority=True),
         Binding("enter", "toggle_expand", "expand", show=False, priority=True),
         Binding("d", "toggle_stat", "stat", priority=True),
+        Binding("w", "toggle_wrap", "wrap", priority=True),
         Binding("s", "open_show", "show transcript", priority=True),
         Binding("plus,equals_sign", "faster", "faster", show=False, priority=True),
         Binding("minus", "slower", "slower", show=False, priority=True),
@@ -594,11 +658,13 @@ class WatchApp(App):
         Binding("question_mark", "toggle_keymap", "keys", show=False, priority=True),
     ] + [Binding(str(i), f"filter_n({i})", show=False, priority=True) for i in range(1, 10)]
 
-    def __init__(self, stream: WatchStream, theme_: Theme) -> None:
+    def __init__(self, stream: WatchStream, theme_: Theme,
+                 wrap: bool = True) -> None:
         super().__init__()
         self.stream = stream
         self.t = theme_
         self.stat_mode = False
+        self.wrap = wrap
         self.speed = BASE_SPEED
         self.filter_sid: str | None = None
         self.anim_queue: list[EventWidget] = []
@@ -877,7 +943,10 @@ class WatchApp(App):
         if not wide:
             return [("?", "keys")]
         if not self._following():
-            return [("G", "live"), ("⏎", "expand"), ("?", "keys")]
+            # each hint names what the key gives you, so `w` reads as the state
+            # you'd move to, not the one you're in
+            return [("G", "live"), ("⏎", "expand"),
+                    ("w", "clip" if self.wrap else "wrap"), ("?", "keys")]
         if self.filter_sid:
             return [("Esc", "clear"), ("Tab", "next"), ("s", "show"), ("?", "keys")]
         if self.stat_mode:
@@ -970,6 +1039,12 @@ class WatchApp(App):
             tail.append("  ·  ", style=t.style("faint"))
             tail.append("stat", style=t.style("primary", bold=True))
             tail.append(" — headers only", style=t.style("muted"))
+        if not self.wrap:
+            # the band names modes you are *not* in by default: wrap is on
+            # unless you turned it off, so it is the off state that gets said
+            tail.append("  ·  ", style=t.style("faint"))
+            tail.append("no wrap", style=t.style("primary", bold=True))
+            tail.append(" — long lines clip", style=t.style("muted"))
         if self.anim_queue or self.speed != BASE_SPEED:
             tail.append("  ·  ", style=t.style("faint"))
             tail.append(f"{int(self.speed)} c/s", style=t.style("muted"))
@@ -1082,6 +1157,16 @@ class WatchApp(App):
             w.refresh_event()
         self._refresh_status()
 
+    def action_toggle_wrap(self) -> None:
+        """Wrap (on by default): a body line too long for the row continues on
+        the next row instead of running off the right edge. Bodies only —
+        headers stay one row each, so the feed still reads as one row per
+        event. Turning it off gives back the fixed-height grid."""
+        self.wrap = not self.wrap
+        for w in self.query(EventWidget):
+            w.refresh_event()
+        self._refresh_status()
+
     def action_toggle_keymap(self) -> None:
         """The full key map as a temporary overlay — a toggle, not a mode."""
         panel = self.query_one("#keymap", Static)
@@ -1097,6 +1182,7 @@ class WatchApp(App):
             ("g · Home", "jump to the top of scrollback"),
             ("1–9 · Tab · Esc", "filter to session (binds the id) · cycle · clear"),
             ("d", "toggle stat mode (headers only)"),
+            ("w", "wrap on (default) ⇄ off: long body lines fold, marked ↳"),
             ("s", "open the session's Transcript in less"),
             ("+ −", "typing speed (capped by the ≤2.5s honesty rule)"),
             ("?", "toggle this key map"),
@@ -1261,7 +1347,10 @@ def _css(t: Theme) -> str:
     else:
         surface = raised = screen_color = scrollbar = ""
         selection = "text-style: reverse;"
-    # nothing reflows — rows only truncate, so the grid never breaks
+    # textual never reflows anything: every row arrives whole. Under wrap (the
+    # default) the widget did the folding itself, which is what keeps the gap
+    # gutter and the session lane on every row a fold produces; with wrap off a
+    # too-long row clips here, at the right edge
     nowrap = "text-wrap: nowrap; text-overflow: clip;"
     return f"""
     Screen {{ layout: vertical; {surface} {screen_color} }}
@@ -1281,12 +1370,12 @@ def _css(t: Theme) -> str:
     """
 
 
-def run_watch(stream: WatchStream) -> str:
+def run_watch(stream: WatchStream, wrap: bool = True) -> str:
     """Run the app; returns the parting snapshot to print on plain stdout.
 
     Always the dark palette: `Theme` still resolves light values, but nothing
     exposes them — see theme.py on why the light variant is withdrawn."""
     theme_ = Theme()
     WatchApp.CSS = _css(theme_)
-    WatchApp(stream, theme_).run()
+    WatchApp(stream, theme_, wrap=wrap).run()
     return stream.parting_snapshot()

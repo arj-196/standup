@@ -410,6 +410,7 @@ _standup() {
         watch|w)
           _arguments \
             '--quiet[files and commits only]' \
+            '--no-wrap[start with long body lines clipped, not folded]' \
             '1:project:_standup_projects'
           ;;
         completion)
@@ -575,7 +576,9 @@ def _cmd_watch(argv: list[str]) -> int:
                     "view holds still while the feed keeps flowing; G returns to "
                     "live), [ ] jumps between chapters, enter expands a block or "
                     "steps a commit through its file list and diff, d toggles "
-                    "stat mode, s opens the transcript, ? shows the key map, "
+                    "stat mode, w toggles wrap (on by default: a body line "
+                    "wider than the terminal folds onto further rows instead of "
+                    "clipping), s opens the transcript, ? shows the key map, "
                     "q quits with a parting snapshot.")
     p.add_argument("repo", nargs="?", default=".",
                    help="Project Handle (the underlined letters of a name in the "
@@ -583,6 +586,11 @@ def _cmd_watch(argv: list[str]) -> int:
                         "defaults to the current directory")
     p.add_argument("--quiet", action="store_true",
                    help="files and commits only (no bash, prompts, or session marks)")
+    p.add_argument("--no-wrap", action="store_true",
+                   help="start with wrap off: a body line wider than the terminal "
+                        "clips at the right edge instead of folding onto further "
+                        "rows (marked ↳), so every event keeps a fixed row "
+                        "count; w toggles it in the Watch")
     p.add_argument("--projects-dir", default=os.path.expanduser("~/.claude/projects"),
                    help=argparse.SUPPRESS)
     args = p.parse_args(argv)
@@ -601,7 +609,7 @@ def _cmd_watch(argv: list[str]) -> int:
     except watchstream.WatchError as e:
         print(str(e), file=sys.stderr)
         return 1
-    snapshot = watchui.run_watch(stream)
+    snapshot = watchui.run_watch(stream, wrap=not args.no_wrap)
     print(snapshot)
     return 0
 

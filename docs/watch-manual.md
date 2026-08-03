@@ -68,6 +68,13 @@ Files and commits only, no Bash/prompt/session noise:
 standup watch --quiet
 ```
 
+Long body lines fold by default; start with them clipping at the right edge
+instead — the `w` toggle (§4), off from the first row:
+
+```bash
+standup watch --no-wrap
+```
+
 The palette assumes a dark terminal, and there is no light variant — a
 `--light` flag existed and was withdrawn. The chrome converted cleanly; the
 code bodies did not, because the syntax palette (monokai) has no light-page
@@ -226,7 +233,9 @@ right edge as `▸ N lines`; expanded, it flips to `▾`.
 
 Below the header, a file event shows its body: up to 4 removed lines, then the
 added text typing itself out with a `▌` cursor. Long blocks animate their
-first 12 lines and collapse the rest to `… ▸ N more lines`.
+first 12 lines and collapse the rest to `… ▸ N more lines`. A line wider than
+the feed folds onto further rows rather than running off the edge; `w` turns
+that off (§4).
 
 The body separates two kinds of information into three channels — three
 channels, never fewer. The left gutter carries *what changed*: a green `+` on
@@ -242,7 +251,8 @@ The field is a rectangle, running from the `−` column to the right edge of the
 feed, so a run of removed lines reads as one shape however ragged the code is.
 It never covers the gap gutter or the session lane — the lane's identity hue
 stays on clean surface. It appears on every removed row, in a collapsed body,
-an expanded one, and an expanded commit's diffs alike, but not on the
+an expanded one, and an expanded commit's diffs alike — and across every row a
+wrapped line folds into, so the shape survives `w` — but not on the
 `… ▸ N more lines` row, which is a count rather than removed code. Two places
 it deliberately isn't there: on the **selected** event, where the selection
 band owns the background and the `−` carries the row alone; and on 16-color and
@@ -342,8 +352,9 @@ you've stopped watching the feed and most need to know whether the agent is
 still going.
 
 Then the modes, when they're non-default: the active filter
-(`filter [2] 9f8e7d6c`), `stat — headers only`, and the typing speed while
-text is animating or you've changed it.
+(`filter [2] 9f8e7d6c`), `stat — headers only`, `no wrap — long lines clip`
+(wrap is on unless you turned it off), and the typing speed while text is
+animating or you've changed it.
 
 The right edge shows at most four key hints, contextual to what you're doing;
 `?` toggles the full key map as a temporary overlay. When something surprises
@@ -418,6 +429,7 @@ events can't shift the view under you; going back to live drops the excess.
 |---|---|
 | `enter` | expand / collapse the selected event |
 | `d` | stat mode: headers only |
+| `w` | wrap (on by default): long body lines fold onto further rows ⇄ clip |
 
 `enter` on a file event drops the 12-line/4-line collapse and shows the whole
 added and removed text. On a **commit** it cycles through the three levels —
@@ -435,6 +447,41 @@ click to expand, click again to collapse.
 `d` is the opposite move: it strips every body from the feed and leaves one
 line per event. Use it when you want the shape of the last few minutes — which
 files, which commands, in what order — rather than the content.
+
+`w` answers the other way a line can be out of reach: not collapsed, but
+**wider than your terminal**. By default it **folds** — a long body line
+continues onto as many rows as it needs, so the whole line is there:
+
+```
+       ▏      +     result = some_function(argument_one, argument_two,
+       ▏      ↳ argument_three) + another_call(x)  # and the rest of the line
+```
+
+Three things make a fold read as one line rather than several. The `↳` sits
+where the `+` or `−` would be — the sign states a change once, and a fold is
+the same source line. Continuation rows start in the **same code column**, so
+indentation still lines up. And the removed-field wash spans them, so a run of
+removed lines is still one rectangle.
+
+The fold is word-aware; it breaks inside a token only when the token itself is
+longer than the row, so a long path or string continues rather than vanishing.
+One line may occupy at most 40 rows — past that the tail is *counted*
+(`… +N chars`), never silently dropped, so a minified file can't fill the feed.
+
+Folding applies to diff bodies, an expanded Bash command, and an expanded
+prompt — **never** to header lines, which stay one row per event however long
+the path. That split is deliberate: a header is Standup's own prose about an
+event, and it says when it shortened something (`▸ N lines`, `… ▸ N more
+files`); a body is the agent's code, quoted, where clipping would be a lie
+about the content
+([ADR 0013](adr/0013-a-body-line-folds-a-header-line-clips.md)).
+
+`w` turns folding off, over the whole feed, expanded and collapsed bodies
+alike: long lines then clip at the right edge and every event has a fixed row
+count, which is what you want when you're reading the shape of the last few
+minutes rather than the code. That's the non-default state, so the status bar
+says `no wrap — long lines clip` while you're in it, and `w` again puts it
+back. Start a watch already clipping with `standup watch --no-wrap`.
 
 ### Focus on one session
 
@@ -610,6 +657,10 @@ files and diffs them itself.
 | `s` does nothing | the selected event has no session (git-only), or its log isn't tailed |
 | everything is `~unattributed` | no session log covers this repo — expected outside the Scan Universe |
 | a commit shows no file list | it's a merge (no combined diff by default) or its diff is over ~400 KB — no diff was read, so none is shown |
+| a body line runs off the right edge | wrap has been turned off (`no wrap` in the status bar, or `--no-wrap`) — press `w` |
+| a folded line ends `… +N chars` | one line hit the 40-row fold bound; the count is the rest of it. `s` reads it whole in the Transcript |
+| a header clips even though lines fold | wrap is for bodies only; headers stay one row per event. `enter` shows a prompt or command in full |
+| one event fills the screen | it's a long-line file (minified, generated) folding to fit — `w` clips it back, or `d` for headers only |
 | typing looks instant | the staleness bound is compressing it; the log is ahead of the display |
 | no verb in the status bar | nothing is acting — every Live Session has handed its turn back. There is no "finished" to show |
 | the spinner has stopped | nothing appended for 30s; the verb and its age are the last thing the log said (a long `running` is normal, a long `thinking` is not) |
@@ -628,6 +679,8 @@ g, Home      jump to the top of scrollback
 click        select + expand the clicked event; click again collapses
 enter        expand / collapse         d        stat mode (headers only)
              (commits: header → files → diffs)
+                                       w        wrap ⇄ clip long body lines
+                                                (on: folds are marked ↳)
 1-9          filter to that session    Tab      next session
 Esc, 0       all sessions              s        open the Transcript in less
 + =          type faster               -        type slower
