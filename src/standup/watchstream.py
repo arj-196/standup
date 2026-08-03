@@ -32,6 +32,19 @@ DISCOVERY_INTERVAL = 10.0      # seconds between scans for new session logs
 BACKFILL_CAP = 400             # newest events replayed at launch, all sessions
 EDIT_TOOLS = claude_logs.EDIT_TOOLS
 
+# Activity State verbs (CONTEXT.md): the pending tool call read as one word.
+# An unmapped tool falls to "acting" — true of anything, so a new or MCP tool
+# never needs a table entry to stay honest.
+ACT_VERBS = {
+    "Read": "reading", "Grep": "reading", "Glob": "reading",
+    "NotebookRead": "reading", "WebFetch": "reading", "WebSearch": "reading",
+    "Write": "writing", "Edit": "writing", "MultiEdit": "writing",
+    "NotebookEdit": "writing",
+    "Bash": "running", "BashOutput": "running", "KillShell": "running",
+}
+ACT_FALLBACK = "acting"
+ACT_THINKING = "thinking"
+
 _COMMIT_RE = claude_logs.COMMIT_LINE_RE
 _REMINDER_RE = re.compile(r"<system-reminder>.*?</system-reminder>", re.DOTALL)
 _CMD_NAME_RE = re.compile(r"<command-name>(.*?)</command-name>", re.DOTALL)
@@ -80,6 +93,24 @@ class FeedEvent:
 
 
 @dataclass
+class Activity:
+    """A Session's Activity State (CONTEXT.md): what the agent is doing *now*.
+
+    Only ever constructed for a session mid-turn — a settled session has no
+    Activity at all, which is what lets the Watch say nothing about it. `verb`
+    is a fact read off the log for every value but `thinking`, which is
+    inferred from *silence*: the log records a tool call and its result, never
+    the pause between them, so the pause is all there is to read.
+
+    `since` is the timestamp of the line that put the session in this state, so
+    the age is right at launch too — backfill walks the whole file and leaves
+    the state at the true tail.
+    """
+    verb: str
+    since: datetime
+
+
+@dataclass
 class LiveSessionInfo:
     session_id: str
     title: str
@@ -87,6 +118,7 @@ class LiveSessionInfo:
     last_append: datetime
     num: int = 0                 # stable lane number, assigned first-seen —
                                  # never re-sorted, so `[2]` stays session 2
+    activity: Activity | None = None   # None once the turn is over
 
     @property
     def handle(self) -> str:
@@ -152,6 +184,9 @@ class _Tailer:
         self.claimed_shas: set[str] = set()           # commit hashes seen in results
         self.edited_paths: set[str] = set(session.edited_files)
         self.last_append: datetime = session.last_activity or _now()
+        # Activity State: the verb the tail leaves us in, None when settled
+        self.act_verb: str | None = None
+        self.act_since: datetime = self.last_append
         self._backfilling = False
 
     def seek_to_end(self) -> None:
@@ -176,11 +211,65 @@ class _Tailer:
         out = gitstate.git(root, "status", "--porcelain", "--", rel)
         return "create" if (out or "").startswith("??") else "modify"
 
+    def _track_activity(self, obj: dict, ts: datetime) -> None:
+        """Advance the Activity State from one log line (CONTEXT.md).
+
+        Four transitions, in the order they have to be tested:
+
+        - an **interrupt** settles the session. `interruptedMessageId` (Esc) and
+          `interruptedByShutdown` (the session quit mid-turn) both arrive as
+          plain user lines, so this must be checked before the prompt reading —
+          the line's text is `[Request interrupted by user]`, which would
+          otherwise look like you asking a question. Without it the state would
+          read `thinking` for as long as the Watch stays open.
+        - `stop_reason == "tool_use"` names the call about to run: its verb.
+        - any other `stop_reason` ends the turn — the agent handed control back.
+        - a tool result, or your prompt, leaves the model composing: `thinking`,
+          the one verb no line ever states.
+
+        Subagent lines are skipped: a sidechain's reads are not this session's,
+        and several running at once have no single answer.
+        """
+        if obj.get("isSidechain"):
+            return
+        etype = obj.get("type")
+        message = obj.get("message") or {}
+        content = message.get("content") if isinstance(message, dict) else None
+
+        if etype == "assistant":
+            if message.get("stop_reason") != "tool_use":
+                self.act_verb, self.act_since = None, ts
+                return
+            name = None
+            if isinstance(content, list):
+                for b in content:      # parallel calls: the last one announced
+                    if isinstance(b, dict) and b.get("type") == "tool_use":
+                        name = b.get("name")
+            self.act_verb = ACT_VERBS.get(name, ACT_FALLBACK)
+            self.act_since = ts
+            return
+
+        if etype != "user" or obj.get("isMeta"):
+            return
+        if "interruptedMessageId" in obj or "interruptedByShutdown" in obj:
+            self.act_verb, self.act_since = None, ts
+            return
+        returned = obj.get("toolUseResult") is not None or (
+            isinstance(content, list)
+            and any(isinstance(b, dict) and b.get("type") == "tool_result"
+                    for b in content))
+        if returned or _prompt_text(content):
+            self.act_verb, self.act_since = ACT_THINKING, ts
+
     def _events_from_obj(self, obj: dict) -> list[FeedEvent]:
         sid, title = self.session.session_id, self.session.title
         ts = _parse_ts(obj.get("timestamp")) or _now()
         etype = obj.get("type")
         events: list[FeedEvent] = []
+        # every line advances the state, including on the backfill pass — which
+        # walks the whole file, so a session mid-turn at launch is already in
+        # the right state before its first live line arrives
+        self._track_activity(obj, ts)
 
         if etype == "user":
             tr = obj.get("toolUseResult")
@@ -761,7 +850,9 @@ class WatchStream:
         return LiveSessionInfo(session_id=sid, title=t.session.title,
                                objective=self._briefs.get(sid),
                                last_append=t.last_append,
-                               num=self._nums.get(sid, 0))
+                               num=self._nums.get(sid, 0),
+                               activity=(Activity(t.act_verb, t.act_since)
+                                         if t.act_verb else None))
 
     def vitals(self) -> Vitals:
         now = _now()

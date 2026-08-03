@@ -36,7 +36,7 @@ from textual.containers import VerticalScroll
 from textual.widgets import Static
 
 from .theme import Theme
-from .watchstream import FeedEvent, WatchStream
+from .watchstream import FeedEvent, LiveSessionInfo, WatchStream
 
 POLL_INTERVAL = 0.25       # seconds between stream polls
 FPS = 30                   # animation frames per second
@@ -55,6 +55,12 @@ FRESH = 30                 # recency younger than this reads in live-green
 STRIP_CELLS = 8            # header activity strip: 8 cells, one minute each
 STRIP_BLOCKS = "▁▂▃▄▅▆▇█"
 NARROW = 100               # below this width: strips, briefs, hint labels drop
+SPIN = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"      # Activity State spinner frames
+SPIN_FPS = 4               # spinner frame rate — wall-clock driven, so an
+                           # ad-hoc status refresh can't jitter it; matched to
+                           # 1/POLL_INTERVAL so no frame is skipped
+SPIN_STALL = "⠿"           # frozen spinner: nothing appended for FRESH seconds
+ACTS_SHOWN = 3             # acting sessions named in the footer; rest counted
 
 _MARKS = {
     "file": "✎", "bash": "⏺", "commit": "⚑", "push": "⇧",
@@ -79,6 +85,17 @@ def _ago(when: datetime, now: datetime) -> str:
     if s < 3600:
         return f"{s // 60}m ago"
     return f"{s // 3600}h{(s % 3600) // 60:02d}m ago"
+
+
+def _dur(seconds: float) -> str:
+    """A bare compact duration — `_ago` without the "ago", for an Activity State
+    that is still running rather than something that already happened."""
+    s = max(0, int(seconds))
+    if s < 60:
+        return f"{s}s"
+    if s < 3600:
+        return f"{s // 60}m"
+    return f"{s // 3600}h{(s % 3600) // 60:02d}m"
 
 
 def _one_line(s: str, limit: int = 120) -> str:
@@ -850,6 +867,51 @@ class WatchApp(App):
             return [("⏎", "expand"), ("d", "stat"), ("+ −", "speed"), ("?", "keys")]
         return [("⏎", "expand"), ("d", "stat"), ("[ ]", "chapter"), ("?", "keys")]
 
+    def _activity_state(self, live: list[LiveSessionInfo], now: datetime,
+                        budget: int) -> Text | None:
+        """Every acting Live Session's Activity State, in lane order.
+
+        A settled session contributes *nothing* — the footer only grows when
+        work is actually happening, which is why every acting session can be
+        named rather than one being picked over the others.
+
+        The spinner turns only while the log is being appended; past FRESH
+        seconds it freezes to a static glyph in muted colour. Motion therefore
+        maps to arriving data, never to a state word, so a session that was
+        killed mid-turn stops pretending to work instead of spinning forever
+        (CONTEXT.md → Activity State; ADR 0011).
+        """
+        t = self.t
+        acting = [ls for ls in live if ls.activity]
+        if not acting or budget < 12:
+            return None
+        frame = SPIN[int(time.monotonic() * SPIN_FPS) % len(SPIN)]
+        fresh_of = {ls.session_id: (now - ls.last_append).total_seconds() < FRESH
+                    for ls in acting}
+        out = Text(no_wrap=True)
+        for ls in acting[:ACTS_SHOWN]:
+            if out.cell_len:
+                out.append("  ·  ", style=t.style("faint"))
+            fresh = fresh_of[ls.session_id]
+            out.append(f"[{ls.num}]", style=t.session(ls.num, bold=True))
+            out.append(" ")
+            out.append(frame if fresh else SPIN_STALL,
+                       style=t.style("live" if fresh else "muted"))
+            out.append(" ")
+            out.append(ls.activity.verb, style=t.style("primary", bold=True))
+            out.append(" " + _dur((now - ls.activity.since).total_seconds()),
+                       style=t.style("muted"))
+        if len(acting) > ACTS_SHOWN:
+            out.append(f"  +{len(acting) - ACTS_SHOWN}", style=t.style("faint"))
+        if out.cell_len <= budget:
+            return out
+        # no room for the verbs: the count alone still answers the one question
+        short = Text(no_wrap=True)
+        short.append(frame if any(fresh_of.values()) else SPIN_STALL,
+                     style=t.style("live" if any(fresh_of.values()) else "muted"))
+        short.append(f" {len(acting)} acting", style=t.style("primary", bold=True))
+        return short if short.cell_len <= budget else None
+
     def _refresh_status(self) -> None:
         t = self.t
         feed = self.query_one("#feed", VerticalScroll)
@@ -867,18 +929,41 @@ class WatchApp(App):
             back_chip = Style(color=t.hex("surface"), bgcolor=t.hex("claim"), bold=True)
         else:
             live_chip = back_chip = Style(reverse=True, bold=True)
+        hints = Text()
+        for i, (key, label) in enumerate(self._hints(wide)):
+            if i:
+                hints.append(" · ", style=t.style("faint"))
+            hints.append(key, style=t.style("primary", bold=True))
+            hints.append(f" {label}", style=t.style("muted"))
+
+        # the modes, built before the Activity State so it can be given a real
+        # width budget rather than pushed off the end by them
+        tail = Text(no_wrap=True)
+        if self.filter_sid:
+            num = self.stream.session_num(self.filter_sid)
+            tail.append("  ·  ", style=t.style("faint"))
+            tail.append("filter ", style=t.style("muted"))
+            tail.append(f"[{num}] ", style=t.session(num, bold=True))
+            tail.append(self.filter_sid[:8], style=t.style("address"))
+        if self.stat_mode:
+            tail.append("  ·  ", style=t.style("faint"))
+            tail.append("stat", style=t.style("primary", bold=True))
+            tail.append(" — headers only", style=t.style("muted"))
+        if self.anim_queue or self.speed != BASE_SPEED:
+            tail.append("  ·  ", style=t.style("faint"))
+            tail.append(f"{int(self.speed)} c/s", style=t.style("muted"))
+
+        v = self.stream.vitals()
+        quiet = False
         if following:
             bar.append(" ● LIVE ", style=live_chip)
             bar.append("  ")
-            v = self.stream.vitals()
             if not v.live:
+                quiet = True
                 bar.append("git only", style=t.style("primary"))
                 bar.append(" · poll 2s · last change ", style=t.style("muted"))
                 bar.append(_ago(self._last_event_at, now)
                            if self._last_event_at else "—", style=t.style("primary"))
-            elif self._last_event_at is not None:
-                s = max(0, int((now - self._last_event_at).total_seconds()))
-                bar.append(f"{s}s since last event", style=t.style("muted"))
         else:
             bar.append(" ▲ SCROLLED ", style=back_chip)
             bar.append("  ")
@@ -887,26 +972,24 @@ class WatchApp(App):
             bar.append("· ", style=t.style("faint"))
             bar.append(f"{self._new_below} new below",
                        style=t.style("primary", bold=True))
-        if self.filter_sid:
-            num = self.stream.session_num(self.filter_sid)
-            bar.append("  ·  ", style=t.style("faint"))
-            bar.append("filter ", style=t.style("muted"))
-            bar.append(f"[{num}] ", style=t.session(num, bold=True))
-            bar.append(self.filter_sid[:8], style=t.style("address"))
-        if self.stat_mode:
-            bar.append("  ·  ", style=t.style("faint"))
-            bar.append("stat", style=t.style("primary", bold=True))
-            bar.append(" — headers only", style=t.style("muted"))
-        if self.anim_queue or self.speed != BASE_SPEED:
-            bar.append("  ·  ", style=t.style("faint"))
-            bar.append(f"{int(self.speed)} c/s", style=t.style("muted"))
 
-        hints = Text()
-        for i, (key, label) in enumerate(self._hints(wide)):
-            if i:
-                hints.append(" · ", style=t.style("faint"))
-            hints.append(key, style=t.style("primary", bold=True))
-            hints.append(f" {label}", style=t.style("muted"))
+        # Activity State sits as far left as the band allows — it is the one
+        # thing here you look for without reading. It shows while scrolled back
+        # too: that is precisely when you have stopped watching the feed and
+        # still need to know whether the agent is done.
+        act = None if quiet else self._activity_state(
+            v.live, now, width - bar.cell_len - tail.cell_len - hints.cell_len - 4)
+        if act is not None:
+            if not following:
+                bar.append("  ·  ", style=t.style("faint"))
+            bar.append_text(act)
+        elif following and v.live and self._last_event_at is not None:
+            # nothing is acting: the settled sessions say nothing at all, so the
+            # band falls back to the plain recency it showed before
+            s = max(0, int((now - self._last_event_at).total_seconds()))
+            bar.append(f"{s}s since last event", style=t.style("muted"))
+        bar.append_text(tail)
+
         pad = width - bar.cell_len - hints.cell_len - 1
         bar.append(" " * max(2, pad))
         bar.append_text(hints)

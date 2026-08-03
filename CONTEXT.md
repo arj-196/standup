@@ -121,6 +121,28 @@ One entry in the **Watch**: an animated file change (session-claimed, or `~`-mar
 A **Session** whose log was appended within a recency threshold (~30 minutes). A *recency claim*, not a process fact — Standup never inspects processes, and the **Watch** always displays how long ago the last append happened rather than asserting "running". Distinct from **Active Work**, which is a git dirt tier.
 _Avoid_: active session (collides with Active Work), running session
 
+**Activity State**:
+What a **Live Session**'s agent is doing *right now*, derived from the tail of
+its own log: `thinking`, `reading`, `writing`, `running`, or `acting` for a tool
+with no mapped verb. Strictly a mid-turn notion — a session that has handed
+control back **has no Activity State at all**, and the **Watch** says nothing
+about it. That asymmetry is the point: the question it answers is "has it
+*not* finished yet", so silence is the answer for "done" and no word is needed
+for it. Read from the main thread only (a subagent's reads are not the
+session's, and several at once have no single answer). Three of the verbs are
+facts — a pending `tool_use` names its own tool, and `stop_reason` says whether
+the turn continues — but **`thinking` is inferred from silence**: the log
+records a tool call and its result, never the pause between them, so the pause
+is all there is to read. An **interrupt** (`Esc`, or the session quitting
+mid-turn) is a *fact* in the log and settles the state; without reading it,
+`thinking` would be claimed forever. Displayed with the age of the state and
+never with a threshold — a long `thinking 14m` is left to speak for itself
+rather than being re-labelled "stalled", which would be Standup inferring that
+a process died (see **Live Session**: recency, never a process claim). Its
+spinner obeys the same rule: motion may never outlive the data (ADR 0011).
+_Avoid_: status (the Watch's status bar), active/idle (collides with Active
+Work), running session (a process claim), progress (implies a known end)
+
 ## Relationships
 
 - A **Session** belongs to exactly one working directory (`cwd`), which may be a repo checkout or a worktree
@@ -139,6 +161,7 @@ _Avoid_: active session (collides with Active Work), running session
 - An Audit is stored at `~/.standup/audits/`, staled by the Session continuing (same tolerance as Briefs), never by sibling drift; `--refresh` regenerates, nothing auto-regenerates
 - The **Watch** consumes the same two sources as the **Triage Inbox** (Session logs + git) with the same split: the log claims *who and what*, git confirms *ground truth* (and alone reveals live **Unattributed Change**s). It interleaves all **Live Session**s of one **Repo Entry** into a single feed, filterable down to one Session interactively
 - A repo with no **Live Session**s (any git checkout, even outside the **Scan Universe**) still narrates: git alone is the witness, and the Watch content-diffs its dirty files so every change appears with its added/removed text — `~`-marked unattributed, since no Session claims it
+- **Activity State** is the **Watch**'s only forward-looking reading: every other output describes what already happened, while this one says whether more is coming. It is a per-Session claim shown in the status bar for *acting* sessions only, never a **Feed Event** — a state is not something that happened, and a transition per tool call would bury the narrative it sits under
 - The **Watch**'s typing animation is presentation only, under a hard staleness bound: the display may never lag the log by more than a few seconds — the animation compresses (down to instant) to honor it. Delight never outranks truth
 - On launch the **Watch** backfills, unanimated and dimmed, from *each* **Live Session**'s current user prompt (prompts are the narrative's chapter breaks) — every session's chapter, interleaved chronologically, so a Session that finished its work and went quiet is still legible when you filter to it. It sits beneath a vitals header (repo, branch, Live Sessions with recency, dirt count)
 - A committed change stays readable in the **Watch**: the commit event carries its own diff, so the two ways a change can be witnessed — a **Session**'s claimed edit while dirty, and git's commit after the tree goes clean — both render as added/removed text rather than one of them degrading to a subject line

@@ -92,9 +92,20 @@ highlighting as a live edit, so committing a change doesn't make it
 unreadable; and on launch every Live Session replays its current chapter at
 full strength behind a boundary rule, so filtering to a session that has
 already committed and gone quiet still shows its work, as legibly as if you
-had watched it happen. It's interactive;
-[docs/watch-manual.md](docs/watch-manual.md) is the full guide to the screen
-and the keys.
+had watched it happen.
+
+Its status bar carries the **Activity State** of every session that is
+currently mid-turn — `[1] ⠹ thinking 4s · [2] ⠹ running 1m` — so you can tell
+whether an agent is still going without switching to its terminal. A session
+that has handed control back shows *nothing*: there is no "finished", because
+the absence is the answer, and the bar stays quiet when the work is quiet. The
+verb is read from the log's own `stop_reason` and pending tool call, except
+`thinking`, which is inferred from silence and documented as such; the spinner
+freezes when nothing has been appended for 30 seconds, so motion never outlives
+the data ([ADR 0011](docs/adr/0011-activity-state-inferred-motion-never-outlives-data.md)).
+
+It's interactive; [docs/watch-manual.md](docs/watch-manual.md) is the full guide
+to the screen and the keys.
 
 `standup show` opens in your pager (`$PAGER`, or `less -R`) when writing to a
 terminal — scroll and `/`-search from the top of the conversation. It prints

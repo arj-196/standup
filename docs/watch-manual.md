@@ -22,10 +22,16 @@ plus its worktrees) into a single chronological feed:
 - **commits** — each carrying its own diff — **pushes, branch switches**
 - **Unattributed Changes** — dirt that no session claims — the moment they appear
 
+Above that feed it also answers the one question the feed can't: **is the agent
+still working?** Each session that's mid-turn shows its **Activity State** in
+the status bar — `thinking`, `reading`, `writing`, `running` — and a session
+that has handed control back shows nothing at all. See §3.
+
 It reads two sources, exactly as the **Triage Inbox** does: the Claude Code
 session log claims *who and what*, and git confirms *ground truth*. Assistant
 prose and thinking never appear here — reading the conversation is
-`standup show`'s job.
+`standup show`'s job. (The `thinking` **Activity State** is not an exception: it
+reports *that* the model is composing, never a word of what it is composing.)
 
 The Watch is read-only and stateless. It never writes to your repo, never
 touches the session, and quitting it loses nothing.
@@ -271,15 +277,53 @@ file list simply aren't there, because no diff was read.
 ### The status bar
 
 Three segments, fixed positions. Left, a reverse-video **state chip**: green
-`● LIVE` while the feed follows the bottom (with `Ns since last event`
-ticking beside it, or `git only · poll 2s · last change Nm ago` when nothing
-is live), amber `▲ SCROLLED` while you read scrollback — with how far back
-(`−38 rows`) and how much has landed beneath you (`6 new below`, ticking).
-The chip inverts so it reads from three feet, with or without color.
+`● LIVE` while the feed follows the bottom (or `git only · poll 2s · last
+change Nm ago` when nothing is live), amber `▲ SCROLLED` while you read
+scrollback — with how far back (`−38 rows`) and how much has landed beneath you
+(`6 new below`, ticking). The chip inverts so it reads from three feet, with or
+without color.
 
-The middle holds context only when it's non-default: the active filter
+Next to the chip, the **Activity State** of every session that is currently
+working:
+
+```
+ ● LIVE   [1] ⠹ thinking 4s  ·  [2] ⠹ running 1m          ⏎ expand · d stat · ? keys
+```
+
+This is the segment that answers "do I need to go back to the terminal yet".
+It is deliberately one-sided: a session that has **finished its turn shows
+nothing at all**. There is no `finished`, no `done`, no `waiting on you` — the
+absence *is* the answer, so the bar stays quiet when the work is quiet. With
+nothing acting, this falls back to `Ns since last event`.
+
+| Verb | Means |
+|---|---|
+| `thinking` | the model is composing — no tool call is in flight |
+| `reading` | `Read`, `Grep`, `Glob`, `WebFetch`, `WebSearch` |
+| `writing` | `Write`, `Edit`, `MultiEdit`, `NotebookEdit` |
+| `running` | `Bash` and its shell companions |
+| `acting` | any other tool, including MCP tools — an unmapped tool is still true |
+
+The number is how long it has been in that state, and it is never re-labelled:
+`thinking 14m` stays `thinking 14m` rather than becoming "stalled", because
+Standup would then be claiming a process died, which it cannot know (the same
+reason a **Live Session** shows `28m ago` instead of "running"). Fourteen
+minutes of thinking is suspicious and you are the one who knows whether you
+asked for something that takes it. This is also why the verb is worth having
+over a bare "busy": `thinking 4m` and `running 4m` are not the same news — one
+means something has probably gone wrong, the other is a test suite behaving.
+
+`reading` and `acting` have no Feed Event of their own — `Read` and `Grep`
+produce no feed rows — so for those tools the status bar is the *only* place
+they appear.
+
+The Activity State shows while you're scrolled back too. That's precisely when
+you've stopped watching the feed and most need to know whether the agent is
+still going.
+
+Then the modes, when they're non-default: the active filter
 (`filter [2] 9f8e7d6c`), `stat — headers only`, and the typing speed while
-text is animating or you've changed it. Empty middle means "plain live view".
+text is animating or you've changed it.
 
 The right edge shows at most four key hints, contextual to what you're doing;
 `?` toggles the full key map as a temporary overlay. When something surprises
@@ -444,6 +488,10 @@ just carrying on) puts it away.
 repo, ask it to do something with files, and in another terminal run `standup
 watch` there. Every Edit appears as it lands. Press `d` and watch the same
 activity as a one-line-per-event log; press `d` again to get the text back.
+Keep an eye on the status bar while you're there: the verb next to the chip
+walks `thinking` → `reading` → `writing` and then, when the agent hands the turn
+back, disappears. That disappearance is your cue to switch terminals — you don't
+have to go and check.
 
 **2. Read something that scrolled past.** When an interesting edit flies by:
 `↑` (the view holds still), `↑` again until it's highlighted, `enter` to see
@@ -493,6 +541,25 @@ dropped and the newest 400 are replayed.
 30 minutes", nothing more. Standup never inspects processes, so it shows you
 the recency and lets you judge.
 
+**Nothing is said when a session finishes.** There's no `finished` in the status
+bar and no row in the feed — its **Activity State** simply stops being shown.
+That's the design: the bar is quiet when the work is quiet, so anything there
+means work is still going.
+
+**`thinking` is read from silence.** It's the one state the log never states.
+Claude Code writes a line when a tool is called and a line when it returns, but
+nothing about the pause between them — so the pause is what `thinking` is. The
+practical consequence: a session killed outright in that gap (window closed,
+`kill -9`) leaves a tail that looks exactly like a session still composing, and
+it will read `thinking` until it ages past the 30-minute Live window.
+
+**A frozen spinner means nothing is arriving.** The `⠹` beside the verb turns
+only while the log is still being appended. After 30 quiet seconds it stops and
+changes to a static, dimmed `⠿` — so `[1] ⠿ running 6m` reads "it announced a
+Bash command six minutes ago and nothing has come back". That's not a claim the
+session died; it's the refusal to keep implying it's alive. Motion in the Watch
+always maps to arriving data, never to a word on screen.
+
 **Scrollback holds the view, never the stream.** There is no pause and no
 queue: while you read, new events keep landing below your viewport in real
 time. The `▲ SCROLLED` chip means the bottom is moving on without you —
@@ -524,6 +591,10 @@ files and diffs them itself.
 | everything is `~unattributed` | no session log covers this repo — expected outside the Scan Universe |
 | a commit shows no file list | it's a merge (no combined diff by default) or its diff is over ~400 KB — no diff was read, so none is shown |
 | typing looks instant | the staleness bound is compressing it; the log is ahead of the display |
+| no verb in the status bar | nothing is acting — every Live Session has handed its turn back. There is no "finished" to show |
+| the spinner has stopped | nothing appended for 30s; the verb and its age are the last thing the log said (a long `running` is normal, a long `thinking` is not) |
+| `thinking` for far too long | either a long reasoning pass, or the session was killed in the gap after a tool returned — the log can't tell them apart. The frozen spinner is the tell |
+| `[2] ⠹ acting 3s` | a tool with no mapped verb (an MCP tool, or one newer than the table) |
 
 ## 8. One-page key reference
 

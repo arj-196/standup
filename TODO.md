@@ -12,8 +12,10 @@ Domain words in **bold** are defined in CONTEXT.md.
 The **Watch** was designed to show *new* changes arriving. It is now used to
 **monitor what an agent is actually doing**, which makes already-happened
 activity — previous actions, committed work — part of the job rather than
-`standup show`'s problem. Per-session backfill and commit diffs were the first
-two steps. The items below are the rest.
+`standup show`'s problem. Per-session backfill, commit diffs, and the
+**Activity State** in the status bar (ADR 0011 — the monitor now answers "is it
+still working?", which was the reason for the terminal round trip) were the
+first three steps. The items below are the rest.
 
 Two guardrails hold across all of them:
 
