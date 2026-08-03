@@ -413,6 +413,17 @@ Clicks in empty feed space or the status bar do nothing (a click on a header
 session row toggles its filter — see below). Walk `↓` past the last event and
 the Watch takes it as "I'm done reading" and goes live.
 
+**The click that brings the terminal forward is not a click on the feed.** When
+you come back from another window by clicking the terminal, that click lands
+wherever the pointer happened to be resting — you meant to focus the window,
+not to expand whatever event is under the cursor. The Watch ignores it: it
+takes the terminal's focus report and discards the click that arrives with it,
+along with any other click in the next 0.35s. Focus the window with `⌘-Tab`
+instead and nothing is discarded, because no click needs discarding. This needs
+a terminal that reports focus (iTerm2, Ghostty, WezTerm, kitty, Alacritty);
+Apple Terminal doesn't, so there the refocusing click still counts
+([ADR 0014](adr/0014-the-click-that-refocuses-the-terminal-is-not-a-gesture.md)).
+
 `[` and `]` move by chapters instead of events: prompts are the skeleton of
 the narrative, and an hour of work is a handful of `[` presses, not hundreds
 of `↑`s.
@@ -491,6 +502,9 @@ back. Start a watch already clipping with `standup watch --no-wrap`.
 | `Tab` | cycle to the next session, then back to all |
 | `Esc` or `0` | clear the filter |
 | click a header session row | toggle its filter |
+
+A click that only brings the terminal forward doesn't toggle a filter either —
+the same guard covers the header band and the feed.
 
 Two sessions working in one repo produce one interleaved feed, which is the
 point — and occasionally the problem. The numbers match the vitals header —
@@ -677,6 +691,7 @@ g, Home      jump to the top of scrollback
              (both hold the view)      PageDown scroll down a page
 [ ]          previous / next chapter
 click        select + expand the clicked event; click again collapses
+             (the click that refocuses the terminal is ignored)
 enter        expand / collapse         d        stat mode (headers only)
              (commits: header → files → diffs)
                                        w        wrap ⇄ clip long body lines

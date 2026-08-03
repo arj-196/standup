@@ -72,6 +72,8 @@ ACTS_SHOWN = 3             # acting sessions named in the footer; rest counted
 CODE_COL = 16              # cells left of a body line's first character
 PROMPT_COL = 12            # ditto, for an expanded prompt's own text
 WRAP_ROWS = 40             # rows one wrapped body line may occupy; rest counted
+REFOCUS_GRACE = 0.35       # seconds after the terminal regains focus in which a
+                           # click is read as the window gesture, not a feed one
 
 _MARKS = {
     "file": "✎", "bash": "⏺", "commit": "⚑", "push": "⇧",
@@ -676,6 +678,9 @@ class WatchApp(App):
         self._tail_meta: tuple[datetime, str | None] | None = None
         self._activity: dict[str, deque[datetime]] = {}
         self._vitals_rows: list[str] = []        # session ids by header row
+        self._focused = True                     # terminal window has focus
+        self._refocused_at = 0.0                 # monotonic stamp of the last
+                                                 # blurred → focused transition
         self._backfill_events = stream.start()
 
     # -- layout ----------------------------------------------------------------
@@ -713,6 +718,27 @@ class WatchApp(App):
         self._refresh_status()
         for w in self.query(EventWidget):
             w.refresh_event()
+
+    # -- terminal focus --------------------------------------------------------------
+
+    def on_app_blur(self, event: events.AppBlur) -> None:
+        self._focused = False
+
+    def on_app_focus(self, event: events.AppFocus) -> None:
+        """The click that brings the terminal forward is a window gesture, not a
+        feed one: it lands wherever the pointer happened to rest, so obeying it
+        would expand an arbitrary event. Stamp the transition and let
+        `_refocus_click` swallow that one click."""
+        if not self._focused:
+            self._refocused_at = time.monotonic()
+        self._focused = True
+
+    def _refocus_click(self) -> bool:
+        """True while a click could still be the one that refocused the window.
+        The terminal reports FocusIn in the same burst as that click, so the
+        window is short. Terminals without focus reporting (Apple Terminal)
+        never send FocusIn, and there every click counts — as before."""
+        return time.monotonic() - self._refocused_at < REFOCUS_GRACE
 
     def _mount_boundary(self, count: int) -> None:
         """The ┈ rule that names both sides of launch: replay above, live below."""
@@ -1144,7 +1170,10 @@ class WatchApp(App):
         self._refresh_status()
 
     def click_vitals_row(self, y: int) -> None:
-        """Clicking a session row in the header toggles its filter."""
+        """Clicking a session row in the header toggles its filter. The click
+        that refocused the terminal is not one of those clicks."""
+        if self._refocus_click():
+            return
         i = y - 1                       # row 0 is the vitals line
         if 0 <= i < len(self._vitals_rows):
             sid = self._vitals_rows[i]
@@ -1304,7 +1333,10 @@ class WatchApp(App):
     def click_select(self, w: EventWidget) -> None:
         """A click selects the clicked event and toggles its expansion in one
         gesture — click to expand, click again to collapse. Clicks outside any
-        event do nothing."""
+        event do nothing, and neither does the click that refocused the
+        terminal."""
+        if self._refocus_click():
+            return
         if self.selected is not w:
             self._select(w)
         self.action_toggle_expand()
