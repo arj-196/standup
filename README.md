@@ -128,6 +128,20 @@ full strength behind a boundary rule, so filtering to a session that has
 already committed and gone quiet still shows its work, as legibly as if you
 had watched it happen.
 
+A file the agent is actually working on arrives as several edits — a
+`MultiEdit`'s hunks, four `Edit` calls in ten seconds, or one delta per git
+poll — and a row for each buried the work under its own headers. Consecutive
+changes to the same file therefore fold into one **Change Run**: one header,
+one body that evolves as the work lands, carrying `×N` for the tool calls it
+folded (a `MultiEdit` is `×1`). Nothing is discarded — `enter` still expands
+every hunk — and the fold is bounded so it can't mislead: it only ever grows
+at the bottom of the feed, any other event closes it, and it closes on its own
+after 30 seconds so sustained work still produces rows. A claimed run sums the
+hunks it shows; a git-witnessed one states the true net delta, measured against
+a reference snapshot, so a line added and then removed cancels instead of being
+counted twice. Either way the header describes the body printed beneath it
+([ADR 0017](docs/adr/0017-a-file-being-worked-on-is-one-evolving-entry.md)).
+
 Its status bar carries the **Activity State** of every session that is
 currently mid-turn — `[1] ⠹ thinking 4s · [2] ⠹ running 1m` — so you can tell
 whether an agent is still going without switching to its terminal. A session

@@ -16,7 +16,9 @@ the design decision behind the view is
 The Watch interleaves everything happening in **one Repo Entry** (a checkout
 plus its worktrees) into a single chronological feed:
 
-- **file edits**, typed out character by character as they land
+- **file edits**, typed out character by character as they land — consecutive
+  edits to one file fold into a single entry that evolves, so a file being
+  worked on reads as one act of work rather than a row per tool call
 - **Bash one-liners**, with their exit status
 - **your prompts**, as the chapter breaks of the narrative
 - **commits** — each carrying its own diff — **pushes, branch switches**
@@ -232,10 +234,75 @@ When a collapsed body has more lines than it shows, the count sits at the
 right edge as `▸ N lines`; expanded, it flips to `▾`.
 
 Below the header, a file event shows its body: up to 4 removed lines, then the
-added text typing itself out with a `▌` cursor. Long blocks animate their
-first 12 lines and collapse the rest to `… ▸ N more lines`. A line wider than
+added text typing itself out with a `▌` cursor. Long blocks animate 12 lines
+and collapse the rest to `… ▸ N more lines`. A line wider than
 the feed folds onto further rows rather than running off the edge; `w` turns
 that off (§4).
+
+#### One file being worked on is one entry
+
+A file the agent is actually working on doesn't arrive as one change. It
+arrives as a `MultiEdit`'s hunks, or four `Edit` calls in ten seconds, or —
+when git is the only witness — one delta per two-second poll. Rendering a row
+for each buried the work under its own headers, so consecutive file events for
+the **same file and the same witness** fold into one **Change Run**: one
+header, one body, evolving as the work lands.
+
+```
+  +8s 1▏ ✎  src/standup/watchstream.py  modify  +6  ×5
+       ▏      + # Display floor for a tool verb (ADR 0011, amendment).
+       ▏      + ACT_FLOOR = timedelta(seconds=1.0)
+       ▏      +         self.act_tool: str | None = None
+       ▏      +             self.act_tool = None
+       ▏      +         self.act_tool, self.act_tool_since = self.act_verb, ts
+```
+
+`×5` counts the **tool calls** folded in — one `MultiEdit` reads `×1` however
+many hunks it emitted, because that was one action. It appears only on
+session-claimed runs; a `~unattributed` run never carries it, since there the
+number would only tell you how many times the 2-second poll happened to catch
+the file. Nothing is discarded by folding: `enter` expands the run to every
+hunk it holds, and a **Feed Event** is still one tool call underneath.
+
+What **closes** a run:
+
+| Cause | Why |
+|---|---|
+| any other event between two same-file events — a Bash line, another file, a prompt chapter | a run grows only at the bottom of the feed, so a row you've already scrolled past never changes shape. When two rows *don't* merge, the reason is on screen |
+| ~30 seconds since the run opened | sustained work on one file still produces rows — a feed that goes still while the agent works hardest reads as dead — and it bounds how stale the run's time can be |
+| a different file, or a different session | — |
+| the different *witness* — a session claim never folds into a git observation | they are different kinds of statement (see the honesty rules above) |
+| the backfill boundary | nothing live grows a replayed run across the rule |
+
+The gap gutter and the run's position are its **first** event's, and are never
+revised — that is what keeps the rows above you still. The ~30s cap is what
+makes that honest.
+
+The two witnesses fold differently, and in both cases **the header describes
+the body printed beneath it** — you can count the rows and get the number:
+
+- a **session-claimed** run (`✎`) *accumulates*: the log carries hunks, so the
+  body grows and the counts are the sum of the hunks shown. New text types in
+  from where the last one stopped rather than restarting.
+- a **git-witnessed** run (`~`) *restates*: the watcher diffs the whole file
+  against a reference snapshot, so each update replaces the body and the counts
+  are the true net delta — a line added and then removed inside the run cancels
+  instead of being counted twice. Restatements land instantly; re-typing rows
+  already on screen every two seconds would be a flicker, not an animation.
+
+Because a run accumulates chronologically, once it has folded anything its
+collapsed body shows its **tail** — the newest hunks — with the earlier lines
+counted above as `… ▸ N earlier lines`. Otherwise the code you were watching
+for would be the code hidden behind the count. A single event, and a
+git-witnessed run (whose body is a file-ordered snapshot with no newest end),
+show their **head** and count what's below as usual. Either way a run stays a
+bounded height however much it absorbs.
+
+One thing a `~` run does **not** do is keep itself current. It states its
+delta *as of its last update*: revert a file all the way back and the run
+keeps its last figures rather than ticking down to zero. That's deliberate —
+every entry in the feed is a statement about what happened, not a live reading
+of the tree, and the ~30s cap closes the run shortly anyway. See §6.
 
 The body separates two kinds of information into three channels — three
 channels, never fewer. The left gutter carries *what changed*: a green `+` on
@@ -456,7 +523,8 @@ events can't shift the view under you; going back to live drops the excess.
 | `w` | wrap (on by default): long body lines fold onto further rows ⇄ clip |
 
 `enter` on a file event drops the 12-line/4-line collapse and shows the whole
-added and removed text. On a **commit** it cycles through the three levels —
+added and removed text — on a **Change Run**, every hunk it folded, not just
+the window. On a **commit** it cycles through the three levels —
 header, file list, every file's full diff, and around again. On a prompt it
 shows your full message (when the rule had to truncate it); on a Bash event
 it shows the untruncated command. Expanding also finishes any in-progress
@@ -672,6 +740,24 @@ polled every two seconds, and pushes every ten. An edit typically appears
 the second change (already ` M`, still ` M`), so the Watch snapshots dirty
 files and diffs them itself.
 
+**Editing one file for a while produces one row, not one per edit.** Those
+edits fold into a single **Change Run** that grows in place. During a long
+burst you'll get a fresh row about every 30 seconds rather than one per tool
+call or per git poll — the Activity State in the status bar is what tells you
+work is still going in between. `×N` on the header says how many tool calls
+went into it.
+
+**A run's `+N` doesn't tick back down when you revert.** A git-witnessed run
+states its net delta *as of its last update*. Undo the change and the row keeps
+its last figures rather than falling to zero — the feed records what happened,
+it isn't a live reading of the tree. The run closes ~30 seconds after it opened
+in any case, and the vitals band's dirt count is the figure that *is* current.
+
+**Startup dirt isn't replayed as a giant event.** A file already dirty when you
+launched is measured from what the Watch first saw, not from HEAD — so a repo
+with existing uncommitted work narrates the changes from here on rather than
+opening with one enormous block of old news.
+
 ## 7. Troubleshooting
 
 | Symptom | Why |
@@ -685,6 +771,9 @@ files and diffs them itself.
 | everything is `~unattributed` | no session log covers this repo — expected outside the Scan Universe |
 | a commit shows no file list | it's a merge (no combined diff by default) or its diff is over ~400 KB — no diff was read, so none is shown |
 | a body line runs off the right edge | wrap has been turned off (`no wrap` in the status bar, or `--no-wrap`) — press `w` |
+| `… ▸ N earlier lines` above a body | a **Change Run** showing its tail: the newest hunks are visible and the run's earlier lines are counted above. `enter` shows all of them |
+| a `+N` that looks too big for one edit | it's a **Change Run** — `×N` on the header says how many tool calls it folded, and the counts are their sum |
+| a file's row doesn't update while it's being edited | the run already closed (something else happened, or ~30s passed); the next edit opens a fresh row below |
 | a folded line ends `… +N chars` | one line hit the 40-row fold bound; the count is the rest of it. `s` reads it whole in the Transcript |
 | a header clips even though lines fold | wrap is for bodies only; headers stay one row per event. `enter` shows a prompt or command in full |
 | one event fills the screen | it's a long-line file (minified, generated) folding to fit — `w` clips it back, or `d` for headers only |

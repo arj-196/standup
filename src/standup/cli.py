@@ -826,7 +826,9 @@ def _cmd_watch(argv: list[str]) -> int:
         prog="standup watch",
         description="Watch a repo live while an agent works in it: an interleaved "
                     "feed of every Live Session's activity — file edits (typed out "
-                    "as they land), Bash one-liners, your prompts as chapter "
+                    "as they land; consecutive edits to one file fold into a "
+                    "single Change Run that evolves, marked ×N for the tool calls "
+                    "it folded), Bash one-liners, your prompts as chapter "
                     "rules, commits (with their diff), pushes, branch switches, "
                     "and Unattributed Changes the "
                     "moment they appear. The status bar carries the Activity State "

@@ -89,7 +89,16 @@ class FeedEvent:
     removed: str = ""            # text replaced
     command: str | None = None   # bash events
     ok: bool | None = None       # bash_result verdict
-    tool_id: str | None = None   # joins bash -> bash_result
+    tool_id: str | None = None   # joins bash -> bash_result; on a file event, the
+                                 # tool call it came from, so a Change Run can
+                                 # count calls rather than hunks (one MultiEdit
+                                 # spans several events but is one call)
+    # Does this file event *replace* the picture of its path, or add to it?
+    # A Session claims hunks, which accumulate; the git watcher states the whole
+    # delta of a dirty file, which supersedes what it last said (ADR 0017). The
+    # Watch needs the distinction to fold a Change Run without lying about the
+    # counts, and it is a property of the witness, not a UI guess.
+    restates: bool = False
     message: str = ""            # prompt text / commit subject / free text
     sha: str | None = None
     files: list[CommitFile] = field(default_factory=list)  # commit events' diff
@@ -351,24 +360,29 @@ class _Tailer:
                     continue  # the session touched a file outside this Repo Entry
                 root, rel = loc
                 self.edited_paths.add(os.path.realpath(fp))
+                # every file event carries its tool call's id: a MultiEdit emits
+                # one event per hunk, and only the id tells the Watch those hunks
+                # were a single action by the agent
+                tid = b.get("id") or None
                 if name == "Write":
                     # during backfill the tree has long moved on — don't ask git
                     change = "modify" if self._backfilling else self._write_change(root, rel)
                     events.append(FeedEvent(kind="file", when=ts, session_id=sid,
                                             title=title, path=rel, change=change,
+                                            tool_id=tid,
                                             added=inp.get("content") or ""))
                 elif name == "MultiEdit":
                     for e in inp.get("edits") or []:
                         if isinstance(e, dict):
                             events.append(FeedEvent(
                                 kind="file", when=ts, session_id=sid, title=title,
-                                path=rel, change="modify",
+                                path=rel, change="modify", tool_id=tid,
                                 added=e.get("new_string") or "",
                                 removed=e.get("old_string") or ""))
                 else:  # Edit / NotebookEdit
                     events.append(FeedEvent(
                         kind="file", when=ts, session_id=sid, title=title,
-                        path=rel, change="modify",
+                        path=rel, change="modify", tool_id=tid,
                         added=inp.get("new_string") or inp.get("new_source") or "",
                         removed=inp.get("old_string") or ""))
         return events
@@ -445,10 +459,19 @@ class _GitWatcher:
     """Polls git for ground truth: content deltas of dirty files, HEAD moves,
     branch switches, pushes. When no tailed Session explains a change, the
     watcher itself supplies the content: it snapshots every dirty file and
-    emits a real file event with the incremental line-diff — so a repo with no
-    Claude sessions at all still narrates (status codes alone can't: a file
-    that is already ` M` and changes again never changes code). Binary or
-    oversized files degrade to a one-line Unattributed Change."""
+    emits a real file event with the *cumulative* line-diff against a reference
+    snapshot — so a repo with no Claude sessions at all still narrates (status
+    codes alone can't: a file that is already ` M` and changes again never
+    changes code). Binary or oversized files degrade to a one-line Unattributed
+    Change.
+
+    Cumulative, not incremental (ADR 0017). Polling every GIT_POLL_INTERVAL
+    chops one burst of writing into one delta per window, and a run of
+    `+8 +4 +1 +1` says more about the poll rate than about the change. Each
+    event therefore restates the whole delta of the path, and the Watch folds
+    the run into one Change Run whose counts are the true net figure — a line
+    added and then removed inside the run cancels instead of being counted
+    twice."""
 
     def __init__(self, checkouts: list[str]):
         self.checkouts = checkouts
@@ -460,6 +483,13 @@ class _GitWatcher:
         # (checkout, path) -> last-seen content / stat fingerprint of dirty files
         self._content: dict[tuple[str, str], str | None] = {}   # None = undiffable
         self._fp: dict[tuple[str, str], tuple[int, int] | None] = {}
+        # (checkout, path) -> the snapshot a cumulative diff is measured *from*.
+        # HEAD's version for a file that dirties while the Watch runs; the launch
+        # snapshot for dirt that predates it, because startup dirt is old news
+        # and replaying it as one giant event would bury the live narrative.
+        # Costs a second copy of each dirty file's text alongside `_content`,
+        # bounded by MAX_SNAPSHOT_BYTES per path.
+        self._base: dict[tuple[str, str], str | None] = {}
         for co in checkouts:
             self.status[co] = self._status(co)
             self.head[co] = self._head(co)
@@ -469,6 +499,7 @@ class _GitWatcher:
                 key = (co, p)
                 self._fp[key] = self._stat(co, p)
                 self._content[key] = self._read(co, p)
+                self._base[key] = self._content[key]
 
     @staticmethod
     def _status(co: str) -> dict[str, str]:
@@ -621,28 +652,46 @@ class _GitWatcher:
                 if known and fp == self._fp[key]:
                     continue          # dirty but untouched since last poll
                 self._fp[key] = fp
-                old = self._content[key] if known else self._baseline(co, p, code)
+                if not known:
+                    self._base[key] = self._baseline(co, p, code)
+                old = self._content[key] if known else self._base[key]
+                base = self._base[key]
                 cur = self._read(co, p)
                 self._content[key] = cur
                 if os.path.realpath(os.path.join(co, p)) in explained:
                     continue          # a tailed Session already narrated this
                 if old == cur:
                     continue          # e.g. only staged/unstaged flip, same bytes
-                if old is None or cur is None:
+                if cur is None:
+                    plain.append(p)   # can't be read at all right now
+                    continue
+                if base is None:
+                    # the *reference* is undiffable (binary or oversized when it
+                    # was first seen), so no cumulative delta exists to state.
+                    # Say a change happened and adopt the current snapshot, so
+                    # the next one is measurable rather than stranded forever.
+                    self._base[key] = cur
                     plain.append(p)
                     continue
-                added, removed = self._line_diff(old, cur)
+                # the whole delta since the reference snapshot, not since the last
+                # poll: the event restates the path rather than adding to it
+                added, removed = self._line_diff(base, cur)
                 if not added and not removed:
+                    # back to the reference snapshot. Nothing is emitted, so the
+                    # Change Run on screen keeps its last figures — it states the
+                    # delta *as of its last update*, which is what every other
+                    # entry in the feed does too (ADR 0017)
                     continue
                 change = ("delete" if cur == "" and code.strip().startswith("D")
-                          else "create" if old == "" and code.startswith("?")
+                          else "create" if base == "" and code.startswith("?")
                           else "modify")
                 events.append(FeedEvent(
-                    kind="file", when=now, session_id=None,
+                    kind="file", when=now, session_id=None, restates=True,
                     path=p, change=change, added=added, removed=removed))
             for key in [k for k in self._fp if k[0] == co and k[1] not in new_status]:
                 del self._fp[key]     # went clean (committed/restored): drop and
                 del self._content[key]  # re-baseline from HEAD if it dirties again
+                del self._base[key]
             if plain:
                 events.append(FeedEvent(
                     kind="unattributed", when=now,

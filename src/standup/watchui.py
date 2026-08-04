@@ -49,13 +49,19 @@ STALENESS_BOUND = 2.5      # max seconds the display may lag the log
 BASE_SPEED = 160.0         # chars/sec at rest — the leisurely default
 SPEED_MIN, SPEED_MAX = 40.0, 2000.0
 SNAP_SPEED = 8000.0        # beyond this, blocks land instantly (flash, no typing)
-HEAD_LINES = 12            # animated head of a large block; rest collapses
+HEAD_LINES = 12            # animated window into a large block; rest collapses
 REMOVED_LINES = 4          # removed-text lines shown collapsed
 COMMIT_FILE_LINES = 6      # commit's file list shown collapsed; rest counted
 MAX_EVENTS = 500           # DOM cap; oldest events beyond it are dropped
 TRIM_SLACK = 200           # extra events tolerated while reading scrollback
 GAP_SHOW = 5               # gaps below this many seconds stay quiet
 FRESH = 30                 # recency younger than this reads in live-green
+RUN_WINDOW = timedelta(seconds=FRESH)   # a Change Run stops absorbing this long
+                           # after it was born (ADR 0017), so sustained work on
+                           # one file still produces rows and a run's displayed
+                           # time can never be staler than this. Deliberately
+                           # FRESH: the same threshold the header already uses to
+                           # mean "recent" should mean it here too
 STRIP_CELLS = 8            # header activity strip: 8 cells, one minute each
 STRIP_BLOCKS = "▁▂▃▄▅▆▇█"
 NARROW = 100               # below this width: strips, briefs, hint labels drop
@@ -117,10 +123,15 @@ def _elapsed(seconds: float, wide: bool) -> str:
 
 
 class EventWidget(Static):
-    """One Feed Event: a header line behind the gap gutter and session lane,
-    plus (for files, commits, prompts, bash) an optional body. File events own
-    a typed-animation body; commits expand in two steps — header → file list →
-    every file's diff."""
+    """One Feed Event — or one Change Run of them: a header line behind the gap
+    gutter and session lane, plus (for files, commits, prompts, bash) an
+    optional body. File events own a typed-animation body; commits expand in two
+    steps — header → file list → every file's diff.
+
+    A file widget is not fixed at one event. Consecutive file events for the
+    same path and the same witness are folded into it as a **Change Run**
+    (ADR 0017), so one file being worked on reads as one entry that evolves
+    rather than a row per tool call or per git poll."""
 
     def __init__(self, event: FeedEvent, theme: Theme, num: int) -> None:
         super().__init__()
@@ -132,19 +143,21 @@ class EventWidget(Static):
         self.bash_ok: bool | None = None
         self.gap_seconds: float | None = None   # set by the app (visible-chain gap)
         self.lane_head = True                   # digit vs bar — set by the app
-        # animation state: how many chars of the (collapsed) body are visible
-        self.head_text, self.hidden_lines = self._split_body()
-        no_color = theme.depth == "none"
-        if event.kind == "file":
-            self.added_lines = (styled_lines(event.added, event.path, no_color)
-                                if event.added else [])
-            self.removed_lines = (styled_lines(event.removed, event.path, no_color)
-                                  if event.removed else [])
-        else:
-            self.added_lines, self.removed_lines = [], []
-        self.head_lines = self.added_lines[:HEAD_LINES]
-        self.total_chars = len(self.head_text)
-        self.shown_chars = self.total_chars  # instant by default; app may reset to 0
+        # Change Run state. `calls` holds the *tool call* ids folded in, so one
+        # MultiEdit counts once however many hunks it emitted; `contributions`
+        # counts the events, which is what decides where the window sits.
+        self.calls: set[str] = {event.tool_id} if event.tool_id else set()
+        self.contributions = 1
+        # the body as raw lines: counting, window bounds and the char budget all
+        # work off these, so none of them pays for highlighting
+        self.added_raw = event.added.split("\n") if event.kind == "file" and event.added else []
+        self.removed_raw = event.removed.split("\n") if event.kind == "file" and event.removed else []
+        self._lexed: dict[str, list[Text]] = {}
+        # the collapsed window into the body, and the animation's char budget
+        self.win_start = self.win_end = 0
+        self.lines_above = self.lines_below = 0
+        self.total_chars = self.shown_chars = self.frozen_chars = 0
+        self._reflow(len(self.added_raw))
         # commit diffs are highlighted lazily: a commit can carry many files, and
         # lexing them all at mount time would stall the feed for a body nobody
         # has asked to see yet
@@ -159,15 +172,130 @@ class EventWidget(Static):
     def expanded(self) -> bool:
         return self.expand_level > 0
 
+    # -- the Change Run ---------------------------------------------------------
+
+    def absorbs(self, ev: FeedEvent) -> bool:
+        """Does `ev` continue this widget's Change Run (ADR 0017)?
+
+        Strict adjacency: the caller only ever asks the *tail* widget, so a run
+        grows at the bottom of the feed and never rewrites a row above the
+        reader. Any other event between two same-file events has already closed
+        the run by the time this is asked.
+
+        The witness must match — a Session's claim and git's observation are
+        different kinds of statement and never merge — as must the backfill side
+        of the launch boundary, so a live event cannot grow a replayed block
+        across the rule that separates them. RUN_WINDOW closes a run that would
+        otherwise absorb a long burst forever, which is what keeps the feed
+        producing rows while the agent works and bounds how stale the run's
+        displayed timestamp can be."""
+        e = self.event
+        return (e.kind == "file" and ev.kind == "file"
+                and ev.path == e.path
+                and ev.session_id == e.session_id
+                and ev.restates == e.restates
+                and ev.backfill == e.backfill
+                and ev.when - e.when <= RUN_WINDOW)
+
+    def absorb(self, ev: FeedEvent, animate: bool) -> None:
+        """Fold `ev` into this Change Run.
+
+        Two shapes, one per witness. A Session claims hunks, which *accumulate*:
+        the body grows and the new text types in from where the last one stopped.
+        The git watcher states the whole delta of the path, which *supersedes*:
+        the body is replaced and lands instantly, because re-typing rows already
+        on screen every poll is a flicker, not an animation.
+
+        `when`, `change` and the gap gutter stay as the run was born with them —
+        rows must not rewrite themselves under a reader — and RUN_WINDOW is what
+        bounds the resulting staleness."""
+        e = self.event
+        if ev.tool_id:
+            self.calls.add(ev.tool_id)
+        if ev.restates:
+            e.added, e.removed = ev.added, ev.removed
+            fresh = 0
+        else:
+            e.added = "\n".join(p for p in (e.added, ev.added) if p)
+            e.removed = "\n".join(p for p in (e.removed, ev.removed) if p)
+            fresh = len(ev.added.split("\n")) if ev.added else 0
+        self.added_raw = e.added.split("\n") if e.added else []
+        self.removed_raw = e.removed.split("\n") if e.removed else []
+        self._lexed.clear()
+        self.contributions += 1
+        self._reflow(fresh)
+        if animate and fresh:
+            self.shown_chars = self.frozen_chars
+
     # -- body construction ----------------------------------------------------
 
-    def _split_body(self) -> tuple[str, int]:
-        """(the animated head of the added text, count of collapsed lines)."""
-        if self.event.kind != "file" or not self.event.added:
-            return "", 0
-        lines = self.event.added.split("\n")
-        head = lines[:HEAD_LINES]
-        return "\n".join(head), max(0, len(lines) - HEAD_LINES)
+    def _lex(self, key: str, raw: list[str]) -> list[Text]:
+        """Highlight a slice of the body, cached under `key` until it changes.
+
+        Highlighting is linear in the text, so nothing may lex more than it
+        renders. A restating Change Run replaces its whole body on every git
+        poll, and a collapsed body only ever shows a dozen lines of it — lexing
+        the whole thing each time would cost tens of milliseconds inside the
+        animation loop. The full body is lexed only when the reader expands it,
+        the same laziness a commit's per-file diffs already use.
+
+        A window is therefore highlighted *in isolation*, which is already true
+        of every session-claimed event (a hunk is not a whole file): a construct
+        that opens above the window can read differently than it does expanded,
+        and the expanded body is the authoritative rendering."""
+        hit = self._lexed.get(key)
+        if hit is None:
+            hit = (styled_lines("\n".join(raw), self.event.path,
+                                self.t.depth == "none") if raw else [])
+            self._lexed[key] = hit
+        return hit
+
+    @property
+    def added_lines(self) -> list[Text]:
+        """The whole added body, highlighted — the expanded reading."""
+        return self._lex("added", self.added_raw)
+
+    @property
+    def removed_lines(self) -> list[Text]:
+        """The whole removed body, highlighted — the expanded reading."""
+        return self._lex("removed", self.removed_raw)
+
+    @property
+    def removed_head(self) -> list[Text]:
+        """The removed lines a collapsed body shows."""
+        return self._lex("removed_head", self.removed_raw[:REMOVED_LINES])
+
+    def _reflow(self, fresh_lines: int) -> None:
+        """Recompute the collapsed window and the animation's char budget.
+
+        The window sits where the news is (ADR 0017). An accumulating run is
+        chronological, so once it holds more than one contribution it shows its
+        *tail* — otherwise the newest hunk, the one you are watching for, would
+        be the one hidden behind the line count. A lone event and a restating
+        witness both show their *head*: a single hunk reads top-down, and a
+        cumulative body is a file-ordered snapshot with no newest end at all.
+
+        `fresh_lines` is how many added lines arrived in the contribution being
+        reflowed for. Everything ahead of them in the window is already on
+        screen, and becomes the frozen head that must not re-type."""
+        raw = self.added_raw
+        tail = self.contributions > 1 and not self.event.restates
+        self.win_start = max(0, len(raw) - HEAD_LINES) if tail else 0
+        self.win_end = min(len(raw), self.win_start + HEAD_LINES)
+        win = raw[self.win_start:self.win_end]
+        self.lines_above = self.win_start
+        self.lines_below = len(raw) - self.win_end
+        self.total_chars = sum(len(s) + 1 for s in win) - 1 if win else 0
+        n_fresh = min(fresh_lines, len(win))
+        frozen = sum(len(s) + 1 for s in win[: len(win) - n_fresh])
+        self.frozen_chars = min(frozen, self.total_chars)
+        self.shown_chars = self.total_chars  # instant by default; app may lower it
+
+    @property
+    def window_lines(self) -> list[Text]:
+        """The added lines a collapsed body shows, highlighted."""
+        return self._lex(f"win:{self.win_start}:{self.win_end}",
+                         self.added_raw[self.win_start:self.win_end])
 
     def commit_lines(self) -> list[tuple[str, str, list[Text], list[Text]]]:
         """(path, change, added lines, removed lines) per file of a commit,
@@ -228,8 +356,7 @@ class EventWidget(Static):
         right: Text | None = None
 
         if e.kind == "file":
-            plus = len(e.added.split("\n")) if e.added else 0
-            minus = len(e.removed.split("\n")) if e.removed else 0
+            plus, minus = len(self.added_raw), len(self.removed_raw)
             if e.session_id is None:      # git is the only witness — a claim gap
                 out.append("~", style=t.style("claim", bold=True))
             else:
@@ -238,12 +365,20 @@ class EventWidget(Static):
             out.append_text(diffrows.path_text(self.t, e.path or "?"))
             out.append(f"  {e.change}  ", style=t.style("muted"))
             out.append_text(diffrows.counts(self.t, plus, minus))
+            # A Change Run that folded several tool calls says so: the counts are
+            # a sum, and ×N is what answers "why is this bigger than one edit?".
+            # Only on a claimed run — on a restating one, N would be the number
+            # of git polls that happened to catch the file, which is a fact about
+            # GIT_POLL_INTERVAL and not about the agent (ADR 0017).
+            if not e.restates and len(self.calls) > 1:
+                out.append(f"  ×{len(self.calls)}", style=t.style("muted"))
             if e.session_id is None:
                 out.append("  ~unattributed", style=t.style("claim"))
             body = plus + minus
             if self.expanded:
                 right = Text("▾ ", style=t.style("primary"))
-            elif body > (len(self.removed_lines[:REMOVED_LINES]) + len(self.head_lines)):
+            elif body > (len(self.removed_raw[:REMOVED_LINES])
+                         + (self.win_end - self.win_start)):
                 right = Text(f"▸ {body} lines ", style=t.style("faint"))
         elif e.kind == "bash":
             out.append("⏺", style=t.style("muted"))
@@ -376,10 +511,15 @@ class EventWidget(Static):
             out.append("\n")
             out.append_text(row)
 
-    def _more_row(self, out: Text, n: int, noun: str = "lines") -> None:
+    def _more_row(self, out: Text, n: int, noun: str = "lines",
+                  above: bool = False) -> None:
+        """The collapsed-line count. `above` is for a Change Run showing its
+        tail: the hidden lines are the run's earlier ones, and a counter under
+        them would claim they came after."""
         out.append("\n")
         out.append_text(self._prefix(first=False))
-        out.append(f"     … ▸ {n} more {noun}", style=self.t.style("faint"))
+        word = "earlier" if above else "more"
+        out.append(f"     … ▸ {n} {word} {noun}", style=self.t.style("faint"))
 
     def _commit_body(self, out: Text, width: int) -> Text:
         """Two shallow levels: the file list (level 1), then every file's diff
@@ -467,14 +607,16 @@ class EventWidget(Static):
                 self._sign_row(out, "+", ln, width)
             return out
 
-        if self.removed_lines:
-            for ln in self.removed_lines[:REMOVED_LINES]:
+        if self.removed_raw:
+            for ln in self.removed_head:
                 self._sign_row(out, "-", ln, width)
-            if len(self.removed_lines) > REMOVED_LINES:
-                self._more_row(out, len(self.removed_lines) - REMOVED_LINES)
+            if len(self.removed_raw) > REMOVED_LINES:
+                self._more_row(out, len(self.removed_raw) - REMOVED_LINES)
+        if self.lines_above:      # a Change Run showing its tail: the rest is above
+            self._more_row(out, self.lines_above, above=True)
         shown = int(self.shown_chars)
         animating = self.shown_chars < self.total_chars
-        for ln in self.head_lines:
+        for ln in self.window_lines:
             if shown <= 0:
                 break
             self._sign_row(out, "+",
@@ -483,8 +625,8 @@ class EventWidget(Static):
             shown -= len(ln.plain) + 1   # +1 spends the newline
         if animating:
             out.append("▌", style=t.style("added", bold=True) + Style(blink=True))
-        elif self.hidden_lines:
-            self._more_row(out, self.hidden_lines)
+        elif self.lines_below:
+            self._more_row(out, self.lines_below)
         return out
 
     def refresh_event(self) -> None:
@@ -555,6 +697,10 @@ class WatchApp(App):
         self._last_event_at: datetime | None = None
         self._new_below = 0                      # events landed while scrolled
         self._tail_meta: tuple[datetime, str | None] | None = None
+        # the last widget mounted — the only one a Change Run may grow (strict
+        # adjacency, ADR 0017). Distinct from `_tail_meta`, which tracks the last
+        # *visible* event because the gap gutter and lane describe what is seen.
+        self._tail_widget: EventWidget | None = None
         self._activity: dict[str, deque[datetime]] = {}
         self._vitals_rows: list[str] = []        # session ids by header row
         self._focused = True                     # terminal window has focus
@@ -635,6 +781,8 @@ class WatchApp(App):
         line.append(" ┈┈", style=t.style("faint"))
         boundary = Static(line, id="boundary")
         self.query_one("#feed", VerticalScroll).mount(boundary)
+        # nothing live may grow a replayed Change Run across this rule
+        self._tail_widget = None
 
     # -- the feed ---------------------------------------------------------------
 
@@ -664,7 +812,25 @@ class WatchApp(App):
         if ev.session_id:
             self._activity.setdefault(ev.session_id, deque()).append(ev.when)
         feed = self.query_one("#feed", VerticalScroll)
+        # Change Run (ADR 0017): a file event that continues the tail widget's run
+        # folds into it instead of mounting a row of its own. The target is the
+        # last *mounted* widget, not the last visible one, so a run's membership
+        # is a fact about the stream and cannot change when a filter is toggled.
+        # NB: not gated on `tail.is_mounted` — textual mounts asynchronously, so
+        # the widget created earlier in this same poll batch is not mounted yet,
+        # and a batch of consecutive same-file events is the whole point. `_trim`
+        # is what drops the pointer when a widget actually leaves the DOM.
+        tail = self._tail_widget
+        if tail is not None and tail.absorbs(ev):
+            tail.absorb(ev, animate=animate and not ev.backfill)
+            if animate and not self._following():
+                self._new_below += 1
+            if tail.shown_chars < tail.total_chars and tail not in self.anim_queue:
+                self.anim_queue.append(tail)
+            tail.refresh_event()
+            return
         w = EventWidget(ev, self.t, self.stream.session_num(ev.session_id or ""))
+        self._tail_widget = w
         if ev.kind == "bash" and ev.tool_id:
             self.bash_widgets[ev.tool_id] = w
         if not self._visible_to(ev):
@@ -713,10 +879,13 @@ class WatchApp(App):
         if len(children) <= cap:
             return
         for old in children[: len(children) - MAX_EVENTS]:
-            if isinstance(old, EventWidget) and old.event.tool_id:
+            if (isinstance(old, EventWidget) and old.event.kind == "bash"
+                    and old.event.tool_id):
                 self.bash_widgets.pop(old.event.tool_id, None)
             if old is self.selected:
                 self._select(None)
+            if old is self._tail_widget:      # nothing may grow a dropped run
+                self._tail_widget = None
             old.remove()
 
     # -- the animation engine -----------------------------------------------------
@@ -1123,7 +1292,8 @@ class WatchApp(App):
         for w in reversed(list(self.query(EventWidget))):
             if not w.display:
                 continue
-            if w.hidden_lines or w.event.kind in ("prompt", "bash") or w.event.files:
+            if (w.lines_above or w.lines_below
+                    or w.event.kind in ("prompt", "bash") or w.event.files):
                 return w
         return None
 
