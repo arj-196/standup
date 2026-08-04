@@ -24,7 +24,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import brief as brief_mod
-from . import gitstate, loops, show
+from . import gitstate, loops, transcript
 from .audit import AUDITS_DIR, path_for
 from .models import Session
 
@@ -59,11 +59,11 @@ def _digest(path: Path, looped_ids: set[str]) -> str:
                 etype = obj.get("type")
                 msg = obj.get("message") or {}
                 if etype == "user" and not obj.get("isMeta"):
-                    text = show._user_text(msg.get("content"))
+                    text = transcript._user_text(msg.get("content"))
                     if text:
                         parts.append("USER: " + text)
                 elif etype == "assistant":
-                    texts, tools = show._assistant_parts(
+                    texts, tools = transcript._assistant_parts(
                         msg.get("content"), show_thinking=False, looped_ids=looped_ids)
                     if not texts and not tools:
                         continue
@@ -212,7 +212,7 @@ def _concluder_prompt(target_label: str, repo_path: str | None,
         "## Handoff Prompt\nA single fenced ```text block: a paste-ready prompt "
         "for a FRESH Claude Code session in the target repo that builds the "
         "automation script(s). Self-contained: name the repo, cite the evidence "
-        "(`standup show <handle>`, turns t<N>), describe exactly what the "
+        "(`standup session <handle>`, turns t<N>), describe exactly what the "
         "script must do, and require the session to verify the script against "
         "a real example. If nothing is worth scripting, write `(no handoff — "
         "nothing scriptable found)` instead of the fenced block.\n\n"

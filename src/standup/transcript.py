@@ -1,4 +1,4 @@
-"""`standup show <handle>` — render a Session's Transcript.
+"""`standup session <handle>` — render a Session's Transcript.
 
 Your prompts and Claude's responses in reading order. Tool calls collapse to
 one-liners; thinking is hidden unless asked for; injected noise (system
@@ -43,7 +43,8 @@ def resolve_handle(projects_dir: Path, handle: str) -> Path:
         hint = ""
         if _HEXISH.match(handle):
             hint = ("\n  a Session Handle is the cyan 8-char id on a Session's title line;"
-                    "\n  a git commit hash (rendered @" + handle + ") addresses nothing here")
+                    "\n  a git commit hash (rendered @" + handle + ") addresses nothing here;"
+                    "\n  to read one, name its repo: standup <repo> diff @" + handle)
         raise HandleError(f"standup: no session matches {handle!r}{hint}")
     # a full session id can appear under more than one project dir; dedup by stem
     stems = {p.stem for p in matches}

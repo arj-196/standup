@@ -20,7 +20,7 @@ only (the project has no third-party deps):
     generated: 2026-07-22T21:40:00Z
     model: claude-haiku-4-5
     ---
-    <freeform body — shown only in `standup show`>
+    <freeform body — shown only in `standup session`>
 
 A missing, unreadable, or objective-less Brief is never an error: the Session
 simply renders title-only, exactly as before Briefs existed.

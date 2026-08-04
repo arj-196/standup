@@ -97,3 +97,46 @@ Also decided, as consequences rather than separate calls:
   compresses so the display can't lag the log); this states the general form.
 - No CLI surface change: no flag, no subcommand, nothing to configure. The
   state appears because a session is acting, and disappears because it stopped.
+
+## Amendment — a tool verb has a display floor (2026-08-04)
+
+Two things in the reading above were wrong once it met real logs.
+
+**`stop_reason` is the message's, not the line's.** Claude Code flushes an
+assistant message's `text` and `thinking` blocks as their own JSONL lines, each
+carrying that message's `stop_reason: tool_use`. The table's first row was
+therefore matched by lines announcing no tool at all, which fell through to
+`acting` — the verb reserved here for a tool absent from the table. Over eight of
+this repo's own sessions, 315 of 838 `tool_use`-stop-reason lines named no tool
+(231 `thinking` blocks, 84 `text`), and every one was read as `acting`. The row
+now requires a `tool_use` block on the line; a line naming no tool leaves the
+state and its age untouched, because the model is still composing.
+
+**Binding a verb to its tool's execution window made two verbs unobservable.**
+`reading` held the state for 7 seconds in total across those eight sessions and
+`writing` for 8, against 6740 for `thinking` — a local `Read` returns in ~25ms,
+below even the Watch's 250ms poll. The band therefore read `thinking` in
+essentially every frame, which is *true* and useless: the one question it exists
+to answer was answered "composing" while the turn was in fact fourteen file
+reads. A tool verb now holds the band for at least `ACT_FLOOR` (1s) before
+`thinking` may replace it.
+
+That floor is a **word** briefly outliving its tool, and point 3 above bans
+exactly that for **motion** — so the boundary is worth stating rather than
+leaving to be inferred. Motion asserts *liveness*, which is why it may never be
+synthesised; a verb asserts what the last thing was, and a floor on it spends one
+second of staleness to buy a legible answer. The distinction is held by three
+yields, all load-bearing:
+
+- a settled or interrupted turn clears the held verb, so the bar still goes blank
+  the instant the agent hands control back — the asymmetry that makes absence the
+  answer is untouched (verified: replaying those logs at the UI's poll rate
+  leaves the blank-frame count identical, 302284 either way);
+- the next tool verb overwrites immediately — the floor never delays fresher
+  news, only staler silence;
+- the age displayed is the verb's real age, never the floor's, so a held
+  `reading` reads `0s` rather than an invented figure.
+
+Resolved where the state is *read* (`WatchStream._activity_of`), not where it is
+tracked, so the tailer's record of what the log said stays what the log said.
+The floor is one constant in one place if it ever wants tuning.

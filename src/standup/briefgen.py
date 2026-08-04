@@ -26,7 +26,7 @@ import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from . import show
+from . import transcript
 from .brief import BRIEFS_DIR
 from .claude_logs import EDIT_TOOLS
 
@@ -79,7 +79,7 @@ def _fresh(brief_path: Path, now: datetime) -> bool:
 
 def _digest(path: Path) -> str:
     """A compact plain-text rendering of the session for the summariser, reusing
-    show.py's extraction. Capped; when over budget, keep the head (where the
+    transcript.py's extraction. Capped; when over budget, keep the head (where the
     objective is usually set) plus the tail (where it landed)."""
     parts: list[str] = []
     try:
@@ -92,11 +92,11 @@ def _digest(path: Path) -> str:
                 etype = obj.get("type")
                 msg = obj.get("message") or {}
                 if etype == "user" and not obj.get("isMeta"):
-                    text = show._user_text(msg.get("content"))
+                    text = transcript._user_text(msg.get("content"))
                     if text:
                         parts.append("USER: " + text)
                 elif etype == "assistant":
-                    texts, tools = show._assistant_parts(msg.get("content"), show_thinking=False)
+                    texts, tools = transcript._assistant_parts(msg.get("content"), show_thinking=False)
                     for t in texts:
                         parts.append("CLAUDE: " + t)
                     for tl, _looped in tools:

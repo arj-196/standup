@@ -12,7 +12,7 @@ from pathlib import Path
 from . import cache as cache_mod
 from . import audit as audit_mod
 from . import brief as brief_mod
-from . import claude_logs, cost, gitstate, handles, join, loops, rates, render, show
+from . import claude_logs, cost, gitstate, handles, join, loops, rates, render, transcript
 
 RECENT_WINDOW_DAYS = 7  # the Recent Window (ADR 0002); --since overrides
 _EPOCH = datetime.min.replace(tzinfo=timezone.utc)
@@ -21,7 +21,24 @@ _EPOCH = datetime.min.replace(tzinfo=timezone.utc)
 # future subcommand can never quietly steal one (ADR 0009). `install` and
 # `uninstall` are deliberately unaliased — a mistyped letter should not be able
 # to rip out the machine-wide Stop hook.
-ALIASES = {"c": "cost", "w": "watch", "s": "show", "a": "audit"}
+ALIASES = {"c": "cost", "w": "watch", "s": "session", "a": "audit", "d": "diff"}
+
+SUBCOMMANDS = {"cost", "watch", "session", "audit", "diff", "completion",
+               "install", "uninstall", "_brief", "_complete"}
+
+# The views reachable object-first — `standup <repo> <view>` (ADR 0015).
+#
+# Two axes, and the distinction is the whole rule: a *verb-first* subcommand is a
+# different lens over the whole Scan Universe (`standup cost` prices every
+# project), while a *second positional* is a deeper magnification of one repo's
+# inbox (`standup` -> `standup tt` -> `standup tt diff`). Both spellings reach
+# the same code: the object-first form is rewritten to the verb-first one before
+# dispatch, so there is one implementation and no second dispatcher.
+#
+# `audit` is deliberately absent. Every view here is free and read-only; `audit`
+# spawns an Expert Panel against your subscription, and a paid action must name
+# its target explicitly rather than be reachable by a two-word shorthand.
+OBJECT_FIRST = {"cost", "watch", "session", "diff"}
 
 
 def _resolve_repo(arg: str, targets: list[handles.Target], prog: str) -> handles.Target:
@@ -30,6 +47,36 @@ def _resolve_repo(arg: str, targets: list[handles.Target], prog: str) -> handles
     if handles.looks_like_path(arg):
         return handles.resolve_target_path(arg, targets, prog)
     return handles.resolve(arg, targets, prog)
+
+
+def _normalize(argv: list[str]) -> list[str]:
+    """`standup <repo> <view> <rest…>` -> `standup <view> <repo> <rest…>`.
+
+    A pre-dispatch rewrite (ADR 0015), which is why grammar B costs one function
+    rather than a parallel command tree. Nothing here resolves a repo: it only
+    notices that position 2 holds a view name, which position 2 could never hold
+    before — `standup <repo>` accepted flags and nothing else.
+
+    `session` is the one view whose positional is not a repo (it takes a Session
+    Handle), so the repo is rewritten onto its `--in` flag instead: `standup tt
+    session` means "the newest session in tt", the same generalisation of "here"
+    that bare `standup session` already makes for the current directory.
+    """
+    if len(argv) < 2 or argv[0].startswith("-"):
+        return argv
+    if ALIASES.get(argv[0], argv[0]) in SUBCOMMANDS:
+        return argv                        # already verb-first
+    view = ALIASES.get(argv[1], argv[1])
+    if view == "audit":
+        raise SystemExit(
+            f"standup: `{argv[0]} audit` is not accepted — audit is the one paid view\n"
+            "  it runs an Expert Panel against your Claude subscription, so it takes an\n"
+            "  explicit Session Handle: standup audit <handle>")
+    if view == "session":
+        return [argv[1], "--in", argv[0], *argv[2:]]
+    if view in OBJECT_FIRST:
+        return [argv[1], argv[0], *argv[2:]]
+    return argv
 
 
 def _month_start(now: datetime) -> datetime:
@@ -274,8 +321,8 @@ def _cmd_audit(argv: list[str]) -> int:
         print(f"standup: no Claude Code logs found at {projects_dir}", file=sys.stderr)
         return 1
     try:
-        log_path = show.resolve_handle(projects_dir, args.handle)
-    except show.HandleError as e:
+        log_path = transcript.resolve_handle(projects_dir, args.handle)
+    except transcript.HandleError as e:
         print(str(e), file=sys.stderr)
         return 1
     sid = log_path.stem
@@ -355,13 +402,32 @@ _standup_sessions() {
   _describe -t sessions 'session' items
 }
 
+_standup_views() {
+  # the views a repo can be followed by (ADR 0015). `audit` is absent on
+  # purpose: it is the one paid view and always names its own session.
+  local -a views
+  views=(
+    'diff:the Attributed Diff of this repo (d)'
+    'd:the Attributed Diff of this repo'
+    'cost:Notional Cost of this repo (c)'
+    'c:Notional Cost of this repo'
+    'watch:live feed of this repo (w)'
+    'w:live feed of this repo'
+    'session:this repo newest session Transcript (s)'
+    's:this repo newest session Transcript'
+  )
+  _describe -t views 'view' views
+}
+
 _standup() {
   local -a subs
   subs=(
+    'diff:the Attributed Diff of a repo Active Work (d)'
+    'd:the Attributed Diff of a repo Active Work'
     'cost:Notional Cost by project and session (c)'
     'c:Notional Cost by project and session'
-    'show:read a session transcript (s)'
-    's:read a session transcript'
+    'session:read a session Transcript (s)'
+    's:read a session Transcript'
     'audit:Expert Panel audit of one session (a)'
     'a:Expert Panel audit of one session'
     'watch:live feed of a repo while an agent works (w)'
@@ -394,12 +460,22 @@ _standup() {
             '--no-pager[print instead of paging]' \
             '1:project:_standup_projects'
           ;;
-        show|s)
+        session|s)
           _arguments \
+            '--in[newest session in this project instead of here]:project:_standup_projects' \
             '--thinking[include hidden thinking blocks]' \
             '--raw[dump the untouched session JSONL]' \
             '--no-pager[print instead of paging]' \
             '1:session:_standup_sessions'
+          ;;
+        diff|d)
+          _arguments \
+            '--stat[per-file counts only]' \
+            '(-U --context)'{-U,--context}'[lines of context per hunk]:lines:' \
+            '--no-wrap[clip long body lines instead of folding them]' \
+            '--no-pager[print instead of paging]' \
+            '1:project:_standup_projects' \
+            '2:session or @commit:_standup_sessions'
           ;;
         audit|a)
           _arguments \
@@ -415,6 +491,10 @@ _standup() {
           ;;
         completion)
           _values 'shell' zsh
+          ;;
+        *)
+          # a project led: the second word is a view (`standup tt diff`)
+          _standup_views
           ;;
       esac
       ;;
@@ -456,14 +536,7 @@ def _cmd_complete(argv: list[str]) -> int:
         cache = cache_mod.open_cache()
         sessions = claude_logs.scan_sessions(projects_dir, cache)
         cache.flush()
-        seen: dict[str, handles.Target] = {}
-        for cwd in dict.fromkeys(s.cwd for s in sessions if s.cwd):
-            res = gitstate._resolve(cwd)
-            key = res[1] if res else os.path.realpath(cwd)
-            path = res[0] if res else cwd
-            seen.setdefault(key, handles.Target(
-                os.path.basename(path.rstrip("/")) or path, path))
-        targets = list(seen.values())
+        targets = _session_targets(sessions)
         for t in targets:
             h = handles.handle_of(t, targets)
             print(f"{h[0] if h else t.name}:{clean(t.name)}")
@@ -479,22 +552,54 @@ def _cmd_complete(argv: list[str]) -> int:
     return 2
 
 
-def _newest_session_here(projects_dir: Path):
-    """The most recently appended Session whose cwd belongs to the current Repo
-    Entry — what `standup show` means with no handle.
+def _session_targets(sessions) -> list[handles.Target]:
+    """The Scan Universe as resolvable Project Handles, one per Repo Entry.
+
+    Built from the cached session scan rather than from git discovery: every
+    caller here only needs *names and paths* to resolve a handle against, and a
+    handle resolution must not pay for a full repo walk."""
+    seen: dict[str, handles.Target] = {}
+    for cwd in dict.fromkeys(s.cwd for s in sessions if s.cwd):
+        res = gitstate._resolve(cwd)
+        key = res[1] if res else os.path.realpath(cwd)
+        path = res[0] if res else cwd
+        seen.setdefault(key, handles.Target(
+            os.path.basename(path.rstrip("/")) or path, path))
+    return list(seen.values())
+
+
+def _newest_session_in(projects_dir: Path, repo: str | None):
+    """The most recently appended Session of one Repo Entry — what `standup
+    session` means with no handle (`repo=None`: the one you are standing in),
+    and what `standup <repo> session` means with one.
 
     Deliberately no fallback to "newest session anywhere": handing back a
     transcript from an unrelated repo is the kind of silent misdirection every
     other view is built to avoid. Standing outside the Scan Universe is an
     error, and says so.
     """
-    here = gitstate._resolve(os.getcwd())
-    if not here:
-        raise show.HandleError("standup show: not inside a git repo — name a session handle")
-    _, key = here
     cache = cache_mod.open_cache()
     sessions = claude_logs.scan_sessions(projects_dir, cache)
     cache.flush()
+
+    if repo is None:
+        here = gitstate._resolve(os.getcwd())
+        if not here:
+            raise transcript.HandleError(
+                "standup session: not inside a git repo — name a session handle, "
+                "or a repo with `standup <repo> session`")
+        _, key = here
+        where = render._shorten_home(os.getcwd())
+    else:
+        try:
+            hit = _resolve_repo(repo, _session_targets(sessions), "standup session")
+        except handles.HandleError as e:
+            raise transcript.HandleError(str(e)) from None
+        res = gitstate._resolve(hit.path)
+        if not res:
+            raise transcript.HandleError(f"standup session: {hit.name} is not a git repo")
+        _, key = res
+        where = hit.name
 
     keys = {}   # cwd -> repo key, resolved once per distinct cwd
     mine = []
@@ -507,21 +612,62 @@ def _newest_session_here(projects_dir: Path):
         if keys[s.cwd] == key:
             mine.append(s)
     if not mine:
-        raise show.HandleError(
-            f"standup show: no sessions recorded for {render._shorten_home(os.getcwd())}")
-    return max(mine, key=lambda s: s.last_activity)
+        raise transcript.HandleError(
+            f"standup session: no sessions recorded for {where}")
+    return max(mine, key=lambda s: s.last_activity), where
 
 
-def _cmd_show(argv: list[str]) -> int:
-    p = argparse.ArgumentParser(prog="standup show",
-                                description="Read a session's transcript (prompts + responses). "
+def _check_session_in(projects_dir: Path, log_path: Path, repo: str) -> None:
+    """A handle *and* a repo: confirm the handle belongs to that Repo Entry.
+
+    `standup st session <handle>` names a repo it does not strictly need — a
+    Session Handle already implies its repo. Rather than reject the pair (which
+    made the object-first spelling useless the moment you pasted a handle into
+    it) or ignore the repo (which would answer about a different project without
+    saying so), the repo becomes a *constraint*: it is the same rule ADR 0015
+    applies to `@<hash>`, where naming a repo means the answer must come from it.
+    """
+    cache = cache_mod.open_cache()
+    sessions = claude_logs.scan_sessions(projects_dir, cache)
+    cache.flush()
+    try:
+        hit = _resolve_repo(repo, _session_targets(sessions), "standup session")
+    except handles.HandleError as e:
+        raise transcript.HandleError(str(e)) from None
+    here = gitstate._resolve(hit.path)
+    if not here:
+        raise transcript.HandleError(f"standup session: {hit.name} is not a git repo")
+    _, want = here
+
+    sid = log_path.stem
+    session = next((s for s in sessions if s.session_id == sid), None)
+    found = gitstate._resolve(session.cwd) if (session and session.cwd) else None
+    if found and found[1] == want:
+        return
+    where = (os.path.basename(found[0].rstrip("/")) if found
+             else render._shorten_home(session.cwd) if (session and session.cwd)
+             else "an unknown directory")
+    raise transcript.HandleError(
+        f"standup session: {sid[:8]} is not a session of {hit.name} — it ran in {where}\n"
+        f"  a Session Handle already names its repo: `standup session {sid[:8]}` reads it")
+
+
+def _cmd_session(argv: list[str]) -> int:
+    p = argparse.ArgumentParser(prog="standup session",
+                                description="Read a session's Transcript (prompts + responses). "
                                             "Leads with the Session Brief when one exists; tool calls "
                                             "collapse to one-liners, and calls belonging to a detected "
                                             "Loop are gutter-marked ⟳. With no handle: the most recent "
-                                            "session in the repo you are standing in.")
+                                            "session in the repo you are standing in — or in the repo "
+                                            "you name with --in.")
     p.add_argument("handle", nargs="?",
                    help="any unambiguous session id prefix (from `standup cost <repo>`); "
                         "omit for the newest session in the current repo")
+    p.add_argument("--in", dest="in_repo", metavar="REPO",
+                   help="the verb-first spelling of `standup <repo> session`: with no "
+                        "handle, the newest session in this project instead of the "
+                        "current directory; with a handle, a check that the handle is "
+                        "one of that project's sessions")
     p.add_argument("--thinking", action="store_true", help="include hidden thinking blocks")
     p.add_argument("--raw", action="store_true", help="dump the untouched session JSONL")
     p.add_argument("--no-pager", action="store_true", help="print instead of opening a pager")
@@ -535,26 +681,143 @@ def _cmd_show(argv: list[str]) -> int:
     header = ""
     try:
         if args.handle:
-            path = show.resolve_handle(projects_dir, args.handle)
+            path = transcript.resolve_handle(projects_dir, args.handle)
+            if args.in_repo:   # a repo was named too: it constrains the handle
+                _check_session_in(projects_dir, path, args.in_repo)
         else:
-            session = _newest_session_here(projects_dir)
+            session, place = _newest_session_in(projects_dir, args.in_repo)
             path = Path(session.log_path)
             if not args.raw:   # --raw must stay an untouched dump (CONTEXT.md)
                 st = render._style()
+                # the *resolved* project, never the handle typed: the header has
+                # to say which repo actually answered
+                where = "here" if args.in_repo is None else f"in {place}"
                 # the handle keeps its own colour — nesting it inside the dim
                 # would need the reset that ends the dim for the rest of the line
                 header = (render._session_ref(session.session_id[:8], st)
                           + st.dim(f'  ~ "{session.title}"'
-                                   "  — newest session here; name a handle for another")
+                                   f"  — newest session {where}; name a handle for another")
                           + "\n\n")
-    except show.HandleError as e:
+    except transcript.HandleError as e:
         print(str(e), file=sys.stderr)
         return 1
-    text = header + show.render_transcript(path, show_thinking=args.thinking, raw=args.raw)
+    text = header + transcript.render_transcript(path, show_thinking=args.thinking, raw=args.raw)
     if args.no_pager:
         print(text)
     else:
         _page(text)
+    return 0
+
+
+def _cmd_diff(argv: list[str]) -> int:
+    from . import diffview
+
+    p = argparse.ArgumentParser(
+        prog="standup diff",
+        description="The Attributed Diff: a repo's Active Work as reviewable "
+                    "unified diffs, grouped under the session that authored "
+                    "each one — the drill-down at one more magnification. Every "
+                    "hunk carries its own attribution, so a file two sessions "
+                    "touched does not silently credit the later one: a hunk that "
+                    "disagrees with the header it sits under is marked (~shared "
+                    "when no single session accounts for it, ~unaccounted when "
+                    "nobody's edits do). Scope is uncommitted change, staged and "
+                    "unstaged both; name a commit with @<hash> to read one that "
+                    "already landed.")
+    p.add_argument("repo", nargs="?", default=".",
+                   help="Project Handle (the underlined letters of a name in the "
+                        "inbox), full name, or a path; defaults to the current directory")
+    p.add_argument("ref", nargs="?",
+                   help="@<hash> for one commit's diff, or a Session Handle to keep "
+                        "only the hunks that session accounts for")
+    p.add_argument("--stat", action="store_true",
+                   help="per-file counts only, with each file's attribution digest "
+                        "instead of hunk bodies")
+    p.add_argument("-U", "--context", type=int, default=diffview.CONTEXT_DEFAULT,
+                   metavar="N", help="lines of context around each hunk (default %(default)s)")
+    p.add_argument("--no-wrap", action="store_true",
+                   help="clip a body line wider than the terminal at the right edge "
+                        "instead of folding it onto further rows (marked ↳)")
+    p.add_argument("--no-pager", action="store_true", help="print instead of opening a pager")
+    p.add_argument("--projects-dir", default=os.path.expanduser("~/.claude/projects"),
+                   help=argparse.SUPPRESS)
+    args = p.parse_args(argv)
+
+    repo, ref = args.repo, args.ref
+    # `@abc1234` in the first slot is a commit, not a project: the sigil is
+    # unambiguous (no Project Handle starts with @), so `standup diff @abc1234`
+    # reads the commit in the repo you are standing in. A *bare* hex stays a
+    # Project Handle — ADR 0009's rule is untouched.
+    if ref is None and repo.startswith("@"):
+        repo, ref = ".", repo
+
+    projects_dir = Path(args.projects_dir)
+    if not projects_dir.is_dir():
+        print(f"standup: no Claude Code logs found at {projects_dir}", file=sys.stderr)
+        return 1
+
+    now = datetime.now(timezone.utc)
+    since = now - timedelta(days=RECENT_WINDOW_DAYS)
+    cache = cache_mod.open_cache()
+    sessions = claude_logs.scan_sessions(projects_dir, cache)
+    entries = gitstate.discover_repos([s.cwd for s in sessions if s.cwd], since)
+    join.attribute(entries, sessions, cache)
+
+    by_target = {handles.Target(e.name, e.main_path): e for e in entries}
+    try:
+        hit = _resolve_repo(repo, list(by_target), "standup diff")
+    except handles.HandleError as e:
+        print(str(e), file=sys.stderr)
+        cache.flush()
+        return 1
+    entry = by_target[hit]
+
+    sessions_by_id = {s.session_id: s for s in sessions}
+    titles = {s.session_id: s.title for s in sessions}
+    briefs = brief_mod.load_for_sessions(sessions)
+    matcher = diffview.Matcher(cache)
+
+    only_session = None
+    commit_ref = None
+    if ref:
+        if ref.startswith("@"):
+            commit_ref = ref
+        else:
+            try:
+                log = transcript.resolve_handle(projects_dir, ref)
+            except transcript.HandleError as e:
+                print(str(e), file=sys.stderr)
+                cache.flush()
+                return 1
+            only_session = log.stem
+
+    width = render._term_width()
+    try:
+        if commit_ref:
+            checkout, sha = diffview.resolve_commit(entry, commit_ref)
+            cd = diffview.build_commit(entry, checkout, sha, sessions_by_id, matcher,
+                                       context=args.context, only_session=only_session)
+            text = diffview.render(entry, [], now, titles=titles, briefs=briefs,
+                                   width=width, stat=args.stat,
+                                   wrap=not args.no_wrap, only_session=only_session,
+                                   commit=cd)
+        else:
+            groups = diffview.build_active(entry, sessions_by_id, matcher,
+                                           context=args.context,
+                                           only_session=only_session)
+            text = diffview.render(entry, groups, now, titles=titles, briefs=briefs,
+                                   width=width, stat=args.stat,
+                                   wrap=not args.no_wrap, only_session=only_session)
+    except diffview.DiffError as e:
+        print(str(e), file=sys.stderr)
+        return 1
+    finally:
+        cache.flush()   # buffered fragment index, whichever way this went
+
+    if args.no_pager:
+        print(text)
+    else:
+        _page(text, less_flags="-RF")   # F: a short diff prints straight through
     return 0
 
 
@@ -616,13 +879,17 @@ def _cmd_watch(argv: list[str]) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
+    # object-first -> verb-first, before anything is dispatched (ADR 0015)
+    argv = _normalize(argv)
     sub = ALIASES.get(argv[0], argv[0]) if argv else None
     if sub == "cost":
         return _cmd_cost(argv[1:])
     if sub == "watch":
         return _cmd_watch(argv[1:])
-    if sub == "show":
-        return _cmd_show(argv[1:])
+    if sub == "session":
+        return _cmd_session(argv[1:])
+    if sub == "diff":
+        return _cmd_diff(argv[1:])
     if sub == "audit":
         return _cmd_audit(argv[1:])
     if sub == "completion":
@@ -654,9 +921,12 @@ def main(argv: list[str] | None = None) -> int:
         description="Morning triage inbox for Claude Code activity across your repos.",
         epilog=(
             "subcommands:\n"
+            "  diff, d [repo]     the Attributed Diff: this repo's Active Work as\n"
+            "                     unified diffs, grouped under the session that\n"
+            "                     authored each hunk. @<hash> reads one commit\n"
             "  cost, c [repo]     Notional Cost by project/session (not real money);\n"
             "                     the drill-down flags Loops (repeated tool-call grinds)\n"
-            "  show, s [handle]   read a session's transcript (prompts + responses);\n"
+            "  session, s [hdl]   read a session's Transcript (prompts + responses);\n"
             "                     Loop calls are gutter-marked ⟳. No handle: the newest\n"
             "                     session in the repo you're standing in\n"
             "  audit, a <handle>  Expert Panel audit of one session: scriptable Loops,\n"
@@ -673,6 +943,13 @@ def main(argv: list[str] | None = None) -> int:
             "a [repo] is a Project Handle — the underlined letters of a project's name\n"
             "in the inbox (`pm` for ProjectManagement, `st` for standup) — or a path\n"
             "(`.`, ../other). An ambiguous handle errors and lists the candidates.\n"
+            "\n"
+            "two spellings, one meaning: a repo can lead instead of follow, so\n"
+            "`standup tt diff` == `standup diff tt`, and likewise for cost, watch and\n"
+            "session (`standup tt session` = tt's newest). Verb-first is a lens over\n"
+            "every project (`standup cost` prices them all); repo-first is one repo at\n"
+            "higher magnification. `audit` is verb-first only — it is the one view that\n"
+            "spends, so it always names its session.\n"
             "\n"
             "run `standup <subcommand> -h` for a subcommand's options."
         ),
@@ -724,8 +1001,12 @@ def main(argv: list[str] | None = None) -> int:
         except handles.HandleError as e:
             print(str(e), file=sys.stderr)
             return 1
+        # the handle the footer hint should echo: what currently resolves to
+        # this project, which is not necessarily what the user typed
+        shown = handles.handle_of(hit, list(by_target))
         print(render.render_detail(by_target[hit], now, show_all=args.all,
-                                   window=window, briefs=briefs))
+                                   window=window, briefs=briefs,
+                                   handle=shown[0] if shown else hit.name))
         return 0
 
     print(render.render_overview(entries, since, now, show_all=args.all, window=window, briefs=briefs))

@@ -22,15 +22,26 @@ standup <repo>           # drill-down: one repo's rollups expanded into files/co
 standup --since 3d       # override the recent window (yesterday, 12h, 2w, ISO date)
 standup --json           # collect-layer output for scripts/TUI
 
+standup <repo> diff      # the attributed diff: what actually changed, by session
+standup diff             # same, for the repo you're standing in
+standup <repo> diff @abc1234   # one commit's diff, attributed
+standup <repo> diff 45e5247    # only the hunks that session accounts for
+standup <repo> diff --stat     # per-file counts and tiers, no bodies
+standup <repo> diff -U6        # 6 lines of context instead of 3
+standup <repo> diff --no-wrap  # clip long body lines instead of folding them
+
 standup cost             # notional cost by project (this calendar month)
 standup cost <repo>      # drill-down: that project's sessions, priced and ranked
 standup cost --since all # widen the window (3d, 2w, ISO date, or 'all')
 standup cost --json      # structured cost output
-standup show             # the newest session in the repo you're standing in
-standup show <handle>    # read a session's transcript (prompts + responses)
-standup show <handle> --thinking   # include hidden thinking
-standup show <handle> --raw        # untouched session JSONL
-standup show <handle> --no-pager   # print instead of opening the pager
+standup session          # the newest session in the repo you're standing in
+standup session <handle> # read a session's transcript (prompts + responses)
+standup <repo> session   # the newest session in a named project
+standup <repo> session <handle>    # that session, checked to be one of the repo's
+standup session --in <repo>         # the verb-first spelling of both
+standup session <handle> --thinking   # include hidden thinking
+standup session <handle> --raw        # untouched session JSONL
+standup session <handle> --no-pager   # print instead of opening the pager
 
 standup watch            # live feed of this repo while an agent works in it
 standup watch <repo>     # watch a named repo (or a path) instead
@@ -42,10 +53,29 @@ standup install          # set up the Session Brief Stop hook (once, machine-wid
 standup uninstall        # remove it
 ```
 
+### Two spellings, one meaning
+
+A repo can lead instead of follow, so `standup tt diff` and `standup diff tt`
+are the same command. The position says which axis you're on: **verb-first is a
+lens over every project** (`standup cost` prices them all), **a repo followed by
+a view is one project at higher magnification** — `standup` → `standup tt` →
+`standup tt diff`. It works for `diff`, `cost`, `watch` and `session`
+(`standup tt session` is tt's newest), and the rewrite happens before dispatch,
+so both spellings are literally the same code (ADR 0015).
+
+Where a view's own argument already implies a repo, the repo you named becomes a
+*check* rather than a conflict: `standup st session 040291bc` reads that session
+and tells you if it isn't one of `st`'s. Same rule as `@<hash>` — naming a repo
+means the answer has to come from it.
+
+`audit` is the exception — verb-first only, always with an explicit handle. It's
+the one view that spends money, so it never runs on a session you didn't name.
+
 ## Typing less
 
-Every subcommand has a one-letter alias — `c` cost, `w` watch, `s` show,
-`a` audit — so the common views are two keystrokes past the binary name.
+Every subcommand has a one-letter alias — `c` cost, `w` watch, `s` session,
+`a` audit, `d` diff — so the common views are two keystrokes past the binary
+name.
 `install` and `uninstall` are deliberately unaliased: a machine-wide mutation
 should cost you the whole word.
 
@@ -60,7 +90,9 @@ resolved: a fragment that fits two projects errors and lists both.
 
 ```sh
 standup c pm             # ProjectManagement's cost drill-down
+standup pm c             # the same thing, repo-first
 standup w st             # watch standup
+standup st d             # standup's attributed diff
 standup s                # read the newest session here
 ```
 
@@ -102,9 +134,11 @@ whether an agent is still going without switching to its terminal. A session
 that has handed control back shows *nothing*: there is no "finished", because
 the absence is the answer, and the bar stays quiet when the work is quiet. The
 verb is read from the log's own `stop_reason` and pending tool call, except
-`thinking`, which is inferred from silence and documented as such; the spinner
-freezes when nothing has been appended for 30 seconds, so motion never outlives
-the data ([ADR 0011](docs/adr/0011-activity-state-inferred-motion-never-outlives-data.md)).
+`thinking`, which is inferred from silence and documented as such; a tool verb
+holds the bar for a second even after its tool returns, because a `Read` that
+takes 25ms is otherwise a verb nobody can read; and the spinner freezes when
+nothing has been appended for 30 seconds, so motion never outlives the data
+([ADR 0011](docs/adr/0011-activity-state-inferred-motion-never-outlives-data.md)).
 
 A body line wider than your terminal **folds** rather than running off the
 right edge: it continues onto as many rows as it needs, each continuation marked
@@ -118,7 +152,7 @@ of the last few minutes rather than the content.
 It's interactive; [docs/watch-manual.md](docs/watch-manual.md) is the full guide
 to the screen and the keys.
 
-`standup show` opens in your pager (`$PAGER`, or `less -R`) when writing to a
+`standup session` opens in your pager (`$PAGER`, or `less -R`) when writing to a
 terminal — scroll and `/`-search from the top of the conversation. It prints
 plainly when piped or with `--no-pager`.
 
@@ -149,16 +183,77 @@ drill-down.
   that has none. The drill-down states `· no remote` in its header
   unconditionally, so a local-only repo says so even when it is clean.
 - Two short hexes, coloured by rank: a **session handle** is the cyan 8-char id
-  on a session's title line, and it's an address — `standup show <handle>`. A
+  on a session's title line, and it's an address — `standup session <handle>`. A
   **commit hash** renders `@6a4eeef` in grey, because it's only a reference and
-  addresses nothing. The `@` keeps them apart when piped or under `NO_COLOR`.
+  addresses nothing on its own — `standup <repo> diff @6a4eeef` is the one place
+  it resolves, inside a repo you named. The `@` keeps the two apart when piped
+  or under `NO_COLOR`.
 - Attribution: `[exact]` = commit hash captured in the session log,
   `~"title"` = likely (the session edited those files), `unattributed` =
   no session explains it (hand-made or squashed). Unattributed dirt is
   always shown — the inbox must not hide dirt.
+- With active work present, the drill-down ends with one dim line naming the
+  view after it — `standup st diff · read the changes`.
 
 Only repos some Claude session has ever visited are scanned (ADR 0001) —
 but within those repos, *all* dirt is shown, Claude-made or not.
+
+## The attributed diff
+
+`standup <repo> diff` is the drill-down one magnification deeper: where that
+listed three changed filenames, this shows what changed in them, grouped under
+the session that wrote it. It's a `git diff` of your uncommitted work — staged
+and unstaged both, so `git add` never blanks the view — with the watch's
+typography over it: syntax highlighting by file type, a `+`/`−` gutter, a faint
+red field behind removed lines, and long lines folding with `↳` rather than
+running off the edge.
+
+Line numbers sit in one column, not two. A context or added row is numbered on
+the **new** side; a removed row on the **old** side. The sign already says which
+side you're reading, so a second column would restate it at the cost of width.
+Hunks of the same file are separated by a `⋮`.
+
+The part `git diff` can't do is the attribution, and it's per **hunk**, not per
+file. That matters: the drill-down puts a file under its *latest* session, so
+without this a 200-line rewrite by one session would render under another
+session's header because that one changed a single line later. So each hunk is
+matched against the actual text of every candidate session's edits, and a hunk is
+marked **only when it disagrees with the header above it** — silence means "yes,
+this one is theirs":
+
+| mark | meaning |
+| --- | --- |
+| *(nothing)* | this hunk is the group's session, as the header says |
+| `~ 3b0a693b "title"` | a different session wrote this hunk |
+| `~ shared` | two or more sessions' work, and it can't be split — both are named |
+| `~ unaccounted` | no session's recorded edits account for this hunk |
+| `~ unattributed` | no session ever touched this path |
+
+**`unaccounted` is not `unattributed`.** Unattributed is reliable — no session
+ever edited that path. Unaccounted sits *inside* a file a session did touch, and
+it has two causes that can't be told apart: you edited it by hand, or the agent
+wrote it and a later edit moved the text so it no longer matches its own log
+verbatim. The matcher only ever recognises text exactly — no fuzzy scoring — so
+it reports the gap rather than guessing, and the gap is a decent signal for
+"worth a second look". Iterating on the same lines produces these routinely
+([ADR 0016](docs/adr/0016-a-hunk-is-attributed-verbatim-or-not-at-all.md)).
+
+Three ways to narrow it:
+
+```sh
+standup st diff --stat       # per-file counts + each file's tier digest
+standup st diff 3b0a693b     # only the hunks that session accounts for
+standup st diff @6a4eeef     # one commit instead of the working tree
+```
+
+A commit's header additionally carries `exact` when a session's own `git commit`
+output logged that hash — the one attribution in standup that's a fact rather
+than a claim. Its hunks are still matched individually, since a commit can bundle
+two sessions' work, but only against edits made *before* the commit: a session
+that writes the same lines a day later can't have authored it.
+
+Scope is uncommitted work only; committed change is reached by naming its hash.
+There is deliberately no flag that dumps every unpushed commit's diff at once.
 
 ## Session Briefs
 
@@ -183,7 +278,7 @@ summarised, so the price of the feature is never hidden (ADR 0006).
 show where consumption concentrates — ranked by project, then by session, with
 a token-bucket breakdown and a one-word "why" tag (`cache-heavy`, `out-heavy`,
 `fable`) so the expensive shape is visible. Drill into a session with
-`standup show <handle>` to read the actual prompts and responses, each
+`standup session <handle>` to read the actual prompts and responses, each
 assistant turn annotated with its cost.
 
 These dollar figures are **Notional Cost** — API-equivalent *load*, a

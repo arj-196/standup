@@ -30,7 +30,7 @@ that has handed control back shows nothing at all. See §3.
 It reads two sources, exactly as the **Triage Inbox** does: the Claude Code
 session log claims *who and what*, and git confirms *ground truth*. Assistant
 prose and thinking never appear here — reading the conversation is
-`standup show`'s job. (The `thinking` **Activity State** is not an exception: it
+`standup session`'s job. (The `thinking` **Activity State** is not an exception: it
 reports *that* the model is composing, never a word of what it is composing.)
 
 The Watch is read-only and stateless. It never writes to your repo, never
@@ -208,7 +208,7 @@ Three markings carry the honesty rules:
   upright and unmarked.
 
 One more marking keeps two lookalikes apart, and it ranks them. A **cyan
-8-hex is a Session Handle**: an address you can hand to `standup show
+8-hex is a Session Handle**: an address you can hand to `standup session
 <handle>`. A **git commit hash is always written `@<sha>`, in grey** — here
 and everywhere else Standup prints one — because it is only a reference,
 addresses nothing, and should recede behind the handle beside it. `standup
@@ -273,7 +273,8 @@ A commit event carries the commit's own diff, so committing a change doesn't
 make it unreadable. Its header reads `⚑ commit @<sha>  <subject>  N files
 +added −removed  ▸ N files` — the `@` and the grey mark the hash as a *commit*
 hash, never a Session Handle, which is the same shape and the only one of the
-two you can hand to `standup show`. A commit collapses to its header row
+two you can hand to `standup session`. To read the commit's diff outside the
+Watch, name it in the repo: `standup <repo> diff @<sha>`. A commit collapses to its header row
 alone; `enter` steps it through two shallow levels instead of one deep dump:
 
 ```
@@ -333,6 +334,16 @@ what makes anything appearing there worth a glance.
 | `writing` | `Write`, `Edit`, `MultiEdit`, `NotebookEdit` |
 | `running` | `Bash` and its shell companions |
 | `acting` | any other tool, including MCP tools — an unmapped tool is still true |
+
+**A tool verb lingers for a second.** A local `Read` returns in about 25
+milliseconds — far too fast to read, and faster than the Watch's own 250ms
+poll — so bound strictly to its tool's runtime, `reading` and `writing` would
+never appear at all and the bar would say `thinking` in almost every frame. A
+tool verb therefore holds the bar for at least a second before `thinking` may
+replace it. It yields to everything that matters: the bar goes blank the *instant*
+the turn is handed back, and the next tool verb replaces it immediately, so the
+lingering only ever displaces silence. The age is the verb's real age throughout,
+which is why a held one reads `reading 0s` (ADR 0011, amendment).
 
 The number is how long it has been in that state, and it is never re-labelled:
 `thinking 14m` stays `thinking 14m` rather than becoming "stalled", because
@@ -430,7 +441,9 @@ of `↑`s.
 
 The feed keeps the last 500 events. Scroll far enough back and the oldest ones
 are simply gone — the Watch is a live view, not an archive. The **Transcript**
-(`s`, or `standup show`) is where the full history lives. While you're reading
+(`s`, or `standup session`) is where the full history lives. For the *code* the
+sessions changed rather than what they said, the **Attributed Diff**
+(`standup <repo> diff`) reads the working tree and attributes it per hunk. While you're reading
 scrollback the trim is deferred (up to 200 extra events) so dropping old
 events can't shift the view under you; going back to live drops the excess.
 
@@ -525,7 +538,7 @@ ground truth.
 | `s` | open that session's **Transcript** in `less` |
 
 `s` suspends the Watch and hands the session's transcript to `less -R` — the
-same rendering as `standup show <handle>`. Search it with `/`, quit `less` with
+same rendering as `standup session <handle>`. Search it with `/`, quit `less` with
 `q`, and the Watch resumes exactly where it was (still scrolled back, if you
 were reading).
 
@@ -679,7 +692,9 @@ files and diffs them itself.
 | no verb in the status bar | nothing is acting — every Live Session has handed its turn back. There is no "finished" to show |
 | the spinner has stopped | nothing appended for 30s; the verb and its age are the last thing the log said (a long `running` is normal, a long `thinking` is not) |
 | `thinking` for far too long | either a long reasoning pass, or the session was killed in the gap after a tool returned — the log can't tell them apart. The frozen spinner is the tell |
-| `[2] ⠹ acting 3s` | a tool with no mapped verb (an MCP tool, or one newer than the table) |
+| `reading 0s` / `writing 0s` | the tool has already returned and the verb is inside its one-second floor. The age is honest — the tool really did take under a second |
+| almost always `thinking` | expected, and not the bug it was: the model composing genuinely is most of a turn's wall-clock. `running` shows for `Bash`, and `reading`/`writing` for their floor; if you see *nothing else, ever*, the floor is one constant (`ACT_FLOOR`) in `watchstream.py` |
+| `[2] ⠹ acting 3s` | a tool with no mapped verb (an MCP tool, or one newer than the table) — and only that: a log line announcing no tool at all leaves the previous verb standing instead of falling to `acting` |
 
 ## 8. One-page key reference
 

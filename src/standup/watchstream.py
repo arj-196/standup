@@ -44,6 +44,14 @@ ACT_VERBS = {
 }
 ACT_FALLBACK = "acting"
 ACT_THINKING = "thinking"
+# Display floor for a tool verb (ADR 0011, amendment). A local Read returns in
+# ~25ms, so bound to its own execution window `reading` was never on screen long
+# enough to be read by a human — measured over eight of this repo's sessions,
+# `reading` held the state for 7 seconds in total and `writing` for 8, against
+# 6740 for `thinking`. A tool verb therefore holds the band for at least this
+# long before `thinking` may replace it. It never delays a *settled* session
+# going blank, and never delays another tool verb.
+ACT_FLOOR = timedelta(seconds=1.0)
 
 _COMMIT_RE = claude_logs.COMMIT_LINE_RE
 _REMINDER_RE = re.compile(r"<system-reminder>.*?</system-reminder>", re.DOTALL)
@@ -105,6 +113,10 @@ class Activity:
     `since` is the timestamp of the line that put the session in this state, so
     the age is right at launch too — backfill walks the whole file and leaves
     the state at the true tail.
+
+    A tool verb is subject to a display floor (`ACT_FLOOR`) applied when the
+    state is read, not when it is tracked: `Read` returns in milliseconds, and a
+    verb no one can see answers nothing. `WatchStream._activity_of` holds it.
     """
     verb: str
     since: datetime
@@ -187,6 +199,10 @@ class _Tailer:
         # Activity State: the verb the tail leaves us in, None when settled
         self.act_verb: str | None = None
         self.act_since: datetime = self.last_append
+        # the last tool verb announced in this turn, kept alongside the truth so
+        # the display floor has something to hold; cleared when the turn settles
+        self.act_tool: str | None = None
+        self.act_tool_since: datetime = self.last_append
         self._backfilling = False
 
     def seek_to_end(self) -> None:
@@ -222,7 +238,9 @@ class _Tailer:
           the line's text is `[Request interrupted by user]`, which would
           otherwise look like you asking a question. Without it the state would
           read `thinking` for as long as the Watch stays open.
-        - `stop_reason == "tool_use"` names the call about to run: its verb.
+        - `stop_reason == "tool_use"` *and* a `tool_use` block on the line names
+          the call about to run: its verb. The stop reason alone is not enough —
+          see the block comment below.
         - any other `stop_reason` ends the turn — the agent handed control back.
         - a tool result, or your prompt, leaves the model composing: `thinking`,
           the one verb no line ever states.
@@ -239,20 +257,36 @@ class _Tailer:
         if etype == "assistant":
             if message.get("stop_reason") != "tool_use":
                 self.act_verb, self.act_since = None, ts
+                self.act_tool = None      # settled: nothing may be held over
                 return
             name = None
             if isinstance(content, list):
                 for b in content:      # parallel calls: the last one announced
                     if isinstance(b, dict) and b.get("type") == "tool_use":
                         name = b.get("name")
+            if name is None:
+                # `stop_reason` belongs to the whole assistant *message*, but the
+                # message's blocks are flushed as separate lines — a preamble
+                # `text` block and an extended `thinking` block each land on
+                # their own line carrying the same `tool_use` stop reason. So the
+                # stop reason says "a tool comes later in this message", not
+                # "this line announces one". Over eight of this repo's own
+                # sessions, 315 of 838 such lines named no tool (231 thinking,
+                # 84 text) and every one of them was read as `acting` — a verb
+                # reserved for a tool absent from the table. A line that names no
+                # tool is the model still composing, so leave the state (and its
+                # age) exactly where the previous line left it.
+                return
             self.act_verb = ACT_VERBS.get(name, ACT_FALLBACK)
             self.act_since = ts
+            self.act_tool, self.act_tool_since = self.act_verb, ts
             return
 
         if etype != "user" or obj.get("isMeta"):
             return
         if "interruptedMessageId" in obj or "interruptedByShutdown" in obj:
             self.act_verb, self.act_since = None, ts
+            self.act_tool = None          # cut short: nothing may be held over
             return
         returned = obj.get("toolUseResult") is not None or (
             isinstance(content, list)
@@ -845,14 +879,34 @@ class WatchStream:
 
     # -- vitals + parting snapshot -------------------------------------------
 
+    @staticmethod
+    def _activity_of(t: _Tailer) -> Activity | None:
+        """The tail's Activity State, with the tool verb's display floor applied.
+
+        Resolved here rather than in the tailer because the floor is a *reading*
+        of the state against the clock, not a transition in the log — the truth
+        the tailer holds stays untouched, and the age shown is always the real
+        one (a held `reading` reads `0s`, never an inflated figure).
+
+        The floor yields to everything that matters: a settled or interrupted
+        turn clears `act_tool`, so the band still goes blank the instant the
+        agent hands control back, and a fresh tool verb overwrites immediately.
+        It only ever holds a tool verb against `thinking` (ADR 0011, amendment).
+        """
+        if t.act_verb is None:
+            return None
+        if (t.act_verb == ACT_THINKING and t.act_tool is not None
+                and _now() - t.act_tool_since < ACT_FLOOR):
+            return Activity(t.act_tool, t.act_tool_since)
+        return Activity(t.act_verb, t.act_since)
+
     def _info(self, sid: str) -> LiveSessionInfo:
         t = self.tailers[sid]
         return LiveSessionInfo(session_id=sid, title=t.session.title,
                                objective=self._briefs.get(sid),
                                last_append=t.last_append,
                                num=self._nums.get(sid, 0),
-                               activity=(Activity(t.act_verb, t.act_since)
-                                         if t.act_verb else None))
+                               activity=self._activity_of(t))
 
     def vitals(self) -> Vitals:
         now = _now()

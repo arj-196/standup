@@ -130,7 +130,7 @@ def _commit_ref(short: str, st: Style) -> str:
 
     The Session Handle borrows the git-short-hash idiom deliberately
     (CONTEXT.md), so both are short lowercase hex in a leading column — and a
-    bare hash here invites `standup show 6a4eeef`, which addresses nothing.
+    bare hash here invites `standup session 6a4eeef`, which addresses nothing.
     Grey is the point: a commit hash recedes behind the handle beside it. The
     `@` sigil carries the distinction on its own when colour cannot (piped
     output, NO_COLOR).
@@ -275,7 +275,7 @@ def render_overview(entries: list[RepoEntry], since: datetime, now: datetime,
 
 def render_detail(entry: RepoEntry, now: datetime,
                   show_all: bool = False, window: str = "7d",
-                  briefs: dict | None = None) -> str:
+                  briefs: dict | None = None, handle: str | None = None) -> str:
     st = _style()
     width = _term_width()
     # a Remoteless Repo states it here, unconditionally: the drill-down is the
@@ -334,6 +334,15 @@ def render_detail(entry: RepoEntry, now: datetime,
         else:
             out.append(st.dim("  nothing done in the window"))
         out.append("")
+
+    # The next magnification, named where it is wanted. Standup's discoverability
+    # idiom is that a view prints the address of the command after it — the reason
+    # every rollup title line carries its Session Handle. A drill-down that lists
+    # three changed filenames and no way to read them is the dead end this closes.
+    # Printed only when there is Active Work: a hint pointing at an empty view is
+    # noise, and the handle is the argument you already typed.
+    if any(co.pending for co in entry.checkouts):
+        out.append(st.dim(f"standup {handle or entry.name} diff  ·  read the changes"))
 
     return "\n".join(out)
 
@@ -448,7 +457,7 @@ def render_cost_detail(project: ProjectCost, window: str, now: datetime) -> str:
             if l.unpriced_turns:
                 evid += f" (+{l.unpriced_turns} unpriced turns)"
             out.append(_clamp(indent + st.dim(evid), width))
-        out.append(indent + st.dim(f"standup show {s.handle}"))
+        out.append(indent + st.dim(f"standup session {s.handle}"))
         out.append("")
     return "\n".join(out)
 

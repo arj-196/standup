@@ -30,19 +30,16 @@ from collections import deque
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from pygments.lexers import get_lexer_for_filename
-from pygments.lexers.shell import BashLexer
-from pygments.util import ClassNotFound
-from rich.console import Console
 from rich.style import Style
-from rich.syntax import Syntax
-from rich.text import Span, Text
+from rich.text import Text
 from textual import events
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import VerticalScroll
 from textual.widgets import Static
 
+from . import diffrows
+from .diffrows import lexed_command, styled_lines
 from .theme import Theme
 from .watchstream import FeedEvent, LiveSessionInfo, WatchStream
 
@@ -57,7 +54,6 @@ REMOVED_LINES = 4          # removed-text lines shown collapsed
 COMMIT_FILE_LINES = 6      # commit's file list shown collapsed; rest counted
 MAX_EVENTS = 500           # DOM cap; oldest events beyond it are dropped
 TRIM_SLACK = 200           # extra events tolerated while reading scrollback
-SYNTAX_THEME = "monokai"   # per-token, foreground-only; a licensed third system
 GAP_SHOW = 5               # gaps below this many seconds stay quiet
 FRESH = 30                 # recency younger than this reads in live-green
 STRIP_CELLS = 8            # header activity strip: 8 cells, one minute each
@@ -71,7 +67,6 @@ SPIN_STALL = "⠿"           # frozen spinner: nothing appended for FRESH second
 ACTS_SHOWN = 3             # acting sessions named in the footer; rest counted
 CODE_COL = 16              # cells left of a body line's first character
 PROMPT_COL = 12            # ditto, for an expanded prompt's own text
-WRAP_ROWS = 40             # rows one wrapped body line may occupy; rest counted
 REFOCUS_GRACE = 0.35       # seconds after the terminal regains focus in which a
                            # click is read as the window gesture, not a feed one
 
@@ -79,8 +74,6 @@ _MARKS = {
     "file": "✎", "bash": "⏺", "commit": "⚑", "push": "⇧",
     "branch": "⑂", "unattributed": "~", "session": "●",
 }
-
-_BASH_LEXER = BashLexer()
 
 
 def _hm(when: datetime) -> str:
@@ -123,71 +116,6 @@ def _elapsed(seconds: float, wide: bool) -> str:
     return f"{s // 60}m" if s < 5400 else f"{s // 3600}h{s % 3600 // 60:02d}m"
 
 
-def _token_style(style: Style | str, no_color: bool) -> Style | str:
-    """Token styles keep foreground only: monokai's page background is
-    stripped so the surface and the selection band show through. Under
-    NO_COLOR the attributes (bold/italic) remain — never the hues."""
-    if not isinstance(style, Style):
-        return style
-    if style.bgcolor is None and not no_color:
-        return style
-    return Style(color=None if no_color else style.color, bold=style.bold,
-                 italic=style.italic, underline=style.underline)
-
-
-def _styled_lines(code: str, path: str | None, no_color: bool) -> list[Text]:
-    """Syntax-highlighted lines of a diff block. Change semantics live in the
-    gutter, never in these colors. Plain lines when no lexer fits the path or
-    the lex round-trip doesn't reproduce the text exactly."""
-    raw = code.split("\n")
-    plain = [Text(ln) for ln in raw]
-    if not code or not path:
-        return plain
-    try:
-        lexer = get_lexer_for_filename(path)
-    except ClassNotFound:
-        return plain
-    lines = list(Syntax("", lexer, theme=SYNTAX_THEME).highlight(code).split("\n"))
-    # highlight() drops trailing blank lines; session Write events end in "\n"
-    while len(lines) < len(raw) and raw[len(lines)] == "":
-        lines.append(Text())
-    if [t.plain for t in lines] != raw:   # animation slices by char count
-        return plain
-    for t in lines:
-        t.style = ""                      # the line-level monokai page wash
-        t.spans = [Span(s.start, s.end, _token_style(s.style, no_color))
-                   for s in t.spans]
-    return list(lines)
-
-
-# rich needs a console to wrap against; this one exists to measure and never
-# prints — the fixed width keeps it from touching the real terminal at all
-_MEASURE = Console(width=200, quiet=True)
-
-
-def _wrap_lines(line: Text, width: int) -> list[Text]:
-    """One body line as the rows it folds into, styles intact.
-
-    The fold is word-aware and only breaks inside a token when the token itself
-    is longer than the row — a path or a long string then continues rather than
-    disappearing off the right edge."""
-    if width <= 0 or line.cell_len <= width:
-        return [line]
-    return list(line.wrap(_MEASURE, width, overflow="fold"))
-
-
-def _lexed_command(cmd: str, no_color: bool) -> Text:
-    """One bash command, monokai-lexed like any diff body."""
-    line = Syntax("", _BASH_LEXER, theme=SYNTAX_THEME).highlight(cmd)
-    t = next(iter(line.split("\n")))
-    if t.plain != cmd:
-        return Text(cmd)
-    t.style = ""                          # the line-level monokai page wash
-    t.spans = [Span(s.start, s.end, _token_style(s.style, no_color))
-               for s in t.spans]
-    return t
-
-
 class EventWidget(Static):
     """One Feed Event: a header line behind the gap gutter and session lane,
     plus (for files, commits, prompts, bash) an optional body. File events own
@@ -208,9 +136,9 @@ class EventWidget(Static):
         self.head_text, self.hidden_lines = self._split_body()
         no_color = theme.depth == "none"
         if event.kind == "file":
-            self.added_lines = (_styled_lines(event.added, event.path, no_color)
+            self.added_lines = (styled_lines(event.added, event.path, no_color)
                                 if event.added else [])
-            self.removed_lines = (_styled_lines(event.removed, event.path, no_color)
+            self.removed_lines = (styled_lines(event.removed, event.path, no_color)
                                   if event.removed else [])
         else:
             self.added_lines, self.removed_lines = [], []
@@ -248,8 +176,8 @@ class EventWidget(Static):
             no_color = self.t.depth == "none"
             self._commit_lines = [
                 (f.path, f.change,
-                 _styled_lines(f.added, f.path, no_color) if f.added else [],
-                 _styled_lines(f.removed, f.path, no_color) if f.removed else [])
+                 styled_lines(f.added, f.path, no_color) if f.added else [],
+                 styled_lines(f.removed, f.path, no_color) if f.removed else [])
                 for f in self.event.files
             ]
         return self._commit_lines
@@ -293,28 +221,6 @@ class EventWidget(Static):
 
     # -- header content -----------------------------------------------------------
 
-    def _path_text(self, path: str) -> Text:
-        """dir/ muted · basename bold · .ext in the address family."""
-        t = self.t
-        d, _, base = path.rpartition("/")
-        stem, dot, ext = base.rpartition(".")
-        if not stem:
-            stem, dot, ext = base, "", ""
-        out = Text()
-        if d:
-            out.append(d + "/", style=t.style("muted"))
-        out.append(stem, style=t.style("file", bold=True))
-        if dot:
-            out.append("." + ext, style=t.style("ext"))
-        return out
-
-    def _counts(self, added: int, removed: int) -> Text:
-        t, out = self.t, Text()
-        out.append(f"+{added}", style=t.style("added"))
-        if removed:
-            out.append(f" −{removed}", style=t.style("removed"))
-        return out
-
     def _header(self) -> tuple[Text, Text | None]:
         """(header content from the mark column on, right-edge disclosure)."""
         e, t = self.event, self.t
@@ -329,9 +235,9 @@ class EventWidget(Static):
             else:
                 out.append("✎", style=t.style("file"))
             out.append("  ")
-            out.append_text(self._path_text(e.path or "?"))
+            out.append_text(diffrows.path_text(self.t, e.path or "?"))
             out.append(f"  {e.change}  ", style=t.style("muted"))
-            out.append_text(self._counts(plus, minus))
+            out.append_text(diffrows.counts(self.t, plus, minus))
             if e.session_id is None:
                 out.append("  ~unattributed", style=t.style("claim"))
             body = plus + minus
@@ -342,7 +248,7 @@ class EventWidget(Static):
         elif e.kind == "bash":
             out.append("⏺", style=t.style("muted"))
             out.append("  $ ", style=t.style("faint"))
-            out.append_text(_lexed_command(_one_line(e.command or "", 100),
+            out.append_text(lexed_command(_one_line(e.command or "", 100),
                                            t.depth == "none"))
             if self.bash_ok is True:
                 out.append("  ✓", style=t.style("added", bold=True))
@@ -361,7 +267,7 @@ class EventWidget(Static):
                 n = len(e.files)
                 out.append(f"  {n} file{'s' if n != 1 else ''} ",
                            style=t.style("muted"))
-                out.append_text(self._counts(plus, minus))
+                out.append_text(diffrows.counts(self.t, plus, minus))
                 n_txt = f"{n} file{'s' if n != 1 else ''}"
                 if self.expand_level == 0:
                     right = Text(f"▸ {n_txt} ", style=t.style("faint"))
@@ -440,60 +346,33 @@ class EventWidget(Static):
         return left
 
     def _fold(self, line: Text, avail: int) -> list[Text]:
-        """A body line as the rows it occupies.
+        """A body line as the rows it occupies — the shared rule (ADR 0013)."""
+        return diffrows.fold(self.t, line, avail, self.wrap)
 
-        Wrap — the default — continues the line onto further rows, because a
-        body line you cannot read the end of is the one thing the feed owes you:
-        it is the changed code itself. It is bounded at WRAP_ROWS rows with the
-        tail *counted* rather than dropped silently (a minified file is one line
-        and would otherwise fill the feed). Wrap off is one row that clips at
-        the right edge — a fixed row count per event, for reading the shape of
-        the last few minutes rather than the content."""
-        if not self.wrap:
-            return [line]
-        rows = _wrap_lines(line, avail)
-        if len(rows) <= WRAP_ROWS:
-            return rows
-        dropped = sum(len(r.plain) for r in rows[WRAP_ROWS:])
-        return rows[:WRAP_ROWS] + [Text(f"… +{dropped} chars",
-                                        style=self.t.style("faint"))]
+    def _body_gutter(self) -> Text:
+        """Everything left of a body line's sign column: the gap gutter and
+        session lane (cols 1–9), then cols 10–14 of dead space. Its width is
+        what puts the sign in cols 15–16 and the code at col 17, and it is what
+        the wash must not reach — an identity hue needs clean surface."""
+        g = self._prefix(first=False)
+        g.append(" " * 5)
+        return g
 
     def _sign_row(self, out: Text, sign: str | None, code: Text,
                   width: int) -> None:
-        """One body line: cols 15–16 carry the ± sign, code starts at col 17.
-        The gutter says what changed, the code colors say what it is, and a
-        removed row's surface says what changed a second time — the wash of
-        ADR 0012, redundant by construction so nothing lives in it alone.
+        """One body line, in the row shape both diff surfaces share.
 
-        Three bounds on the wash. It spans the sign column to `width`, because a
-        block is only findable if it is a rectangle and a diff's line lengths
-        are ragged. It never reaches the gap gutter or the session lane, whose
-        identity hue has to sit on clean surface. And it is dropped on the
-        selected row: the selection band carries information the wash does
-        not, so the wash is the channel that yields.
-
-        Under wrap (the default) a long line becomes several rows and is still
-        one line. The continuation rows carry a faint `↳` where the sign would
-        be — the sign states a change once, and a fold is the same source line,
-        not another one — and start in the same code column, so indentation
-        still lines up. The wash spans them too: the block stays a rectangle."""
-        t = self.t
-        for i, chunk in enumerate(self._fold(code, width - CODE_COL)):
-            row = self._prefix(first=False)
-            sign_col = len(row.plain) + 5     # cols 10–14 are dead space
-            if i:
-                row.append("     ↳ ", style=t.style("faint"))
-            elif sign == "+":
-                row.append("     + ", style=t.style("added", bold=True))
-            elif sign == "-":
-                row.append("     − ", style=t.style("removed", bold=True))
-            else:
-                row.append("       ")
-            row.append_text(chunk)
-            wash = t.background("removed_bg") if sign == "-" else None
-            if wash is not None and not self.has_class("selected"):
-                row.append(" " * max(0, width - row.cell_len))
-                row.stylize(wash, sign_col)
+        The three channels, the wash and its bounds, and the fold all live in
+        `diffrows.sign_rows` so that the Watch and the Attributed Diff cannot
+        drift apart. The one bound that is the Watch's alone is passed in: the
+        wash yields on a *selected* row, because the selection band carries
+        information the wash does not.
+        """
+        gutter = self._body_gutter()
+        rows = diffrows.sign_rows(
+            self.t, sign, code, gutter=gutter, width=width, wrap=self.wrap,
+            wash=not self.has_class("selected"))
+        for row in rows:
             out.append("\n")
             out.append_text(row)
 
@@ -515,10 +394,10 @@ class EventWidget(Static):
                 out.append("\n")
                 out.append_text(self._prefix(first=False))
                 out.append("      ")
-                out.append_text(self._path_text(f.path))
+                out.append_text(diffrows.path_text(self.t, f.path))
                 out.append(" " * max(1, pad - len(f.path)))
                 out.append(f"{f.change}  ", style=t.style("muted"))
-                out.append_text(self._counts(plus, minus))
+                out.append_text(diffrows.counts(self.t, plus, minus))
             if len(blocks) > COMMIT_FILE_LINES:
                 self._more_row(out, len(blocks) - COMMIT_FILE_LINES, "files")
             return out
@@ -526,7 +405,7 @@ class EventWidget(Static):
             out.append("\n")
             out.append_text(self._prefix(first=False))
             out.append("      ")
-            out.append_text(self._path_text(path))
+            out.append_text(diffrows.path_text(self.t, path))
             out.append(f"  {change}", style=t.style("muted"))
             for ln in removed:
                 self._sign_row(out, "-", ln, width)
@@ -575,7 +454,7 @@ class EventWidget(Static):
             clipped = len(_one_line(cmd)) < len(cmd) or out.cell_len > width
             if self.expanded and cmd and clipped:
                 for raw in cmd.splitlines():
-                    self._sign_row(out, None, _lexed_command(raw, t.depth == "none"),
+                    self._sign_row(out, None, lexed_command(raw, t.depth == "none"),
                                    width)
             return out
 
@@ -644,7 +523,7 @@ class WatchApp(App):
         Binding("enter", "toggle_expand", "expand", show=False, priority=True),
         Binding("d", "toggle_stat", "stat", priority=True),
         Binding("w", "toggle_wrap", "wrap", priority=True),
-        Binding("s", "open_show", "show transcript", priority=True),
+        Binding("s", "open_transcript", "transcript", priority=True),
         Binding("plus,equals_sign", "faster", "faster", show=False, priority=True),
         Binding("minus", "slower", "slower", show=False, priority=True),
         Binding("up,k", "select_prev", "scrollback", show=False, priority=True),
@@ -974,11 +853,11 @@ class WatchApp(App):
             return [("G", "live"), ("⏎", "expand"),
                     ("w", "clip" if self.wrap else "wrap"), ("?", "keys")]
         if self.filter_sid:
-            return [("Esc", "clear"), ("Tab", "next"), ("s", "show"), ("?", "keys")]
+            return [("Esc", "clear"), ("Tab", "next"), ("s", "transcript"), ("?", "keys")]
         if self.stat_mode:
             return [("d", "bodies"), ("⏎", "expand"), ("1-9", "filter"), ("?", "keys")]
         if self.selected is not None and self.selected.expanded:
-            return [("⏎", "collapse"), ("s", "show"), ("G", "live"), ("?", "keys")]
+            return [("⏎", "collapse"), ("s", "transcript"), ("G", "live"), ("?", "keys")]
         if self.anim_queue:
             return [("⏎", "expand"), ("d", "stat"), ("+ −", "speed"), ("?", "keys")]
         return [("⏎", "expand"), ("d", "stat"), ("[ ]", "chapter"), ("?", "keys")]
@@ -1341,9 +1220,9 @@ class WatchApp(App):
             self._select(w)
         self.action_toggle_expand()
 
-    # -- hand off to `standup show` --------------------------------------------------
+    # -- hand off to `standup session` --------------------------------------------------
 
-    def action_open_show(self) -> None:
+    def action_open_transcript(self) -> None:
         sid = None
         if self.selected is not None and self.selected.event.session_id:
             sid = self.selected.event.session_id
@@ -1355,11 +1234,11 @@ class WatchApp(App):
         if sid is None or sid not in self.stream.tailers:
             return
         log_path = Path(self.stream.tailers[sid].session.log_path)
-        from . import show as show_mod
+        from . import transcript as transcript_mod
         try:
-            text = show_mod.render_transcript(log_path)
+            text = transcript_mod.render_transcript(log_path)
         except Exception as e:  # never let a bad log kill the watch
-            self.notify(f"show failed: {e}", severity="error")
+            self.notify(f"transcript failed: {e}", severity="error")
             return
         with self.suspend():
             subprocess.run(["less", "-R"], input=text.encode(), check=False)
