@@ -897,7 +897,10 @@ def _cmd_watch(argv: list[str]) -> int:
                     "feed of every Live Session's activity — file edits (typed out "
                     "as they land; consecutive edits to one file fold into a "
                     "single Change Run that evolves, marked ×N for the tool calls "
-                    "it folded), Bash one-liners, your prompts as chapter "
+                    "it folded), Calls (every tool call that changes no file — a "
+                    "Bash one-liner, an MCP request, a web fetch, a subagent — "
+                    "with its argument and a ✓/✗ when it returns; local reads "
+                    "stay silent), your prompts as chapter "
                     "rules, commits (with their diff), pushes, branch switches, "
                     "and Unattributed Changes the "
                     "moment they appear. The status bar carries the Activity State "
@@ -922,7 +925,7 @@ def _cmd_watch(argv: list[str]) -> int:
                         "inbox), full name, or a path to a git checkout; "
                         "defaults to the current directory")
     p.add_argument("-q", "--quiet", action="store_true",
-                   help="files and commits only (no bash, prompts, or session marks)")
+                   help="files and commits only (no Calls, prompts, or session marks)")
     p.add_argument("-s", "--since", metavar="WINDOW",
                    help="widen the Live window: a Session whose log was appended "
                         "within it is picked up and backfills its current chapter "

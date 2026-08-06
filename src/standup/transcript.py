@@ -19,14 +19,13 @@ from pathlib import Path
 
 from . import brief as brief_mod
 from . import loops as loops_mod
-from . import rates
+from . import rates, toolcalls
 from .render import _session_ref, _style, _term_width
 
 _REMINDER_RE = re.compile(r"<system-reminder>.*?</system-reminder>", re.DOTALL)
 _CMD_NAME_RE = re.compile(r"<command-name>(.*?)</command-name>", re.DOTALL)
 _CMD_ARGS_RE = re.compile(r"<command-args>(.*?)</command-args>", re.DOTALL)
 _CMD_TAG_RE = re.compile(r"</?command-[^>]*>", re.DOTALL)
-_TOOL_KEYS = ("file_path", "notebook_path", "command", "path", "pattern", "query", "url", "prompt")
 _HEXISH = re.compile(r"[0-9a-f]{4,40}\Z")
 
 
@@ -73,15 +72,9 @@ def _user_text(content) -> str | None:
 
 
 def _tool_line(block: dict) -> str:
-    name = block.get("name", "tool")
-    inp = block.get("input") or {}
-    for k in _TOOL_KEYS:
-        if k in inp and isinstance(inp[k], str):
-            arg = " ".join(inp[k].split())
-            if len(arg) > 60:
-                arg = arg[:59] + "…"
-            return f"{name} {arg}"
-    return name
+    """One tool call as one line, through the renderer the Watch's Calls use —
+    so the two surfaces cannot drift (`toolcalls`)."""
+    return toolcalls.one_liner(block.get("name", "tool"), block.get("input"), 60)
 
 
 def _assistant_parts(content, show_thinking: bool,

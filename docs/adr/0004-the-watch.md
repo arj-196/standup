@@ -7,7 +7,7 @@ snapshot rendered to stdout; the Watch runs in a terminal you leave and return
 to while an agent works, so it is the one surface that must answer *is something
 happening now* rather than *what is the state*.
 
-Eight decisions, recorded together because they are one design — each later one
+Nine decisions, recorded together because they are one design — each later one
 reaches into an earlier one's geometry.
 
 ## The event source
@@ -120,6 +120,89 @@ bare count on a narrow terminal rather than truncating a verb.
 Accepted error: a session killed in the gap after a `tool_result` reads as
 `thinking` until it ages out of the Live Session window. The frozen spinner makes
 this visible; nothing in the log can make it precise.
+
+## Calls
+
+The feed narrated two tool families — `Bash`, and the edit tools as file events
+— and dropped every other tool on the floor. A session whose work is MCP
+requests therefore produced **no rows at all**: measured on three of this
+repo's own sessions, `976d3db8` showed 6 rows for 29 tool calls and `b41c3ff5`
+showed 8 for 43, and in both cases the Notion work the session existed to do
+was the part that vanished. The status bar said `acting`, correctly and
+uselessly — it names a verb, not a target, and it is gone the moment the call
+returns.
+
+**Every tool call that changes no file is a Call: one Feed Event kind, `Bash`
+included.** A `bash` event was already "a tool call, its argument, and a ✓/✗",
+which is exactly the row the missing tools needed, so the kind was generalised
+rather than duplicated — one pending-call join, one result back-patch, one
+expand rule, one glyph.
+
+**Silence is a denylist, not an allowlist.** `Read`, `Grep`, `Glob`,
+`NotebookRead`, `BashOutput`, `KillShell` produce no row; everything else does,
+*including a tool that ships next month*. This is the call `ACT_VERBS` already
+makes when an unmapped tool falls to `acting` — the failure mode is a new tool
+being visible, never invisible, and an allowlist is a table that goes stale by
+default. A local read is the one thing genuinely worth dropping: it changes
+nothing, and `reading` in the status bar already answers for it.
+
+**The header shows the tool's name and one line of its input; the body shows
+more of the same input; neither ever shows the result.** An expanded `Bash`
+event has always shown the command and never its output — the Watch renders
+what was *asked*. A `notion-fetch` result is 50KB of page markdown, and putting
+it in the feed makes the Watch a Transcript.
+
+**One renderer, shared with the Transcript** (`toolcalls`), which was already
+rendering tool one-liners and rendering them badly: raw
+`mcp__5ac0edc4-…__notion-fetch`, and *no argument at all* for that call, because
+its input key `id` was absent from a preferred-key tuple. Same payoff as
+`diffrows` sharing the row shape with the Attributed Diff. Two rules live there:
+
+- **A UUID server segment is dropped.** claude.ai connectors log as
+  `mcp__<server>__<tool>` where `<server>` is a bare UUID with no local mapping
+  to a name — not in `~/.claude.json`, not in the JSONL (`mcp_instructions_delta`
+  carries the same UUID). Printing it names nothing and costs 36 columns of a
+  header that clips. A server the log *can* name is kept and joined with `·`,
+  because two servers may expose the same `computer`.
+- **The argument is a preferred key's value, else the whole input as compact
+  JSON.** The preferred-key tuple survives from the Transcript because
+  `Read /path` beats `Read {"file_path": "/path"}` — but it is no longer a
+  source of *silence*, which was its actual defect. The JSON fallback means a
+  tool absent from the tuple loses readability, never its argument.
+
+**Calls do not fold.** Ten `notion-fetch` calls are ten rows. The Change Run
+exists because `MultiEdit` hunks and git-poll windows are *artifactual*
+multiplicity — one act of work chopped up — whereas ten fetches are ten acts
+with ten arguments, and a folded header could only describe its body by showing
+one of them or none. Bash has never folded either.
+
+**One kind, one glyph.** `⏺` marks every Call; the text says which. Bash keeps
+`$` and shell lexing as its own argument sigil. A second glyph for MCP would
+split one kind into two marks, which is what the unification was for.
+
+Accepted costs, stated rather than engineered around:
+
+- **The feed is taller.** Those three sessions go 6→29, 26→75, 8→43 rows. A
+  Call landing between two edits of one file *closes* that file's Change Run
+  under strict adjacency — correct by that rule (the reason two rows didn't
+  merge is on screen), but it is a real change to how a mixed session reads.
+- **`BACKFILL_CAP` (400) now buys fewer chapters**, since a chapter holds more
+  events. Oldest events are dropped first, so the cap degrades toward the
+  recent, which is the right direction.
+- **`-q` still drops Calls**, keeping its documented promise of files and
+  commits only — so `-q` on an MCP-only session shows nothing. That is the
+  flag working, not failing.
+- **Plumbing tools get rows** (`ToolSearch`, `TodoWrite`). The denylist is
+  deliberately minimal; each entry added to it is a table entry, and the whole
+  point was not to keep a table.
+
+*Rejected: a row per tool call including local reads* — ~124 extra rows on a
+real turn in this repo, and every one of them cuts a Change Run in half.
+*Rejected: folding Calls into runs* — costs the "header describes its own body"
+rule for multiplicity that is genuine.
+*Rejected: fixing only the status bar* (`acting notion-fetch 3s`) — it answers
+what is happening now and nothing about five minutes ago, and the Watch is used
+as a monitor of work already done.
 
 ## The Change Run
 
@@ -448,6 +531,13 @@ one was misread. The table now requires a `tool_use` **block** on the line.
 - **Hand-rolled ANSI/termios, or `rich` alone** — a mini-framework owned forever,
   or rendering without input handling.
 - **Activity State as a Feed Event** — ~248 rows on a real 124-tool-call turn.
+- **A Call row for local reads too** — ~124 extra rows on that same turn, each
+  one closing a Change Run.
+- **A `tool` kind beside `bash`** — two renderers, two pending-call dicts and
+  two result joins for one row shape.
+- **An allowlist of tools that earn a Call** — a table that goes stale by
+  default, which is the defect the Transcript's preferred-key tuple already
+  demonstrated in production.
 - **A stall threshold** — Standup inferring that a process died.
 - **Binding a tool verb strictly to its execution window** — made `reading` and
   `writing` unobservable (15 seconds of visibility across eight sessions).

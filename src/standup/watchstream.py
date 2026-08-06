@@ -24,7 +24,7 @@ from pathlib import Path
 
 from . import brief as brief_mod
 from . import cache as cache_mod
-from . import claude_logs, gitstate, handles
+from . import claude_logs, gitstate, handles, toolcalls
 from .models import Session
 
 LIVE_THRESHOLD = timedelta(minutes=30)  # Live Session recency claim (CONTEXT.md)
@@ -80,7 +80,7 @@ class CommitFile:
 @dataclass
 class FeedEvent:
     """One entry in the Watch (CONTEXT.md → Feed Event)."""
-    kind: str                    # file | bash | bash_result | prompt | commit |
+    kind: str                    # file | call | call_result | prompt | commit |
                                  # branch | push | unattributed | session
     when: datetime
     session_id: str | None = None
@@ -89,9 +89,15 @@ class FeedEvent:
     change: str | None = None    # create | modify | delete
     added: str = ""              # text written (drives the animation)
     removed: str = ""            # text replaced
-    command: str | None = None   # bash events
-    ok: bool | None = None       # bash_result verdict
-    tool_id: str | None = None   # joins bash -> bash_result; on a file event, the
+    # A Call (CONTEXT.md → Call): `tool` is the display name, `command` is set
+    # for `Bash` alone — the one tool whose argument is a shell command and so
+    # renders `$ …` with shell lexing — and `args` is every other tool's input
+    # digest. `command` and `args` are never both set.
+    tool: str | None = None
+    command: str | None = None
+    args: str = ""
+    ok: bool | None = None       # call_result verdict
+    tool_id: str | None = None   # joins call -> call_result; on a file event, the
                                  # tool call it came from, so a Change Run can
                                  # count calls rather than hunks (one MultiEdit
                                  # spans several events but is one call)
@@ -204,7 +210,7 @@ class _Tailer:
         # realpath both sides of every comparison: agent-written paths and git
         # toplevels may disagree about symlinks (macOS /var vs /private/var)
         self.repo_paths = [os.path.realpath(p) for p in repo_paths]
-        self.pending_bash: dict[str, datetime] = {}   # tool_use id -> when issued
+        self.pending_calls: dict[str, datetime] = {}  # tool_use id -> when issued
         self.claimed_shas: set[str] = set()           # commit hashes seen in results
         self.edited_paths: set[str] = set(session.edited_files)
         self.last_append: datetime = session.last_activity or _now()
@@ -324,10 +330,10 @@ class _Tailer:
                 for b in content:
                     if isinstance(b, dict) and b.get("type") == "tool_result":
                         tid = b.get("tool_use_id")
-                        if tid in self.pending_bash:
-                            del self.pending_bash[tid]
+                        if tid in self.pending_calls:
+                            del self.pending_calls[tid]
                             events.append(FeedEvent(
-                                kind="bash_result", when=ts, session_id=sid, title=title,
+                                kind="call_result", when=ts, session_id=sid, title=title,
                                 tool_id=tid, ok=not bool(b.get("is_error"))))
             if tr is not None:
                 text = tr if isinstance(tr, str) else (tr.get("stdout") or "") if isinstance(tr, dict) else ""
@@ -349,12 +355,25 @@ class _Tailer:
             if not isinstance(b, dict) or b.get("type") != "tool_use":
                 continue
             name, inp = b.get("name"), b.get("input") or {}
-            if name == "Bash" and inp.get("command"):
+            if not name or name in toolcalls.SILENT_TOOLS:
+                continue      # a local read narrates nothing the feed can show
+            if name not in EDIT_TOOLS:
+                # a Call (ADR 0004 § Calls): every tool call that changes no
+                # file, Bash included — it is the one whose argument is a shell
+                # command, so it carries `command` and the rest carry `args`
                 tid = b.get("id") or ""
-                self.pending_bash[tid] = ts
-                events.append(FeedEvent(kind="bash", when=ts, session_id=sid, title=title,
-                                        tool_id=tid, command=inp["command"]))
-            elif name in EDIT_TOOLS:
+                self.pending_calls[tid] = ts
+                cmd = inp.get("command") if name == "Bash" else None
+                cmd = cmd if isinstance(cmd, str) and cmd.strip() else None
+                events.append(FeedEvent(
+                    kind="call", when=ts, session_id=sid, title=title,
+                    tool_id=tid, tool=toolcalls.display_name(name),
+                    command=cmd,
+                    # generous: the header clips at its own width and the
+                    # expanded body folds, so the event carries more than one
+                    # row's worth rather than deciding the display's limit here
+                    args="" if cmd else toolcalls.arg_digest(inp, 2000)))
+            else:
                 fp = inp.get("file_path") or inp.get("notebook_path")
                 if not fp or not os.path.isabs(fp):
                     continue

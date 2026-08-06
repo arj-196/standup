@@ -148,8 +148,10 @@ completion at the alias too with `compdef s=standup` in your `.zshrc`.
 `standup watch` is the one live view — an interleaved feed of every Live
 Session's edits (typed out as they land, syntax-highlighted by file type,
 with a `+`/`−` gutter carrying the diff and a faint red field behind removed
-code, so a deletion is findable without reading), Bash one-liners, your
-prompts as full-width chapter rules, commits/pushes, and Unattributed
+code, so a deletion is findable without reading), **Calls** — every tool call
+that changes no file, shown as its name, its argument and a `✓`/`✗` when the
+result lands, so an agent whose whole turn is MCP requests still narrates —
+your prompts as full-width chapter rules, commits/pushes, and Unattributed
 Changes as they appear. Each session gets a lane (a numbered, hue-tinted bar
 down the left),
 the clock is a gap gutter (quiet rows are quiet; a 40-second think is a

@@ -25,7 +25,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import rates
+from . import rates, toolcalls
 
 DETECTOR_VERSION = 3  # bump when detection logic changes (invalidates cache rows)
 
@@ -84,8 +84,10 @@ def _short_dir(d: str) -> str:
 
 def _short_tool(name: str) -> str:
     # mcp__<server-id>__notion-fetch → notion-fetch — the server id is identity
-    # (kept in the shape key) but noise in a label
-    return name.rsplit("__", 1)[-1] if name.startswith("mcp__") else name
+    # (kept in the shape key) but noise in a label. Through the renderer the
+    # Watch's Calls and the Transcript's one-liners use, so a tool is named the
+    # same way everywhere (ADR 0004 § Calls).
+    return toolcalls.display_name(name)
 
 
 def _label(gram: tuple[str, ...]) -> str:

@@ -85,7 +85,7 @@ RAIL_COLS = 9              # the left rail: gap gutter + session lane + its spac
                            # the handle that stays reachable in an open body
 
 _MARKS = {
-    "file": "✎", "bash": "⏺", "commit": "⚑", "push": "⇧",
+    "file": "✎", "call": "⏺", "commit": "⚑", "push": "⇧",
     "branch": "⑂", "unattributed": "~", "session": "●",
 }
 
@@ -141,7 +141,7 @@ def _elapsed(seconds: float, wide: bool) -> str:
 
 class EventWidget(Static):
     """One Feed Event — or one Change Run of them: a header line behind the gap
-    gutter and session lane, plus (for files, commits, prompts, bash) an
+    gutter and session lane, plus (for files, commits, prompts, Calls) an
     optional body. File events own a typed-animation body; commits expand in two
     steps — header → file list → every file's diff.
 
@@ -156,9 +156,9 @@ class EventWidget(Static):
         self.event = event
         self.t = theme
         self.num = num                    # stable session lane number, 0 = none
-        self.expand_level = 0             # files/prompts/bash: 0|1 · commits: 0|1|2
+        self.expand_level = 0             # files/prompts/Calls: 0|1 · commits: 0|1|2
         self.wrap = True                  # app-wide; refresh_event syncs it
-        self.bash_ok: bool | None = None
+        self.call_ok: bool | None = None
         self.gap_seconds: float | None = None   # set by the app (visible-chain gap)
         self.lane_head = True                   # digit vs bar — set by the app
         # Change Run state. `calls` holds the *tool call* ids folded in, so one
@@ -415,14 +415,25 @@ class EventWidget(Static):
             elif body > (len(self.removed_raw[:REMOVED_LINES])
                          + (self.win_end - self.win_start)):
                 right = Text(f"▸ {body} lines ", style=t.style("faint"))
-        elif e.kind == "bash":
+        elif e.kind == "call":
+            # One kind, one glyph: `⏺` says *a call happened* and the text says
+            # which. Bash is the tool whose argument is a shell command, so it
+            # keeps `$` and shell lexing; every other tool shows its name and
+            # its input digest (ADR 0004 § Calls).
             out.append("⏺", style=t.style("muted"))
-            out.append("  $ ", style=t.style("faint"))
-            out.append_text(lexed_command(_one_line(e.command or "", 100),
-                                           t.depth == "none"))
-            if self.bash_ok is True:
+            if e.command is not None:
+                out.append("  $ ", style=t.style("faint"))
+                out.append_text(lexed_command(_one_line(e.command, 100),
+                                              t.depth == "none"))
+            else:
+                out.append("  ")
+                out.append(e.tool or "tool", style=t.style("primary", bold=True))
+                if e.args:
+                    out.append("  ")
+                    out.append(_one_line(e.args, 100), style=t.style("muted"))
+            if self.call_ok is True:
                 out.append("  ✓", style=t.style("added", bold=True))
-            elif self.bash_ok is False:
+            elif self.call_ok is False:
                 out.append("  ✗", style=t.style("removed", bold=True))
         elif e.kind == "commit":
             out.append("⚑", style=t.style("git", bold=True))
@@ -622,19 +633,23 @@ class EventWidget(Static):
         line.append_text(head)
         out = self._rline(line, right, width)
         out.no_wrap = True
-        if stat_mode or e.kind not in ("file", "bash", "commit"):
+        if stat_mode or e.kind not in ("file", "call", "commit"):
             return out
         if e.kind == "commit":
             return self._commit_body(out, width) if self.expanded and e.files else out
-        if e.kind == "bash":
+        if e.kind == "call":
             # the body is worth having whenever the header row can't carry the
-            # whole command — because it was folded to one line, or because the
-            # row simply isn't that wide
-            cmd = e.command or ""
-            clipped = len(_one_line(cmd)) < len(cmd) or out.cell_len > width
-            if self.expanded and cmd and clipped:
-                for raw in cmd.splitlines():
-                    self._sign_row(out, None, lexed_command(raw, t.depth == "none"),
+            # whole argument — because it was folded to one line, or because the
+            # row simply isn't that wide. What was *asked* is all it ever shows:
+            # the Watch never renders a tool's result (ADR 0004 § Calls)
+            text = e.command if e.command is not None else e.args
+            clipped = len(_one_line(text)) < len(text) or out.cell_len > width
+            if self.expanded and text and clipped:
+                shell = e.command is not None
+                for raw in text.splitlines():
+                    self._sign_row(out, None,
+                                   lexed_command(raw, t.depth == "none") if shell
+                                   else Text(raw, style=t.style("primary")),
                                    width)
             return out
 
@@ -731,7 +746,7 @@ class WatchApp(App):
         self.speed = BASE_SPEED
         self.filter_sid: str | None = None
         self.anim_queue: list[EventWidget] = []
-        self.bash_widgets: dict[str, EventWidget] = {}
+        self.call_widgets: dict[str, EventWidget] = {}
         self.selected: EventWidget | None = None
         self._t0 = time.monotonic()
         self._last_event_at: datetime | None = None
@@ -864,10 +879,10 @@ class WatchApp(App):
         return ev.session_id is None or ev.session_id == self.filter_sid
 
     def _add_event(self, ev: FeedEvent, animate: bool) -> None:
-        if ev.kind == "bash_result":
-            w = self.bash_widgets.pop(ev.tool_id or "", None)
+        if ev.kind == "call_result":
+            w = self.call_widgets.pop(ev.tool_id or "", None)
             if w is not None:
-                w.bash_ok = ev.ok
+                w.call_ok = ev.ok
                 w.refresh_event()
             return
         self._last_event_at = ev.when
@@ -894,8 +909,8 @@ class WatchApp(App):
             return
         w = EventWidget(ev, self.t, self.stream.session_num(ev.session_id or ""))
         self._tail_widget = w
-        if ev.kind == "bash" and ev.tool_id:
-            self.bash_widgets[ev.tool_id] = w
+        if ev.kind == "call" and ev.tool_id:
+            self.call_widgets[ev.tool_id] = w
         if not self._visible_to(ev):
             w.display = False
         else:
@@ -942,9 +957,9 @@ class WatchApp(App):
         if len(children) <= cap:
             return
         for old in children[: len(children) - MAX_EVENTS]:
-            if (isinstance(old, EventWidget) and old.event.kind == "bash"
+            if (isinstance(old, EventWidget) and old.event.kind == "call"
                     and old.event.tool_id):
-                self.bash_widgets.pop(old.event.tool_id, None)
+                self.call_widgets.pop(old.event.tool_id, None)
             if old is self.selected:
                 self._select(None)
             if old is self._tail_widget:      # nothing may grow a dropped run
@@ -1364,7 +1379,7 @@ class WatchApp(App):
             if not w.display:
                 continue
             if (w.lines_above or w.lines_below
-                    or w.event.kind in ("prompt", "bash") or w.event.files):
+                    or w.event.kind in ("prompt", "call") or w.event.files):
                 return w
         return None
 

@@ -19,7 +19,10 @@ plus its worktrees) into a single chronological feed:
 - **file edits**, typed out character by character as they land — consecutive
   edits to one file fold into a single entry that evolves, so a file being
   worked on reads as one act of work rather than a row per tool call
-- **Bash one-liners**, with their exit status
+- **Calls** — every tool call that changes no file: a shell command, an MCP
+  request, a web fetch, a subagent spawn. Each shows the tool's name, one line
+  of its argument, and `✓`/`✗` when the result comes back. Local reads
+  (`Read`, `Grep`, `Glob`) are the exception and stay silent
 - **your prompts**, as the chapter breaks of the narrative
 - **commits** — each carrying its own diff — **pushes, branch switches**
 - **Unattributed Changes** — dirt that no session claims — the moment they appear
@@ -64,7 +67,10 @@ never shadow a project. To force the path reading, write it as a path: `.`,
 `./robin`, `../other`, `~/code/thing`. A path works even for a repo no session
 has ever touched: git alone can narrate.
 
-Files and commits only, no Bash/prompt/session noise — `-q`, `--quiet`:
+Files and commits only, no Call/prompt/session noise — `-q`, `--quiet`. Note
+what that costs on a session whose work is all MCP: with no file changes there
+is nothing left to show, and the feed stays empty. That's the flag doing its
+job, not the Watch failing.
 
 ```bash
 standup watch -q
@@ -189,7 +195,7 @@ Then a kind mark and the content:
 |---|---|---|
 | `✎` | file | a file was written, edited, or deleted (session-claimed) |
 | `~` amber | file | the same, but *git is the only witness* — tagged `~unattributed` |
-| `⏺` | bash | a shell command, `✓` or `✗` appended when it returns |
+| `⏺` | call | a tool call that changed no file — `$ cmd` for Bash, otherwise the tool's name and its argument. `✓` or `✗` appended when it returns |
 | `──` violet | prompt | **you** typed something — a full-width chapter rule |
 | `⚑` gold | commit | a new commit reached HEAD, `@<sha>` and its diff |
 | `⇧` gold | push | commits left for a remote |
@@ -295,7 +301,7 @@ What **closes** a run:
 
 | Cause | Why |
 |---|---|
-| any other event between two same-file events — a Bash line, another file, a prompt chapter | a run grows only at the bottom of the feed, so a row you've already scrolled past never changes shape. When two rows *don't* merge, the reason is on screen |
+| any other event between two same-file events — a Call, another file, a prompt chapter | a run grows only at the bottom of the feed, so a row you've already scrolled past never changes shape. When two rows *don't* merge, the reason is on screen |
 | ~30 seconds since the run opened | sustained work on one file still produces rows — a feed that goes still while the agent works hardest reads as dead — and it bounds how stale the run's time can be |
 | a different file, or a different session | — |
 | the different *witness* — a session claim never folds into a git observation | they are different kinds of statement (see the honesty rules above) |
@@ -450,9 +456,11 @@ asked for something that takes it. This is also why the verb is worth having
 over a bare "busy": `thinking 4m` and `running 4m` are not the same news — one
 means something has probably gone wrong, the other is a test suite behaving.
 
-`reading` and `acting` have no Feed Event of their own — `Read` and `Grep`
-produce no feed rows — so for those tools the status bar is the *only* place
-they appear.
+`reading` has no Feed Event of its own — `Read`, `Grep` and `Glob` produce no
+feed rows — so for those tools the status bar is the *only* place they appear.
+`acting` does have one: the MCP request or web fetch behind it lands as a
+**Call**, so the bar tells you it is in flight and the feed tells you, after the
+fact, what it was.
 
 The Activity State shows while you're scrolled back too. That's precisely when
 you've stopped watching the feed and most need to know whether the agent is
@@ -586,8 +594,9 @@ events can't shift the view under you; going back to live drops the excess.
 added and removed text — on a **Change Run**, every hunk it folded, not just
 the window. On a **commit** it cycles through the three levels —
 header, file list, every file's full diff, and around again. On a prompt it
-shows your full message (when the rule had to truncate it); on a Bash event
-it shows the untruncated command. Expanding also finishes any in-progress
+shows your full message (when the rule had to truncate it); on a **Call** it
+shows the untruncated command or argument — never the result, which the Watch
+never reads. Expanding also finishes any in-progress
 typing immediately — if you want to *read* it, you've stopped wanting to
 watch it appear.
 
@@ -623,7 +632,7 @@ longer than the row, so a long path or string continues rather than vanishing.
 One line may occupy at most 40 rows — past that the tail is *counted*
 (`… +N chars`), never silently dropped, so a minified file can't fill the feed.
 
-Folding applies to diff bodies, an expanded Bash command, and an expanded
+Folding applies to diff bodies, an expanded Call, and an expanded
 prompt — **never** to header lines, which stay one row per event however long
 the path. That split is deliberate: a header is Standup's own prose about an
 event, and it says when it shortened something (`▸ N lines`, `… ▸ N more
@@ -789,7 +798,7 @@ it will read `thinking` until it ages past the 30-minute Live window.
 **A frozen spinner means nothing is arriving.** The `⠹` beside the verb turns
 only while the log is still being appended. After 30 quiet seconds it stops and
 changes to a static, dimmed `⠿` — so `[1] ⠿ running 6m` reads "it announced a
-Bash command six minutes ago and nothing has come back". That's not a claim the
+shell command six minutes ago and nothing has come back". That's not a claim the
 session died; it's the refusal to keep implying it's alive. Motion in the Watch
 always maps to arriving data, never to a word on screen.
 
@@ -854,7 +863,8 @@ opening with one enormous block of old news.
 | `thinking` for far too long | either a long reasoning pass, or the session was killed in the gap after a tool returned — the log can't tell them apart. The frozen spinner is the tell |
 | `reading 0s` / `writing 0s` | the tool has already returned and the verb is inside its one-second floor. The age is honest — the tool really did take under a second |
 | almost always `thinking` | expected, and not the bug it was: the model composing genuinely is most of a turn's wall-clock. `running` shows for `Bash`, and `reading`/`writing` for their floor; if you see *nothing else, ever*, the floor is one constant (`ACT_FLOOR`) in `watchstream.py` |
-| `[2] ⠹ acting 3s` | a tool with no mapped verb (an MCP tool, or one newer than the table) — and only that: a log line announcing no tool at all leaves the previous verb standing instead of falling to `acting` |
+| `[2] ⠹ acting 3s` | a tool with no mapped verb (an MCP tool, or one newer than the table) — and only that: a log line announcing no tool at all leaves the previous verb standing instead of falling to `acting`. The call itself lands in the feed as a **Call**, so the bar says it is in flight and the feed says what it was |
+| the feed is empty while the agent is clearly working | the only silent tools are the local reads (`Read`, `Grep`, `Glob`, `NotebookRead`, `BashOutput`, `KillShell`) — everything else is a **Call**. An empty feed with `reading` in the bar is the agent reading; an empty feed under `-q` is the flag, which drops Calls |
 
 ## 8. One-page key reference
 
