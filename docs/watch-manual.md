@@ -77,6 +77,22 @@ instead — the `w` toggle (§4), off from the first row:
 standup watch --no-wrap
 ```
 
+Pick up sessions that already went quiet — the **Live window** is 30 minutes by
+default, and `--since` widens it:
+
+```bash
+standup watch --since 2h
+```
+
+The window is a duration (`45m`, `2h`, `3d`, `1w`), never a date: it is re-read
+against the clock on every poll, so `since 9am` would mean a longer span every
+minute you watched. It decides two things at once — which sessions are tailed
+(each one backfills its current chapter, §3) and which ones the vitals band
+still calls live. A widened window is stated in the header, `live ≤2h` beside
+the watch clock, because `live` then means something other than the default.
+Use it when you sit down after the agent did the work: at the default, a
+session last appended 40 minutes ago isn't there to filter to.
+
 The palette assumes a dark terminal, and there is no light variant — a
 `--light` flag existed and was withdrawn. The chrome converted cleanly; the
 code bodies did not, because the syntax palette (monokai) has no light-page
@@ -119,7 +135,8 @@ foreground on the terminal surface.
 ### The vitals band
 
 - first row: the **repo name** (bold), `⑂` its branch, `✎` its count of dirty
-  files, and how long this watch has been open — refreshed once a second
+  files, and how long this watch has been open — refreshed once a second; a
+  Live window widened with `--since` is stated here too (`live ≤2h`)
 - then one row per **Live Session** (at most three; more collapse to
   `… +N more`): its number `[1]`…, its **Session Handle** (cyan — the
   address), the derived title (bold), its **Session Brief** objective if one
@@ -135,8 +152,9 @@ foreground on the terminal surface.
 On narrow terminals (under ~100 columns) the activity strips and Brief
 objectives drop; title and recency survive.
 
-A **Live Session** is a *recency claim* — a log appended in the last 30
-minutes. It is never a statement that a process is running, which is why the
+A **Live Session** is a *recency claim* — a log appended within the Live
+window, the last 30 minutes unless `--since` widened it (§2). It is never a
+statement that a process is running, which is why the
 header shows `4s ago` instead of asserting "running". Session numbers are
 **stable**: `[1]` is assigned when a session is first seen and never re-sorted,
 so the number in the header, the digit in the feed's lane, and your filter all
@@ -157,6 +175,11 @@ Each **Feed Event** renders behind two narrow left columns:
   run continues. Git-only events — nothing claims them — get `··` instead.
   The digit, not the hue, is the carrier: under `NO_COLOR` the lane still
   reads.
+
+Together those nine columns are the event's **left rail**, repeated on every row
+it occupies — header, body, folded continuation. It is the block's spine, it is
+where selection is marked (§4), and on an expanded event it is also the handle
+that folds it again, beside whatever line you're on.
 
 Then a kind mark and the content:
 
@@ -478,7 +501,8 @@ still in the feed.
 | `]` | jump to the next chapter |
 | `PageUp` | scroll up a page |
 | `PageDown` | scroll down a page |
-| mouse click | select the clicked event and expand / collapse it |
+| mouse click | select the clicked event and expand it — on an open event, its header row or its left rail collapses it |
+| drag / double click | select text; never expands or collapses |
 
 **Any scrollback gesture stops the follow** — `↑`, `PageUp`, the mouse wheel,
 and clicking an event all hold the view still, so the feed doesn't yank
@@ -497,10 +521,33 @@ is selected or not
 event, which has no lane hue, the band alone carries it. Selection is what
 `enter` and `s` act on. A mouse click selects
 the clicked event directly — no walking — and expands it in the same gesture,
-exactly as if you'd pressed `enter` on it; clicking it again collapses it.
+exactly as if you'd pressed `enter` on it.
 Clicks in empty feed space or the status bar do nothing (a click on a header
 session row toggles its filter — see below). Walk `↓` past the last event and
 the Watch takes it as "I'm done reading" and goes live.
+
+**An open body is text, not a control.** While an event is collapsed the whole
+of it is one button: header and preview rows alike, a click opens it. Once it is
+open, only the entry's own furniture still toggles — its **header row** and its
+**left rail**, the gap gutter and session lane in columns 1–9. Everything right
+of the rail is yours: a click there does nothing, so you can drag through a diff
+or a prompt to select it, double-click to take the whole entry, and click a link
+without the thing you're reading folding shut under you.
+
+That rail is the answer to a long body. A diff taller than the screen pushes its
+header off the top, but the lane runs unbroken down **every** row of the block —
+so to fold it, click the rail beside whatever line you stopped on, two columns
+to the left of the code. `enter` does the same from the keyboard: it acts on the
+selected event wherever the view has scrolled to.
+
+Reading gestures are never toggles, on any surface: a **drag** (pressed on one
+cell, released on another) and a **double or triple click** are selections, so
+neither expands an event nor flips a session filter. `ctrl+c` copies the
+selection, through the terminal's own clipboard escape — supported by iTerm2,
+Ghostty, WezTerm and kitty, not by Apple Terminal. Whether a click on a URL
+*opens* it is likewise the terminal's business (`⌘-click` in iTerm2, Ghostty,
+kitty): the Watch prints no hyperlinks, it just stops competing for the click
+([ADR 0019](adr/0019-an-open-body-is-text-not-a-control.md)).
 
 **The click that brings the terminal forward is not a click on the feed.** When
 you come back from another window by clicking the terminal, that click lands
@@ -544,8 +591,11 @@ watch it appear.
 
 With nothing selected, `enter` expands the newest expandable event, which is
 usually the one still typing. So `enter` alone is "show me all of that", no
-selection needed. Clicking an event is select-plus-`enter` in one gesture —
-click to expand, click again to collapse.
+selection needed. Clicking a collapsed event is select-plus-`enter` in one
+gesture; once it is open, `enter` — or a click on its **header row** or its
+**left rail**, which is beside every line of the body — collapses it again. The
+body itself is yours to select from and no longer a button
+([ADR 0019](adr/0019-an-open-body-is-text-not-a-control.md)).
 
 `d` is the opposite move: it strips every body from the feed and leaves one
 line per event. Use it when you want the shape of the last few minutes — which
@@ -595,8 +645,9 @@ back. Start a watch already clipping with `standup watch --no-wrap`.
 | `Esc` or `0` | clear the filter |
 | click a header session row | toggle its filter |
 
-A click that only brings the terminal forward doesn't toggle a filter either —
-the same guard covers the header band and the feed.
+A click that only brings the terminal forward doesn't toggle a filter either,
+and neither does a drag or a double click across the band — the same guards
+cover the header band and the feed.
 
 Two sessions working in one repo produce one interleaved feed, which is the
 point — and occasionally the problem. The numbers match the vitals header —
@@ -670,7 +721,8 @@ have to go and check.
 `↑` (the view holds still), `↑` again until it's highlighted, `enter` to see
 the whole diff, `s` to read what the agent was told. Then `G` — one key, back
 to live. Or do it all with the mouse: wheel up to it (the view holds still),
-click it — one click selects *and* expands.
+click it — one click selects *and* expands — read the diff, drag through the
+line you want to keep, and click its left rail to fold it back up.
 
 **3. Untangle two sessions.** With two sessions in one repo, note their numbers
 in the header, press `2` to watch only the second, `Tab` to swap, `Esc` for
@@ -711,8 +763,14 @@ If the sessions' chapters add up to more than 400 events, the **oldest** are
 dropped and the newest 400 are replayed.
 
 **A session that says `28m ago` is still listed.** Live means "appended within
-30 minutes", nothing more. Standup never inspects processes, so it shows you
-the recency and lets you judge.
+the Live window" — 30 minutes by default — nothing more. Standup never inspects
+processes, so it shows you the recency and lets you judge.
+
+**A session you know worked on this repo isn't there.** Its last append is
+older than the Live window, so it was never picked up: nothing backfills it and
+no lane exists to filter to. `standup watch --since 2h` widens the window (§2)
+and it comes back with its chapter. The header then reads `live ≤2h`, so the
+screen never claims a stricter recency than it applied.
 
 **Nothing is said when a session finishes.** There's no `finished` in the status
 bar and no row in the feed — its **Activity State** simply stops being shown.
@@ -777,7 +835,7 @@ opening with one enormous block of old news.
 | `no scanned repo matches 'x'` | the name isn't in the **Scan Universe** — the message lists what is; pass a path instead |
 | `is not inside a git repo` | the path resolves to no checkout |
 | `no Claude Code logs found at …` | `~/.claude/projects` is missing |
-| `no live session · last log append …` | nothing live; git-only narration is working as designed |
+| `no live session · last log append …` | nothing appended inside the Live window; git-only narration is working as designed — `--since 2h` widens the window if the work you want is older |
 | `s` does nothing | the selected event has no session (git-only), or its log isn't tailed |
 | everything is `~unattributed` | no session log covers this repo — expected outside the Scan Universe |
 | a commit shows no file list | it's a merge (no combined diff by default) or its diff is over ~400 KB — no diff was read, so none is shown |
@@ -805,7 +863,9 @@ g, Home      jump to the top of scrollback
 ↑ ↓, k j     select prev / next event  PageUp   scroll up a page
              (both hold the view)      PageDown scroll down a page
 [ ]          previous / next chapter
-click        select + expand the clicked event; click again collapses
+click        select + expand the clicked event; on an open event its
+             header row or its left rail collapses it, and the body is
+             text (drag / double click to select, ctrl+c to copy)
              (the click that refocuses the terminal is ignored)
 enter        expand / collapse         d        stat mode (headers only)
              (commits: header → files → diffs)

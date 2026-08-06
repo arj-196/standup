@@ -46,6 +46,8 @@ standup session <handle> --no-pager   # print instead of opening the pager
 standup watch            # live feed of this repo while an agent works in it
 standup watch <repo>     # watch a named repo (or a path) instead
 standup watch --quiet    # files and commits only
+standup watch --since 2h # widen the Live window (default 30m) to pick up
+                         #   sessions that already went quiet
 standup watch --no-wrap  # start with long body lines clipped, not folded
 
 standup completion zsh   # print the zsh completion script (see Typing less)
@@ -128,6 +130,15 @@ full strength behind a boundary rule, so filtering to a session that has
 already committed and gone quiet still shows its work, as legibly as if you
 had watched it happen.
 
+A **Live Session** is a recency claim — a log appended within the Live window,
+30 minutes by default — and that window is what decides which sessions the
+Watch picks up at all. `--since 2h` (also `45m`, `3d`, `1w`) widens it, so a
+session that finished an hour ago still gets a lane, a header row, and its
+current chapter backfilled. A widened window is stated in the header
+(`live ≤2h`), because "live" then means something other than the default. It's
+a rolling window, never a date: `since 9am` would silently mean a different
+span every minute you watched.
+
 A file the agent is actually working on arrives as several edits — a
 `MultiEdit`'s hunks, four `Edit` calls in ten seconds, or one delta per git
 poll — and a row for each buried the work under its own headers. Consecutive
@@ -162,6 +173,15 @@ bodies, an expanded command, and an expanded prompt — never to headers, which
 stay one row per event. `w` (or starting with `--no-wrap`) turns folding off and
 clips instead, which gives every event a fixed row count when you want the shape
 of the last few minutes rather than the content.
+
+A click opens an event; once it is open, the body is **text, not a button**.
+Only the entry's own furniture still toggles — its header row and its left rail,
+the gap-gutter-plus-lane columns that run down every row of the block — so you
+can drag through a diff to select it, double-click to take the whole entry
+(`ctrl+c` copies), and click a link without the thing you were reading folding
+shut. A drag and a double click are never toggles anywhere, and the rail is what
+folds a body taller than the screen, whose header has scrolled off the top
+([ADR 0019](docs/adr/0019-an-open-body-is-text-not-a-control.md)).
 
 It's interactive; [docs/watch-manual.md](docs/watch-manual.md) is the full guide
 to the screen and the keys.

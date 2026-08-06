@@ -37,12 +37,13 @@ from textual import events
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import VerticalScroll
+from textual.geometry import Offset
 from textual.widgets import Static
 
 from . import diffrows
 from .diffrows import lexed_command, styled_lines
 from .theme import Theme
-from .watchstream import FeedEvent, LiveSessionInfo, WatchStream
+from .watchstream import LIVE_THRESHOLD, FeedEvent, LiveSessionInfo, WatchStream
 
 POLL_INTERVAL = 0.25       # seconds between stream polls
 FPS = 30                   # animation frames per second
@@ -76,6 +77,9 @@ CODE_COL = 16              # cells left of a body line's first character
 PROMPT_COL = 12            # ditto, for an expanded prompt's own text
 REFOCUS_GRACE = 0.35       # seconds after the terminal regains focus in which a
                            # click is read as the window gesture, not a feed one
+RAIL_COLS = 9              # the left rail: gap gutter + session lane + its space.
+                           # An event's spine, on every row it occupies — and so
+                           # the handle that stays reachable in an open body
 
 _MARKS = {
     "file": "✎", "bash": "⏺", "commit": "⚑", "push": "⇧",
@@ -114,6 +118,15 @@ def _dur(seconds: float) -> str:
 def _one_line(s: str, limit: int = 120) -> str:
     s = " ".join(s.split())
     return s[: limit - 1] + "…" if len(s) > limit else s
+
+
+def _window(td: timedelta) -> str:
+    """A Live window back in the spelling it was typed in (`2h`, `45m`)."""
+    s = int(td.total_seconds())
+    for size, unit in ((604800, "w"), (86400, "d"), (3600, "h")):
+        if s % size == 0:
+            return f"{s // size}{unit}"
+    return f"{max(1, s // 60)}m"
 
 
 def _elapsed(seconds: float, wide: bool) -> str:
@@ -657,7 +670,7 @@ class EventWidget(Static):
         event.stop()
         app = self.app
         if isinstance(app, WatchApp):
-            app.click_select(self)
+            app.click_select(self, event)
 
 
 class VitalsWidget(Static):
@@ -667,7 +680,7 @@ class VitalsWidget(Static):
         event.stop()
         app = self.app
         if isinstance(app, WatchApp):
-            app.click_vitals_row(event.y)
+            app.click_vitals_row(event)
 
 
 class WatchApp(App):
@@ -724,6 +737,9 @@ class WatchApp(App):
         self._focused = True                     # terminal window has focus
         self._refocused_at = 0.0                 # monotonic stamp of the last
                                                  # blurred → focused transition
+        # where the button went down — a Click carries the cell it was released
+        # on, so this is what tells a press from a drag through a body
+        self._pressed_at: Offset | None = None
         self._backfill_events = stream.start()
 
     # -- layout ----------------------------------------------------------------
@@ -782,6 +798,24 @@ class WatchApp(App):
         window is short. Terminals without focus reporting (Apple Terminal)
         never send FocusIn, and there every click counts — as before."""
         return time.monotonic() - self._refocused_at < REFOCUS_GRACE
+
+    # -- reading gestures ------------------------------------------------------------
+
+    def on_mouse_down(self, event: events.MouseDown) -> None:
+        """Where the button went down. A `Click` carries the cell it was
+        *released* on, so this is the only way to tell a press from a drag."""
+        self._pressed_at = event.screen_offset
+
+    def _reading_gesture(self, click: events.Click) -> bool:
+        """True when the click is the tail of a gesture that was about reading
+        the text, not pressing a control (ADR 0019).
+
+        Two shapes end in a `Click` without asking for anything: a **drag** —
+        pressed on one cell, released on another, which is a selection being
+        made — and a **double or triple click**, which is Textual selecting a
+        word or a line. Neither is a request to expand or collapse anything."""
+        return click.chain > 1 or (self._pressed_at is not None
+                                   and self._pressed_at != click.screen_offset)
 
     def _mount_boundary(self, count: int) -> None:
         """The ┈ rule that names both sides of launch: replay above, live below."""
@@ -971,6 +1005,11 @@ class WatchApp(App):
                    style=t.style("primary", bold=True) if v.dirty else t.style("muted"))
         top.append(" dirty", style=t.style("muted"))
         clock = f"watch {_elapsed(time.monotonic() - self._t0, wide)}"
+        # A widened Live window (--since) is stated, always: it is why a session
+        # that went quiet an hour ago has a lane, and "live" means something
+        # different for this run than it does by default.
+        if self.stream.live_window != LIVE_THRESHOLD:
+            clock = f"live ≤{_window(self.stream.live_window)} · {clock}"
         pad = width - top.cell_len - len(clock)
         top.append(" " * max(2, pad))
         top.append(clock, style=t.style("faint"))
@@ -1235,12 +1274,13 @@ class WatchApp(App):
         self._refresh_vitals()
         self._refresh_status()
 
-    def click_vitals_row(self, y: int) -> None:
+    def click_vitals_row(self, click: events.Click) -> None:
         """Clicking a session row in the header toggles its filter. The click
-        that refocused the terminal is not one of those clicks."""
-        if self._refocus_click():
+        that refocused the terminal is not one of those clicks, and neither is
+        a drag or a double click through the band — those are reading it."""
+        if self._refocus_click() or self._reading_gesture(click):
             return
-        i = y - 1                       # row 0 is the vitals line
+        i = click.y - 1                 # row 0 is the vitals line
         if 0 <= i < len(self._vitals_rows):
             sid = self._vitals_rows[i]
             self.filter_sid = None if self.filter_sid == sid else sid
@@ -1272,6 +1312,8 @@ class WatchApp(App):
         rows = [
             ("↑ ↓ · j k · wheel", "select events / scroll (leaves live-follow)"),
             ("enter · click", "expand ⇄ collapse (commits: header → files → diffs)"),
+            ("click the rail", "collapse an open event from beside any body line"),
+            ("drag · dbl click", "select body text — never toggles; ctrl+c copies"),
             ("[ ]", "jump to previous / next chapter"),
             ("G · End", "jump to live, resume following"),
             ("g · Home", "jump to the top of scrollback"),
@@ -1397,12 +1439,25 @@ class WatchApp(App):
         self.query_one("#feed", VerticalScroll).scroll_page_down(animate=False)
         self._refresh_status()
 
-    def click_select(self, w: EventWidget) -> None:
+    def click_select(self, w: EventWidget, click: events.Click) -> None:
         """A click selects the clicked event and toggles its expansion in one
-        gesture — click to expand, click again to collapse. Clicks outside any
-        event do nothing, and neither does the click that refocused the
-        terminal."""
-        if self._refocus_click():
+        gesture — click to expand, click again to collapse.
+
+        While the entry is collapsed the whole of it is that control: its
+        preview rows are the feed's own prose about the event, so a click on
+        them opens it. Once it is expanded the body is the text you asked to
+        read, and only the entry's own furniture still toggles (ADR 0019):
+        the header row, and the **left rail** — the gap gutter and session lane
+        that run down every row of the block. A body taller than the screen
+        pushes its header off the top; the rail is beside every line of it.
+        Between the rail and the right edge a click selects, a drag selects a
+        range, and a link stays the terminal's to open.
+
+        Clicks outside any event do nothing, and neither does the click that
+        refocused the terminal (ADR 0014) nor the tail of a reading gesture."""
+        if self._refocus_click() or self._reading_gesture(click):
+            return
+        if w.expanded and click.y > 0 and click.x >= RAIL_COLS:
             return
         if self.selected is not w:
             self._select(w)

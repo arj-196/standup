@@ -6,7 +6,8 @@ UI is just one consumer of the typed Feed Events produced here.
 The split mirrors Attribution: the session log claims *who and what* (the exact
 Edit text, the Bash command, the prompt); git confirms tree state and alone
 reveals live Unattributed Changes. Live Session is a recency claim — a log
-appended within LIVE_THRESHOLD — never a process fact (CONTEXT.md).
+appended within the Live window (LIVE_THRESHOLD by default, widened per run by
+`standup watch --since`) — never a process fact (CONTEXT.md).
 """
 
 from __future__ import annotations
@@ -788,9 +789,15 @@ class WatchStream:
     limiting keeps git subprocesses and discovery scans on their own cadence.
     """
 
-    def __init__(self, repo_arg: str, projects_dir: Path, quiet: bool = False):
+    def __init__(self, repo_arg: str, projects_dir: Path, quiet: bool = False,
+                 live_window: timedelta | None = None):
         self.projects_dir = projects_dir
         self.quiet = quiet
+        # The recency claim, widenable per run (`--since`): it decides both which
+        # Sessions this Watch picks up and which ones the header still calls
+        # live. One window for both, because a lane in the feed that has no row
+        # in the header is a Session you can filter to but cannot see.
+        self.live_window = live_window or LIVE_THRESHOLD
         cache = cache_mod.open_cache()
         sessions = claude_logs.scan_sessions(projects_dir, cache)
         cache.flush()
@@ -809,7 +816,7 @@ class WatchStream:
         now = _now()
         here = [s for s in sessions
                 if s.cwd and self._in_repo(s.cwd)
-                and s.last_activity and now - s.last_activity <= LIVE_THRESHOLD]
+                and s.last_activity and now - s.last_activity <= self.live_window]
         # oldest first: lane numbers are first-seen and never re-sorted, so the
         # longest-running session is [1] and stays [1]
         here.sort(key=lambda s: s.last_activity)
@@ -963,7 +970,7 @@ class WatchStream:
         # header's [n] is an address the feed's lane digits reuse, and an
         # address that re-sorts under you is no address at all
         live = [self._info(sid) for sid, t in self.tailers.items()
-                if now - t.last_append <= LIVE_THRESHOLD]
+                if now - t.last_append <= self.live_window]
         last_sid = max(self.tailers, key=lambda s: self.tailers[s].last_append,
                        default=None)
         return Vitals(repo=self.name, path=self.checkouts[0],

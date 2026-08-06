@@ -103,6 +103,25 @@ def parse_since(raw: str) -> datetime:
         raise SystemExit(f"standup: cannot parse --since {raw!r} (try yesterday, 3d, 12h, 2w, or an ISO date)")
 
 
+def parse_window(raw: str) -> timedelta:
+    """A rolling window as a duration: `45m`, `2h`, `3d`, `1w`.
+
+    Deliberately narrower than `parse_since`, which resolves a *point* in time.
+    The Watch's Live window is re-read against the clock on every poll, so an
+    absolute date would keep widening as the run goes on — "since 9am" would
+    mean a different span every minute you watched.
+    """
+    m = re.fullmatch(r"(\d+)([mhdw])", raw.strip())
+    if not m:
+        raise SystemExit(
+            f"standup: cannot parse --since {raw!r} (a window is a duration: 45m, 2h, 3d, 1w)")
+    n, unit = int(m.group(1)), m.group(2)
+    if n == 0:
+        raise SystemExit("standup: --since must be a window longer than zero")
+    return {"m": timedelta(minutes=n), "h": timedelta(hours=n),
+            "d": timedelta(days=n), "w": timedelta(weeks=n)}[unit]
+
+
 def _to_json(entries, sessions, since, now) -> str:
     def clean(obj):
         if isinstance(obj, dict):
@@ -486,6 +505,7 @@ _standup() {
         watch|w)
           _arguments \
             '--quiet[files and commits only]' \
+            '--since[widen the Live window]:window (45m, 2h, 3d, 1w):' \
             '--no-wrap[start with long body lines clipped, not folded]' \
             '1:project:_standup_projects'
           ;;
@@ -835,6 +855,9 @@ def _cmd_watch(argv: list[str]) -> int:
                     "of every session still mid-turn (thinking / reading / writing "
                     "/ running, with how long); a session that has handed control "
                     "back shows nothing, so a quiet bar means nothing is working. "
+                    "A Session counts as live if its log was appended within the "
+                    "Live window (30 minutes by default; --since widens it, and "
+                    "each picked-up Session backfills its current chapter). "
                     "Session logs are the claim stream; git is "
                     "the ground truth. Interactive: 1-9/tab filters to one "
                     "session (repo facts always stay), ↑↓/j/k scrolls back (the "
@@ -851,6 +874,10 @@ def _cmd_watch(argv: list[str]) -> int:
                         "defaults to the current directory")
     p.add_argument("--quiet", action="store_true",
                    help="files and commits only (no bash, prompts, or session marks)")
+    p.add_argument("--since", metavar="WINDOW",
+                   help="widen the Live window: a Session whose log was appended "
+                        "within it is picked up and backfills its current chapter "
+                        "(45m, 2h, 3d, 1w; default 30m)")
     p.add_argument("--no-wrap", action="store_true",
                    help="start with wrap off: a body line wider than the terminal "
                         "clips at the right edge instead of folding onto further "
@@ -868,9 +895,12 @@ def _cmd_watch(argv: list[str]) -> int:
         print(f"standup: no Claude Code logs found at {projects_dir}", file=sys.stderr)
         return 1
 
+    window = parse_window(args.since) if args.since else None
+
     from . import watchstream, watchui
     try:
-        stream = watchstream.WatchStream(args.repo, projects_dir, quiet=args.quiet)
+        stream = watchstream.WatchStream(args.repo, projects_dir, quiet=args.quiet,
+                                         live_window=window)
     except watchstream.WatchError as e:
         print(str(e), file=sys.stderr)
         return 1

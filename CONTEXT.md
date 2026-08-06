@@ -137,7 +137,7 @@ A run of consecutive **Feed Event**s for the same file and the same witness, whi
 _Avoid_: group, rollup, change block ("block" already names a run of added or removed lines), merged event (nothing is merged away — the fold is presentation)
 
 **Live Session**:
-A **Session** whose log was appended within a recency threshold (~30 minutes). A *recency claim*, not a process fact — Standup never inspects processes, and the **Watch** always displays how long ago the last append happened rather than asserting "running". Distinct from **Active Work**, which is a git dirt tier.
+A **Session** whose log was appended within a recency threshold (~30 minutes; the **Watch**'s `--since` widens it for one run, and states the widened window in its header). A *recency claim*, not a process fact — Standup never inspects processes, and the **Watch** always displays how long ago the last append happened rather than asserting "running". Distinct from **Active Work**, which is a git dirt tier.
 _Avoid_: active session (collides with Active Work), running session
 
 **Activity State**:
