@@ -64,24 +64,26 @@ never shadow a project. To force the path reading, write it as a path: `.`,
 `./robin`, `../other`, `~/code/thing`. A path works even for a repo no session
 has ever touched: git alone can narrate.
 
-Files and commits only, no Bash/prompt/session noise:
+Files and commits only, no Bash/prompt/session noise — `-q`, `--quiet`:
 
 ```bash
-standup watch --quiet
+standup watch -q
 ```
 
 Long body lines fold by default; start with them clipping at the right edge
-instead — the `w` toggle (§4), off from the first row:
+instead — `-W`, `--no-wrap`, the `w` toggle (§4) off from the first row. The
+capital says it turns something off; every negative flag in this CLI is spelled
+that way ([ADR 0020](adr/0020-a-short-letter-is-owned-across-the-whole-cli.md)):
 
 ```bash
-standup watch --no-wrap
+standup watch -W
 ```
 
 Pick up sessions that already went quiet — the **Live window** is 30 minutes by
-default, and `--since` widens it:
+default, and `-s`, `--since` widens it:
 
 ```bash
-standup watch --since 2h
+standup watch -s 2h
 ```
 
 The window is a duration (`45m`, `2h`, `3d`, `1w`), never a date: it is re-read
@@ -634,7 +636,7 @@ alike: long lines then clip at the right edge and every event has a fixed row
 count, which is what you want when you're reading the shape of the last few
 minutes rather than the code. That's the non-default state, so the status bar
 says `no wrap — long lines clip` while you're in it, and `w` again puts it
-back. Start a watch already clipping with `standup watch --no-wrap`.
+back. Start a watch already clipping with `standup watch -W`.
 
 ### Focus on one session
 

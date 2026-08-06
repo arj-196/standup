@@ -98,6 +98,37 @@ standup st d             # standup's attributed diff
 standup s                # read the newest session here
 ```
 
+Every option has a one-letter form, and **a letter means one thing everywhere**
+— `-s` is `--since` in the inbox, in `cost` and in `watch`, so it can never be
+`--stat` in `diff` ([ADR 0020](docs/adr/0020-a-short-letter-is-owned-across-the-whole-cli.md)):
+
+| | | | |
+|---|---|---|---|
+| `-a` `--all` | `-s` `--since` | `-j` `--json` | `-q` `--quiet` |
+| `-i` `--in` | `-t` `--thinking` | `-r` `--raw` | `-n` `--stat` |
+| `-U` `--context` | `-P` `--no-pager` | `-W` `--no-wrap` | |
+
+An **uppercase boolean is the negation of its lowercase** — `-P` is
+`--no-pager`, `-W` is `--no-wrap` — which is why lowercase `-p` and `-w` are
+left unclaimed: a future `--pager` or `--wrap` should get the honest letter.
+`-U` takes a value (it's git's spelling), so it isn't in that class. `-n` for
+`--stat` is git's `--numstat`: per-file *numbers*, no bodies.
+
+Two options have no letter on purpose. `audit --refresh` re-runs the Expert
+Panel against your subscription, so it costs the whole word — the same rule
+that leaves `install`/`uninstall` unaliased. `--projects-dir` is a hidden
+entry point and stays hidden.
+
+The dash is a namespace boundary, so these never collide with the subcommand
+aliases above: `-a` is `--all` while a bare `a` is `audit`.
+
+```sh
+standup -a               # the inbox, including recent work
+standup -s 2h st watch   # watch st, Live window widened to 2 hours
+standup st diff -n -P    # per-file counts, no pager
+standup s 3b0a -r        # that session's raw JSONL
+```
+
 A `<repo>` argument also takes a full name or a path — `.`, `../other`,
 `~/code/thing`. A **bare word is always a handle**, never a directory, so a
 folder sitting in your cwd can never shadow a project; write `./name` when you

@@ -26,6 +26,27 @@ ALIASES = {"c": "cost", "w": "watch", "s": "session", "a": "audit", "d": "diff"}
 SUBCOMMANDS = {"cost", "watch", "session", "audit", "diff", "completion",
                "install", "uninstall", "_brief", "_complete"}
 
+# Short option letters, owned across the whole CLI (ADR 0020). One letter, one
+# meaning, in every parser that has the flag at all — `-s` is `--since` in
+# `standup`, `cost` and `watch`, and can therefore never be `--stat` in `diff`:
+#
+#   -a --all       -s --since     -j --json      -q --quiet     -i --in
+#   -t --thinking  -r --raw       -n --stat      -U --context
+#   -P --no-pager  -W --no-wrap
+#
+# Three rules keep the table honest, and each one costs something:
+#   * an uppercase *boolean* is the negation of its lowercase, which is why
+#     `-p` and `-w` stay unclaimed — a future affirmative `--pager`/`--wrap`
+#     must be able to have the obvious letter. `-U` takes a value, so it is not
+#     in that class and not an exception to it (it is git's spelling anyway).
+#   * dashed and undashed are separate namespaces: `-a` is `--all` while a bare
+#     `a` is `audit`. The dash is the separator, so the ALIASES table above and
+#     this one never contend.
+#   * a flag that spends money gets no letter. `audit --refresh` re-runs the
+#     Expert Panel against your subscription, so it costs the whole word — the
+#     same reason `install`/`uninstall` are unaliased. `--projects-dir` has
+#     none either: it is a hidden entry point, and hidden is a decision.
+
 # The views reachable object-first — `standup <repo> <view>` (ADR 0015).
 #
 # Two axes, and the distinction is the whole rule: a *verb-first* subcommand is a
@@ -53,29 +74,50 @@ def _normalize(argv: list[str]) -> list[str]:
     """`standup <repo> <view> <rest…>` -> `standup <view> <repo> <rest…>`.
 
     A pre-dispatch rewrite (ADR 0015), which is why grammar B costs one function
-    rather than a parallel command tree. Nothing here resolves a repo: it only
-    notices that position 2 holds a view name, which position 2 could never hold
-    before — `standup <repo>` accepted flags and nothing else.
+    rather than a parallel command tree. Nothing here resolves a repo: it finds
+    the one place a view name can sit — directly after a non-option token —
+    which nothing could occupy before, since `standup <repo>` accepted flags and
+    nothing else.
+
+    A *positional scan*, deliberately: `standup -s 2h st watch` has to work now
+    that options have one-letter forms people actually type in front (ADR 0020),
+    and the pair is found by shape rather than by knowing that `-s` swallows the
+    token after it. That ignorance is the point — the alternative is a table of
+    every value-taking flag in six parsers, kept in sync forever, and a silent
+    misparse the day someone forgets. The cost is paid only by input that was
+    already an error: `standup -s 3d diff` names no repo, so `3d` is read as one
+    and the complaint comes from the handle resolver rather than from argparse.
+
+    Leading options are handed to the view's own parser, because that is the
+    parser that runs — `standup -j st cost` works, and `standup -a st diff`
+    fails on `-a`, which `diff` has never had.
 
     `session` is the one view whose positional is not a repo (it takes a Session
     Handle), so the repo is rewritten onto its `--in` flag instead: `standup tt
     session` means "the newest session in tt", the same generalisation of "here"
     that bare `standup session` already makes for the current directory.
     """
-    if len(argv) < 2 or argv[0].startswith("-"):
+    if len(argv) < 2:
         return argv
-    if ALIASES.get(argv[0], argv[0]) in SUBCOMMANDS:
+    lead = next((i for i, a in enumerate(argv) if not a.startswith("-")), None)
+    if lead is None:
+        return argv                        # options only: the inbox's own flags
+    if ALIASES.get(argv[lead], argv[lead]) in SUBCOMMANDS:
         return argv                        # already verb-first
-    view = ALIASES.get(argv[1], argv[1])
-    if view == "audit":
-        raise SystemExit(
-            f"standup: `{argv[0]} audit` is not accepted — audit is the one paid view\n"
-            "  it runs an Expert Panel against your Claude subscription, so it takes an\n"
-            "  explicit Session Handle: standup audit <handle>")
-    if view == "session":
-        return [argv[1], "--in", argv[0], *argv[2:]]
-    if view in OBJECT_FIRST:
-        return [argv[1], argv[0], *argv[2:]]
+    for i in range(lead + 1, len(argv)):
+        view = ALIASES.get(argv[i], argv[i])
+        if (view not in OBJECT_FIRST and view != "audit") or argv[i - 1].startswith("-"):
+            continue
+        repo = argv[i - 1]
+        rest = [a for j, a in enumerate(argv) if j not in (i - 1, i)]
+        if view == "audit":
+            raise SystemExit(
+                f"standup: `{repo} audit` is not accepted — audit is the one paid view\n"
+                "  it runs an Expert Panel against your Claude subscription, so it takes an\n"
+                "  explicit Session Handle: standup audit <handle>")
+        if view == "session":
+            return [argv[i], "--in", repo, *rest]
+        return [argv[i], repo, *rest]
     return argv
 
 
@@ -232,9 +274,9 @@ def _cmd_cost(argv: list[str]) -> int:
     p.add_argument("repo", nargs="?",
                    help="Project Handle (the underlined letters of a name in the "
                         "overview), full name, or a path, for a per-session drill-down")
-    p.add_argument("--since", help="window override (3d, 2w, ISO date, or 'all'); default: this calendar month")
-    p.add_argument("--json", action="store_true", help="structured output")
-    p.add_argument("--no-pager", action="store_true", help="print instead of opening a pager")
+    p.add_argument("-s", "--since", help="window override (3d, 2w, ISO date, or 'all'); default: this calendar month")
+    p.add_argument("-j", "--json", action="store_true", help="structured output")
+    p.add_argument("-P", "--no-pager", action="store_true", help="print instead of opening a pager")
     p.add_argument("--projects-dir", default=os.path.expanduser("~/.claude/projects"), help=argparse.SUPPRESS)
     args = p.parse_args(argv)
 
@@ -329,8 +371,9 @@ def _cmd_audit(argv: list[str]) -> int:
     p.add_argument("handle",
                    help="any unambiguous session id prefix (from `standup cost <repo>`)")
     p.add_argument("--refresh", action="store_true",
-                   help="regenerate even if a stored Audit exists")
-    p.add_argument("--no-pager", action="store_true", help="print instead of paging")
+                   help="regenerate even if a stored Audit exists (no short form: "
+                        "it spends your subscription, so it costs the whole word)")
+    p.add_argument("-P", "--no-pager", action="store_true", help="print instead of paging")
     p.add_argument("--projects-dir", default=os.path.expanduser("~/.claude/projects"),
                    help=argparse.SUPPRESS)
     args = p.parse_args(argv)
@@ -460,8 +503,8 @@ _standup() {
   typeset -A opt_args
   _arguments -C \
     '(-a --all)'{-a,--all}'[also show work done within the recent window]' \
-    '--since[override the recent window]:when (3d, 2w, yesterday, ISO date):' \
-    '--json[structured output for scripts/TUI]' \
+    '(-s --since)'{-s,--since}'[override the recent window]:when (3d, 2w, yesterday, ISO date):' \
+    '(-j --json)'{-j,--json}'[structured output for scripts/TUI]' \
     '1: :->first' \
     '*:: :->rest'
 
@@ -474,39 +517,39 @@ _standup() {
       case $words[1] in
         cost|c)
           _arguments \
-            '--since[window override]:when (3d, 2w, all, ISO date):' \
-            '--json[structured output]' \
-            '--no-pager[print instead of paging]' \
+            '(-s --since)'{-s,--since}'[window override]:when (3d, 2w, all, ISO date):' \
+            '(-j --json)'{-j,--json}'[structured output]' \
+            '(-P --no-pager)'{-P,--no-pager}'[print instead of paging]' \
             '1:project:_standup_projects'
           ;;
         session|s)
           _arguments \
-            '--in[newest session in this project instead of here]:project:_standup_projects' \
-            '--thinking[include hidden thinking blocks]' \
-            '--raw[dump the untouched session JSONL]' \
-            '--no-pager[print instead of paging]' \
+            '(-i --in)'{-i,--in}'[newest session in this project instead of here]:project:_standup_projects' \
+            '(-t --thinking)'{-t,--thinking}'[include hidden thinking blocks]' \
+            '(-r --raw)'{-r,--raw}'[dump the untouched session JSONL]' \
+            '(-P --no-pager)'{-P,--no-pager}'[print instead of paging]' \
             '1:session:_standup_sessions'
           ;;
         diff|d)
           _arguments \
-            '--stat[per-file counts only]' \
+            '(-n --stat)'{-n,--stat}'[per-file counts only]' \
             '(-U --context)'{-U,--context}'[lines of context per hunk]:lines:' \
-            '--no-wrap[clip long body lines instead of folding them]' \
-            '--no-pager[print instead of paging]' \
+            '(-W --no-wrap)'{-W,--no-wrap}'[clip long body lines instead of folding them]' \
+            '(-P --no-pager)'{-P,--no-pager}'[print instead of paging]' \
             '1:project:_standup_projects' \
             '2:session or @commit:_standup_sessions'
           ;;
         audit|a)
           _arguments \
             '--refresh[regenerate even if a stored Audit exists]' \
-            '--no-pager[print instead of paging]' \
+            '(-P --no-pager)'{-P,--no-pager}'[print instead of paging]' \
             '1:session:_standup_sessions'
           ;;
         watch|w)
           _arguments \
-            '--quiet[files and commits only]' \
-            '--since[widen the Live window]:window (45m, 2h, 3d, 1w):' \
-            '--no-wrap[start with long body lines clipped, not folded]' \
+            '(-q --quiet)'{-q,--quiet}'[files and commits only]' \
+            '(-s --since)'{-s,--since}'[widen the Live window]:window (45m, 2h, 3d, 1w):' \
+            '(-W --no-wrap)'{-W,--no-wrap}'[start with long body lines clipped, not folded]' \
             '1:project:_standup_projects'
           ;;
         completion)
@@ -683,14 +726,14 @@ def _cmd_session(argv: list[str]) -> int:
     p.add_argument("handle", nargs="?",
                    help="any unambiguous session id prefix (from `standup cost <repo>`); "
                         "omit for the newest session in the current repo")
-    p.add_argument("--in", dest="in_repo", metavar="REPO",
+    p.add_argument("-i", "--in", dest="in_repo", metavar="REPO",
                    help="the verb-first spelling of `standup <repo> session`: with no "
                         "handle, the newest session in this project instead of the "
                         "current directory; with a handle, a check that the handle is "
                         "one of that project's sessions")
-    p.add_argument("--thinking", action="store_true", help="include hidden thinking blocks")
-    p.add_argument("--raw", action="store_true", help="dump the untouched session JSONL")
-    p.add_argument("--no-pager", action="store_true", help="print instead of opening a pager")
+    p.add_argument("-t", "--thinking", action="store_true", help="include hidden thinking blocks")
+    p.add_argument("-r", "--raw", action="store_true", help="dump the untouched session JSONL")
+    p.add_argument("-P", "--no-pager", action="store_true", help="print instead of opening a pager")
     p.add_argument("--projects-dir", default=os.path.expanduser("~/.claude/projects"), help=argparse.SUPPRESS)
     args = p.parse_args(argv)
 
@@ -750,15 +793,15 @@ def _cmd_diff(argv: list[str]) -> int:
     p.add_argument("ref", nargs="?",
                    help="@<hash> for one commit's diff, or a Session Handle to keep "
                         "only the hunks that session accounts for")
-    p.add_argument("--stat", action="store_true",
+    p.add_argument("-n", "--stat", action="store_true",
                    help="per-file counts only, with each file's attribution digest "
                         "instead of hunk bodies")
     p.add_argument("-U", "--context", type=int, default=diffview.CONTEXT_DEFAULT,
                    metavar="N", help="lines of context around each hunk (default %(default)s)")
-    p.add_argument("--no-wrap", action="store_true",
+    p.add_argument("-W", "--no-wrap", action="store_true",
                    help="clip a body line wider than the terminal at the right edge "
                         "instead of folding it onto further rows (marked ↳)")
-    p.add_argument("--no-pager", action="store_true", help="print instead of opening a pager")
+    p.add_argument("-P", "--no-pager", action="store_true", help="print instead of opening a pager")
     p.add_argument("--projects-dir", default=os.path.expanduser("~/.claude/projects"),
                    help=argparse.SUPPRESS)
     args = p.parse_args(argv)
@@ -872,13 +915,13 @@ def _cmd_watch(argv: list[str]) -> int:
                    help="Project Handle (the underlined letters of a name in the "
                         "inbox), full name, or a path to a git checkout; "
                         "defaults to the current directory")
-    p.add_argument("--quiet", action="store_true",
+    p.add_argument("-q", "--quiet", action="store_true",
                    help="files and commits only (no bash, prompts, or session marks)")
-    p.add_argument("--since", metavar="WINDOW",
+    p.add_argument("-s", "--since", metavar="WINDOW",
                    help="widen the Live window: a Session whose log was appended "
                         "within it is picked up and backfills its current chapter "
                         "(45m, 2h, 3d, 1w; default 30m)")
-    p.add_argument("--no-wrap", action="store_true",
+    p.add_argument("-W", "--no-wrap", action="store_true",
                    help="start with wrap off: a body line wider than the terminal "
                         "clips at the right edge instead of folding onto further "
                         "rows (marked ↳), so every event keeps a fixed row "
@@ -994,8 +1037,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="also show work done — pushed, or committed in a "
                              "repo with no remote — within the recent window "
                              "(default %dd)" % RECENT_WINDOW_DAYS)
-    parser.add_argument("--since", help="override the recent window (yesterday, 3d, 12h, 2w, ISO date)")
-    parser.add_argument("--json", action="store_true", help="structured output for scripts/TUI")
+    parser.add_argument("-s", "--since", help="override the recent window (yesterday, 3d, 12h, 2w, ISO date)")
+    parser.add_argument("-j", "--json", action="store_true", help="structured output for scripts/TUI")
     parser.add_argument("--projects-dir", default=os.path.expanduser("~/.claude/projects"),
                         help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
