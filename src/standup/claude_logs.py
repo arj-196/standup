@@ -2,11 +2,12 @@
 
 Every session file is fully parsed (line-level prefiltering to extract edits,
 captured commit hashes, and titles) and the result is cached in the Derived
-Cache (ADR 0003), keyed on (size, mtime_ns). Unchanged files are served from the
-cache without being opened; only files that actually changed are reparsed.
+Cache (ADR 0001 § the Derived Cache), keyed on (size, mtime_ns). Unchanged
+files are served from the cache without being opened; only files that actually
+changed are reparsed.
 
 Parsing is no longer gated by a lookback horizon — the cache makes full-history
-parsing cheap, and attribution is ageless (ADR 0004).
+parsing cheap, and attribution is ageless (ADR 0001 § ageless attribution).
 """
 
 from __future__ import annotations

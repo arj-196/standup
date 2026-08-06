@@ -1,4 +1,5 @@
-"""Loop detection (ADR 0007): repeated same-shape tool-call n-grams in a Session.
+"""Loop detection (ADR 0003 § the Audit): repeated same-shape tool-call
+n-grams in a Session.
 
 A Loop is a *measured fact*, not a judgment — a run of >= MIN_ITERATIONS
 repetitions of an n-gram (n <= MAX_NGRAM) of tool calls matching on tool name +

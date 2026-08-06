@@ -1,7 +1,8 @@
 """The Watch's event stream: JSONL tail (claims) + git observation (ground truth).
 
-Plain Python by design (ADR 0008): this module never imports textual. The watch
-UI is just one consumer of the typed Feed Events produced here.
+Plain Python by design (ADR 0004 § the stream/UI boundary): this module never
+imports textual. The watch UI is just one consumer of the typed Feed Events
+produced here.
 
 The split mirrors Attribution: the session log claims *who and what* (the exact
 Edit text, the Bash command, the prompt); git confirms tree state and alone
@@ -45,13 +46,13 @@ ACT_VERBS = {
 }
 ACT_FALLBACK = "acting"
 ACT_THINKING = "thinking"
-# Display floor for a tool verb (ADR 0011, amendment). A local Read returns in
-# ~25ms, so bound to its own execution window `reading` was never on screen long
-# enough to be read by a human — measured over eight of this repo's sessions,
-# `reading` held the state for 7 seconds in total and `writing` for 8, against
-# 6740 for `thinking`. A tool verb therefore holds the band for at least this
-# long before `thinking` may replace it. It never delays a *settled* session
-# going blank, and never delays another tool verb.
+# Display floor for a tool verb (ADR 0004 § the Activity State). A local Read
+# returns in ~25ms, so bound to its own execution window `reading` was never on
+# screen long enough to be read by a human — measured over eight of this repo's
+# sessions, `reading` held the state for 7 seconds in total and `writing` for
+# 8, against 6740 for `thinking`. A tool verb therefore holds the band for at
+# least this long before `thinking` may replace it. It never delays a *settled*
+# session going blank, and never delays another tool verb.
 ACT_FLOOR = timedelta(seconds=1.0)
 
 _COMMIT_RE = claude_logs.COMMIT_LINE_RE
@@ -94,11 +95,12 @@ class FeedEvent:
                                  # tool call it came from, so a Change Run can
                                  # count calls rather than hunks (one MultiEdit
                                  # spans several events but is one call)
-    # Does this file event *replace* the picture of its path, or add to it?
-    # A Session claims hunks, which accumulate; the git watcher states the whole
-    # delta of a dirty file, which supersedes what it last said (ADR 0017). The
-    # Watch needs the distinction to fold a Change Run without lying about the
-    # counts, and it is a property of the witness, not a UI guess.
+    # Does this file event *replace* the picture of its path, or add to it? A
+    # Session claims hunks, which accumulate; the git watcher states the whole
+    # delta of a dirty file, which supersedes what it last said (ADR 0004 § the
+    # Change Run). The Watch needs the distinction to fold a Change Run without
+    # lying about the counts, and it is a property of the witness, not a UI
+    # guess.
     restates: bool = False
     message: str = ""            # prompt text / commit subject / free text
     sha: str | None = None
@@ -466,12 +468,12 @@ class _GitWatcher:
     changes code). Binary or oversized files degrade to a one-line Unattributed
     Change.
 
-    Cumulative, not incremental (ADR 0017). Polling every GIT_POLL_INTERVAL
-    chops one burst of writing into one delta per window, and a run of
-    `+8 +4 +1 +1` says more about the poll rate than about the change. Each
-    event therefore restates the whole delta of the path, and the Watch folds
-    the run into one Change Run whose counts are the true net figure — a line
-    added and then removed inside the run cancels instead of being counted
+    Cumulative, not incremental (ADR 0004 § the Change Run). Polling every
+    GIT_POLL_INTERVAL chops one burst of writing into one delta per window, and
+    a run of `+8 +4 +1 +1` says more about the poll rate than about the change.
+    Each event therefore restates the whole delta of the path, and the Watch
+    folds the run into one Change Run whose counts are the true net figure — a
+    line added and then removed inside the run cancels instead of being counted
     twice."""
 
     def __init__(self, checkouts: list[str]):
@@ -681,7 +683,7 @@ class _GitWatcher:
                     # back to the reference snapshot. Nothing is emitted, so the
                     # Change Run on screen keeps its last figures — it states the
                     # delta *as of its last update*, which is what every other
-                    # entry in the feed does too (ADR 0017)
+                    # entry in the feed does too (ADR 0004 § the Change Run)
                     continue
                 change = ("delete" if cur == "" and code.strip().startswith("D")
                           else "create" if base == "" and code.startswith("?")
@@ -947,7 +949,8 @@ class WatchStream:
         The floor yields to everything that matters: a settled or interrupted
         turn clears `act_tool`, so the band still goes blank the instant the
         agent hands control back, and a fresh tool verb overwrites immediately.
-        It only ever holds a tool verb against `thinking` (ADR 0011, amendment).
+        It only ever holds a tool verb against `thinking` (ADR 0004 § the
+        Activity State).
         """
         if t.act_verb is None:
             return None

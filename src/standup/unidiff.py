@@ -4,7 +4,8 @@ The **Watch** never needed this: it renders a change as an added block and a
 removed block, which is right for narrating one edit as it lands but loses both
 things a reviewer needs — *where* in the file a change sits, and *what replaced
 what*. The **Attributed Diff** keeps the Watch's typography and takes git's
-structure instead (ADR 0015), so it needs real hunks with real line numbers.
+structure instead (ADR 0005 § two grammars), so it needs real hunks with real
+line numbers.
 
 Every row carries the line number of the side it exists on: a context or added
 row carries its **new**-file number, a removed row its **old**-file number.
@@ -53,7 +54,7 @@ class Hunk:
         """The hunk's maximal consecutive same-sign blocks, as
         `("+"|"-", lines)`.
 
-        A run is the unit attribution is decided on (ADR 0016). It has to be:
+        A run is the unit attribution is decided on (ADR 0007). It has to be:
         an *added-only* line list is generally **not** contiguous in the text a
         session recorded — an Edit that inserts two lines around a kept one
         produces a hunk whose `+` rows are separated by context — whereas each

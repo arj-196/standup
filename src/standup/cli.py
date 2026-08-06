@@ -14,21 +14,23 @@ from . import audit as audit_mod
 from . import brief as brief_mod
 from . import claude_logs, cost, gitstate, handles, join, loops, rates, render, transcript
 
-RECENT_WINDOW_DAYS = 7  # the Recent Window (ADR 0002); --since overrides
+# the Recent Window (ADR 0001 § the Recent Window); --since overrides
+RECENT_WINDOW_DAYS = 7
 _EPOCH = datetime.min.replace(tzinfo=timezone.utc)
 
 # Subcommand aliases: a fixed table, so each letter is owned forever and a
-# future subcommand can never quietly steal one (ADR 0009). `install` and
-# `uninstall` are deliberately unaliased — a mistyped letter should not be able
-# to rip out the machine-wide Stop hook.
+# future subcommand can never quietly steal one (ADR 0005 § the reserved-letter
+# rule). `install` and `uninstall` are deliberately unaliased — a mistyped
+# letter should not be able to rip out the machine-wide Stop hook.
 ALIASES = {"c": "cost", "w": "watch", "s": "session", "a": "audit", "d": "diff"}
 
 SUBCOMMANDS = {"cost", "watch", "session", "audit", "diff", "completion",
                "install", "uninstall", "_brief", "_complete"}
 
-# Short option letters, owned across the whole CLI (ADR 0020). One letter, one
-# meaning, in every parser that has the flag at all — `-s` is `--since` in
-# `standup`, `cost` and `watch`, and can therefore never be `--stat` in `diff`:
+# Short option letters, owned across the whole CLI (ADR 0005 § short option
+# letters). One letter, one meaning, in every parser that has the flag at all —
+# `-s` is `--since` in `standup`, `cost` and `watch`, and can therefore never be
+# `--stat` in `diff`:
 #
 #   -a --all       -s --since     -j --json      -q --quiet     -i --in
 #   -t --thinking  -r --raw       -n --stat      -U --context
@@ -47,7 +49,8 @@ SUBCOMMANDS = {"cost", "watch", "session", "audit", "diff", "completion",
 #     same reason `install`/`uninstall` are unaliased. `--projects-dir` has
 #     none either: it is a hidden entry point, and hidden is a decision.
 
-# The views reachable object-first — `standup <repo> <view>` (ADR 0015).
+# The views reachable object-first — `standup <repo> <view>`
+# (ADR 0005 § two grammars).
 #
 # Two axes, and the distinction is the whole rule: a *verb-first* subcommand is a
 # different lens over the whole Scan Universe (`standup cost` prices every
@@ -73,20 +76,21 @@ def _resolve_repo(arg: str, targets: list[handles.Target], prog: str) -> handles
 def _normalize(argv: list[str]) -> list[str]:
     """`standup <repo> <view> <rest…>` -> `standup <view> <repo> <rest…>`.
 
-    A pre-dispatch rewrite (ADR 0015), which is why grammar B costs one function
-    rather than a parallel command tree. Nothing here resolves a repo: it finds
-    the one place a view name can sit — directly after a non-option token —
-    which nothing could occupy before, since `standup <repo>` accepted flags and
-    nothing else.
+    A pre-dispatch rewrite (ADR 0005 § two grammars), which is why grammar B
+    costs one function rather than a parallel command tree. Nothing here
+    resolves a repo: it finds the one place a view name can sit — directly after
+    a non-option token — which nothing could occupy before, since
+    `standup <repo>` accepted flags and nothing else.
 
     A *positional scan*, deliberately: `standup -s 2h st watch` has to work now
-    that options have one-letter forms people actually type in front (ADR 0020),
-    and the pair is found by shape rather than by knowing that `-s` swallows the
-    token after it. That ignorance is the point — the alternative is a table of
-    every value-taking flag in six parsers, kept in sync forever, and a silent
-    misparse the day someone forgets. The cost is paid only by input that was
-    already an error: `standup -s 3d diff` names no repo, so `3d` is read as one
-    and the complaint comes from the handle resolver rather than from argparse.
+    that options have one-letter forms people actually type in front
+    (ADR 0005 § short option letters), and the pair is found by shape rather
+    than by knowing that `-s` swallows the token after it. That ignorance is the
+    point — the alternative is a table of every value-taking flag in six
+    parsers, kept in sync forever, and a silent misparse the day someone
+    forgets. The cost is paid only by input that was already an error:
+    `standup -s 3d diff` names no repo, so `3d` is read as one and the complaint
+    comes from the handle resolver rather than from argparse.
 
     Leading options are handed to the view's own parser, because that is the
     parser that runs — `standup -j st cost` works, and `standup -a st diff`
@@ -360,7 +364,8 @@ def _render_audit(a, st, width: int) -> str:
 def _cmd_audit(argv: list[str]) -> int:
     p = argparse.ArgumentParser(
         prog="standup audit",
-        description="Audit one session for automatable cost (ADR 0007): prints its "
+        description="Audit one session for automatable cost "
+                    "(ADR 0003 § the Audit): prints its "
                     "free deterministic Loops, then a fixed Expert Panel "
                     "(4 parallel Sonnet Experts + an Opus concluder, billed to "
                     "your Claude subscription) judges LLM-as-CPU turns, prompt "
@@ -393,7 +398,7 @@ def _cmd_audit(argv: list[str]) -> int:
     width = render._term_width()
     cache = cache_mod.open_cache()
 
-    # the free layer first — always, generation or not (ADR 0007)
+    # the free layer first — always, generation or not (ADR 0003 § the Audit)
     scan = loops.for_session(log_path, cache)
     sig = loops.significant(scan)
     head = [st.bold(f"{sid[:8]}") + st.dim(f"  ${scan.session_cost:,.2f} notional"), ""]
@@ -465,8 +470,8 @@ _standup_sessions() {
 }
 
 _standup_views() {
-  # the views a repo can be followed by (ADR 0015). `audit` is absent on
-  # purpose: it is the one paid view and always names its own session.
+  # the views a repo can be followed by (ADR 0005 § two grammars). `audit` is
+  # absent on purpose: it is the one paid view and always names its own session.
   local -a views
   views=(
     'diff:the Attributed Diff of this repo (d)'
@@ -687,8 +692,9 @@ def _check_session_in(projects_dir: Path, log_path: Path, repo: str) -> None:
     Session Handle already implies its repo. Rather than reject the pair (which
     made the object-first spelling useless the moment you pasted a handle into
     it) or ignore the repo (which would answer about a different project without
-    saying so), the repo becomes a *constraint*: it is the same rule ADR 0015
-    applies to `@<hash>`, where naming a repo means the answer must come from it.
+    saying so), the repo becomes a *constraint*: it is the same rule
+    ADR 0005 § two grammars applies to `@<hash>`, where naming a repo means the
+    answer must come from it.
     """
     cache = cache_mod.open_cache()
     sessions = claude_logs.scan_sessions(projects_dir, cache)
@@ -810,7 +816,7 @@ def _cmd_diff(argv: list[str]) -> int:
     # `@abc1234` in the first slot is a commit, not a project: the sigil is
     # unambiguous (no Project Handle starts with @), so `standup diff @abc1234`
     # reads the commit in the repo you are standing in. A *bare* hex stays a
-    # Project Handle — ADR 0009's rule is untouched.
+    # Project Handle — untouched by this (ADR 0005 § Project Handles).
     if ref is None and repo.startswith("@"):
         repo, ref = ".", repo
 
@@ -954,7 +960,8 @@ def _cmd_watch(argv: list[str]) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
-    # object-first -> verb-first, before anything is dispatched (ADR 0015)
+    # object-first -> verb-first, before anything is dispatched
+    # (ADR 0005 § two grammars)
     argv = _normalize(argv)
     sub = ALIASES.get(argv[0], argv[0]) if argv else None
     if sub == "cost":
@@ -969,7 +976,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_audit(argv[1:])
     if sub == "completion":
         return _cmd_completion(argv[1:])
-    if sub == "_brief":  # hidden: the Stop hook's entry point (ADR 0006)
+    # hidden: the Stop hook's entry point (ADR 0003 § the Session Brief)
+    if sub == "_brief":
         from . import briefgen
         return briefgen.run_from_hook_stdin()
     if sub == "_complete":  # hidden: the completion script's candidate source
@@ -979,7 +987,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"usage: standup {sub}\n")
             if sub == "install":
                 print("Install the Session Brief Stop hook into ~/.claude/settings.json so\n"
-                      "every Claude Code session gets an out-of-band objective summary (ADR 0006).\n"
+                      "every Claude Code session gets an out-of-band objective summary.\n"
                       "Idempotent; runs a headless `claude -p` auth check. Takes no options.")
             else:
                 print("Remove the Session Brief Stop hook from ~/.claude/settings.json.\n"
@@ -1059,11 +1067,13 @@ def main(argv: list[str] | None = None) -> int:
     join.attribute(entries, sessions, cache)
     cache.flush()
 
-    # Session Briefs (ADR 0006): read-only join, then drop briefs for dead logs.
+    # Session Briefs (ADR 0003 § the Session Brief): read-only join, then drop
+    # briefs for dead logs.
     briefs = brief_mod.load_for_sessions(sessions)
     live_ids = {s.session_id for s in sessions}
     brief_mod.prune_orphans(live_ids)
-    audit_mod.prune_orphans(live_ids)  # Audits mirror the Brief lifecycle (ADR 0007)
+    # Audits mirror the Brief lifecycle (ADR 0003 § the Audit)
+    audit_mod.prune_orphans(live_ids)
 
     if args.json:
         print(_to_json(entries, sessions, since, now))

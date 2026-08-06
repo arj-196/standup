@@ -32,8 +32,9 @@ class SessionCost:
     tokens: dict[str, int] = field(default_factory=lambda: {b: 0 for b in BUCKETS})
     turns: int = 0
     unpriced_turns: int = 0
-    # above-floor Loops (ADR 0007): free, derived, attached by attach_loops.
-    # Loop Cost is a carve-out of this session's Notional Cost, never a saving.
+    # above-floor Loops (ADR 0003 § the Audit): free, derived, attached by
+    # attach_loops. Loop Cost is a carve-out of this session's Notional Cost,
+    # never a saving.
     loops: list = field(default_factory=list)
 
     @property
@@ -72,11 +73,13 @@ class ProjectCost:
     name: str
     path: str
     sessions: list[SessionCost] = field(default_factory=list)
-    # Brief Overhead (ADR 0006): Notional Cost of generating this project's
-    # Session Briefs, kept separate from `cost` so it is never folded in silently.
+    # Brief Overhead (ADR 0003 § the Session Brief): Notional Cost of
+    # generating this project's Session Briefs, kept separate from `cost` so it
+    # is never folded in silently.
     brief_overhead: float = 0.0
     brief_count: int = 0
-    # Audit Overhead (ADR 0007): same move for the Expert Panel's own cost.
+    # Audit Overhead (ADR 0003 § the Audit): same move for the Expert Panel's
+    # own cost.
     audit_overhead: float = 0.0
     audit_count: int = 0
 
@@ -204,7 +207,8 @@ def group_by_project(session_costs: list[SessionCost]) -> list[ProjectCost]:
 
 
 def attach_loops(session_costs: list[SessionCost], cache) -> None:
-    """Attach each session's above-floor Loops (ADR 0007). Free and derived:
+    """Attach each session's above-floor Loops (ADR 0003 § the Audit).
+    Free and derived:
     served from the Derived Cache; only changed session files are re-read."""
     from . import loops as loops_mod
     for sc in session_costs:
@@ -228,7 +232,8 @@ def attach_brief_overhead(projects: list[ProjectCost]) -> None:
 
 
 def attach_audit_overhead(projects: list[ProjectCost]) -> None:
-    """Price each project's Audits (ADR 0007) as Audit Overhead — the Expert
+    """Price each project's Audits (ADR 0003 § the Audit) as Audit Overhead
+    — the Expert
     Panel's own recorded usage, attributed to the repo whose session was
     audited. Separate and labelled, never folded into Notional Cost."""
     from . import audit as audit_mod

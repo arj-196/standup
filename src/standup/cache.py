@@ -1,4 +1,5 @@
-"""The Derived Cache (ADR 0003): a pure accelerator at ~/.standup/cache/cache.db.
+"""The Derived Cache (ADR 0001 § the Derived Cache): a pure accelerator at
+~/.standup/cache/cache.db.
 
 The `cache/` subdirectory is deliberate: the `~/.standup` root is durable and
 holds non-recomputable data (Session Briefs, see brief.py), so only `cache/` is
@@ -7,7 +8,7 @@ disposable. `rm -rf ~/.standup/cache` is always safe; the root is not.
 Holds results derived deterministically from the session logs — one row per
 session file (the fully parsed Session), an immutable commit_files(sha) table,
 detected Loops, and the edit-fragment index that hunk attribution reads
-(ADR 0016). Keyed on (size, mtime_ns) so a stale entry is always detected and
+(ADR 0007). Keyed on (size, mtime_ns) so a stale entry is always detected and
 reparsed; output is byte-identical whether the cache is warm, cold, or deleted.
 
 The cache is disposable. Any read error, a schema/parser version mismatch, or a
@@ -125,7 +126,7 @@ class Cache:
     def put_commit_files(self, sha: str, files: list[str]) -> None:
         self._commits[sha] = files
 
-    # --- loops (ADR 0007: derived Loop detection per session file) -------
+    # --- loops (ADR 0003 § the Audit: derived Loop detection per file) ---
 
     def get_loops(self, session_id: str, size: int, mtime_ns: int) -> dict | None:
         try:
@@ -146,7 +147,7 @@ class Cache:
     def put_loops(self, session_id: str, size: int, mtime_ns: int, data: dict) -> None:
         self._loops[session_id] = (size, mtime_ns, data)
 
-    # --- edit fragments (ADR 0016: the hunk-attribution index) -----------
+    # --- edit fragments (ADR 0007: the hunk-attribution index) -----------
     #
     # Stored zlib-compressed: the index is the literal text of every edit a
     # session made, which compresses several-fold as source. A blob that is

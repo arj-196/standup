@@ -1,4 +1,4 @@
-"""Hunk-level attribution: which Session authored *this* change (ADR 0016).
+"""Hunk-level attribution: which Session authored *this* change (ADR 0007).
 
 The inbox attributes at file granularity by **path overlap** — a reliable test
 that answers "did this session ever touch this file". A diff needs a sharper
@@ -41,7 +41,7 @@ authored that commit, and without the bound it is reported as a co-author of one
 
 The fragment index is derived deterministically from the session logs, so it
 belongs in the Derived Cache. The *match* never does: it runs against the live
-working tree, which ADR 0003 keeps out of the cache entirely.
+working tree, which ADR 0001 § the Derived Cache keeps out of the cache entirely.
 """
 
 from __future__ import annotations

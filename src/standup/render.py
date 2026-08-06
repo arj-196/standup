@@ -199,7 +199,7 @@ def _unpushed_total(e: RepoEntry) -> int:
 
 def _terminal_verb(e: RepoEntry) -> str:
     """How this repo's Done work reached its terminal state. The tier is
-    neutral ("done"); the line stays precise (ADR 0010)."""
+    neutral ("done"); the line stays precise (ADR 0006)."""
     return "pushed" if e.has_remote else "committed · no remote"
 
 
@@ -279,7 +279,7 @@ def render_detail(entry: RepoEntry, now: datetime,
     st = _style()
     width = _term_width()
     # a Remoteless Repo states it here, unconditionally: the drill-down is the
-    # one view you asked for by name, and the inbox stays silent (ADR 0010)
+    # one view you asked for by name, and the inbox stays silent (ADR 0006)
     head = st.bold(entry.name) + "  " + st.dim(_shorten_home(entry.main_path))
     if not entry.has_remote:
         head += st.dim(" · no remote")
@@ -347,7 +347,7 @@ def render_detail(entry: RepoEntry, now: datetime,
     return "\n".join(out)
 
 
-# ── Cost views (Notional Cost; see CONTEXT.md / ADR 0005) ──────────────────
+# ── Cost views (Notional Cost; see CONTEXT.md / ADR 0002) ──────────────────
 _FAMILIES = ("opus", "fable", "mythos", "sonnet", "haiku")
 
 
@@ -439,7 +439,8 @@ def render_cost_detail(project: ProjectCost, window: str, now: datetime) -> str:
     for s in project.sessions:
         why = f"  {st.yellow(s.why)}" if s.why else ""
         loop_tag = ""
-        if s.loops:  # above-floor Loops (ADR 0007) — a measured fact, not a saving
+        # above-floor Loops (ADR 0003 § the Audit) — a measured fact, not a saving
+        if s.loops:
             n = f"{len(s.loops)} loops" if len(s.loops) > 1 else "loop"
             loop_tag = f"  {st.yellow(f'⟳ {n} {_money(s.loop_cost)}')}"
         head = (f"  {_money(s.cost):>{w}}  {_session_ref(s.handle, st)}  \"{s.title}\""

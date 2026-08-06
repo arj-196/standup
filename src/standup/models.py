@@ -6,7 +6,8 @@ from datetime import datetime
 
 @dataclass
 class Brief:
-    """A Session Brief (ADR 0006): an LLM-authored, out-of-band account of a
+    """A Session Brief (ADR 0003 § the Session Brief): an LLM-authored,
+    out-of-band account of a
     Session's objective. A *claim*, never a derived fact — always rendered
     marked as such, and hedged (`stale`) when the log advanced past `generated`.
     Read from ~/.standup/briefs/<sessionId>.brief.md; standup never writes it at
@@ -20,7 +21,8 @@ class Brief:
     body: str = ""
     stale: bool = False
     # the generation's own token usage (from `claude -p --output-format json`),
-    # priced as Brief Overhead (ADR 0006). Shape matches rates.turn_cost's input.
+    # priced as Brief Overhead (ADR 0003 § the Session Brief). Shape matches
+    # rates.turn_cost's input.
     gen_usage: dict | None = None
 
 
@@ -111,7 +113,7 @@ class RepoEntry:
     main_path: str
     checkouts: list[Checkout] = field(default_factory=list)  # main first
     # terminal-state commits within the Recent Window: pushed, or — in a
-    # Remoteless Repo — merely committed (ADR 0010)
+    # Remoteless Repo — merely committed (ADR 0006)
     done: list[Commit] = field(default_factory=list)
     has_remote: bool = True
 

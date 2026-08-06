@@ -1,6 +1,6 @@
 """The Rate Card: model -> price, and a per-turn Notional Cost function.
 
-Notional Cost is an API-equivalent *weight* (see CONTEXT.md / ADR 0005) — what a
+Notional Cost is an API-equivalent *weight* (see CONTEXT.md / ADR 0002) — what a
 turn's tokens would cost at published pay-as-you-go rates. It is not money paid.
 
 Base input + output are stored per model; cache rates are *derived* by the

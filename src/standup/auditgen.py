@@ -1,4 +1,4 @@
-"""Audit generator (ADR 0007) — the code-driven Expert Panel.
+"""Audit generator (ADR 0003 § the Audit) — the code-driven Expert Panel.
 
 `standup audit <handle>` runs this on demand. Standup's own code performs the
 fan-out: four narrow Sonnet Experts run in parallel over only the evidence each
@@ -8,8 +8,9 @@ No model ever decides the panel's shape.
 
 Transport is the Claude Agent SDK — the programmatic face of `claude -p`,
 driving the same Claude Code binary and inheriting its login, so the user's
-subscription keeps paying (verified 2026-07-30; same keyless-auth ground as
-ADR 0006). Imported lazily so the display path gains no dependency.
+subscription keeps paying (verified 2026-07-30; same keyless-auth ground as ADR
+0006 § the Session Brief). Imported lazily so the display path gains no
+dependency.
 
 Every pass's `usage` is recorded and itemised in the Audit's frontmatter as
 Audit Overhead; each `standup audit` run prints the overhead it just incurred.
@@ -102,7 +103,8 @@ def _repo_key(cwd: str | None) -> str | None:
 
 
 def _gather_siblings(target: Session, sessions: list[Session], cache) -> list[dict]:
-    """Deterministic gathering only (ADR 0007): same Repo Entry, capped, with
+    """Deterministic gathering only (ADR 0003 § the Audit): same Repo Entry,
+    capped, with
     title + Brief (when present) + Loop fingerprints/costs. Matching is the
     Recurrence Expert's job."""
     key = _repo_key(target.cwd)

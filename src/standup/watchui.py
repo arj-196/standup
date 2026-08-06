@@ -1,21 +1,23 @@
-"""The Watch UI: a Textual app over the watchstream Feed Events (ADR 0008).
+"""The Watch UI: a Textual app over the watchstream Feed Events
+(ADR 0004 § the stream/UI boundary).
 
 This is the only module that imports textual. Layout and color follow the
 "Watch Redesigned" specs (pass 1: layout; pass 2: color): prompts are chapter
 rules, the clock is a gap gutter, sessions get a lane (digit + bar), and every
 color is a role from theme.py with a glyph or attribute carrier that survives
-NO_COLOR. Diff bodies are the one saturated register: per-token monokai at
-full strength on added and removed lines alike, backfilled or live — the
-foreground never carries change-semantics. Those live in the ±gutter and, on
-removed rows only, in a faint background wash that restates it (ADR 0012);
-otherwise backgrounds are reserved for the header/status bands. The feed's
-surface is never repainted under an event — selection marks the session lane,
-not the body (ADR 0018), so a diff reads the same selected or not.
+NO_COLOR. Diff bodies are the one saturated register: per-token monokai at full
+strength on added and removed lines alike, backfilled or live — the foreground
+never carries change-semantics. Those live in the ±gutter and, on removed rows
+only, in a faint background wash that restates it (ADR 0004 § the removed-row
+field); otherwise backgrounds are reserved for the header/status bands. The
+feed's surface is never repainted under an event — selection marks the session
+lane, not the body (ADR 0004 § selection in the lane), so a diff reads the same
+selected or not.
 
-Body lines fold by default and header lines clip (ADR 0013): the feed's own
-prose about an event may be shortened, the code it is quoting may not. The
-folding is done here, row by row, so a continuation row still carries the gap
-gutter and the session lane.
+Body lines fold by default and header lines clip (ADR 0004 § fold, don't clip):
+the feed's own prose about an event may be shortened, the code it is quoting
+may not. The folding is done here, row by row, so a continuation row still
+carries the gap gutter and the session lane.
 
 The typing animation is presentation-only under a hard staleness bound: the
 display may lag the log by at most STALENESS_BOUND seconds — typing speed
@@ -59,11 +61,12 @@ TRIM_SLACK = 200           # extra events tolerated while reading scrollback
 GAP_SHOW = 5               # gaps below this many seconds stay quiet
 FRESH = 30                 # recency younger than this reads in live-green
 RUN_WINDOW = timedelta(seconds=FRESH)   # a Change Run stops absorbing this long
-                           # after it was born (ADR 0017), so sustained work on
-                           # one file still produces rows and a run's displayed
-                           # time can never be staler than this. Deliberately
-                           # FRESH: the same threshold the header already uses to
-                           # mean "recent" should mean it here too
+                           # after it was born (ADR 0004 § the Change Run), so
+                           # sustained work on one file still produces rows and
+                           # a run's displayed time can never be staler than
+                           # this. Deliberately FRESH: the same threshold the
+                           # header already uses to mean "recent" should mean
+                           # it here too
 STRIP_CELLS = 8            # header activity strip: 8 cells, one minute each
 STRIP_BLOCKS = "▁▂▃▄▅▆▇█"
 NARROW = 100               # below this width: strips, briefs, hint labels drop
@@ -143,8 +146,9 @@ class EventWidget(Static):
     steps — header → file list → every file's diff.
 
     A file widget is not fixed at one event. Consecutive file events for the
-    same path and the same witness are folded into it as a **Change Run**
-    (ADR 0017), so one file being worked on reads as one entry that evolves
+    same path and the same witness are folded into it as a **Change Run** (ADR
+    0008 § the Change Run), so one file being worked on reads as one entry that
+    evolves
     rather than a row per tool call or per git poll."""
 
     def __init__(self, event: FeedEvent, theme: Theme, num: int) -> None:
@@ -189,7 +193,7 @@ class EventWidget(Static):
     # -- the Change Run ---------------------------------------------------------
 
     def absorbs(self, ev: FeedEvent) -> bool:
-        """Does `ev` continue this widget's Change Run (ADR 0017)?
+        """Does `ev` continue this widget's Change Run (ADR 0004 § the Change Run)?
 
         Strict adjacency: the caller only ever asks the *tail* widget, so a run
         grows at the bottom of the feed and never rewrites a row above the
@@ -282,8 +286,9 @@ class EventWidget(Static):
     def _reflow(self, fresh_lines: int) -> None:
         """Recompute the collapsed window and the animation's char budget.
 
-        The window sits where the news is (ADR 0017). An accumulating run is
-        chronological, so once it holds more than one contribution it shows its
+        The window sits where the news is (ADR 0004 § the Change Run). An
+        accumulating run is chronological, so once it holds more than one
+        contribution it shows its
         *tail* — otherwise the newest hunk, the one you are watching for, would
         be the one hidden behind the line count. A lone event and a restating
         witness both show their *head*: a single hunk reads top-down, and a
@@ -345,11 +350,12 @@ class EventWidget(Static):
         """Cols 7–8: the session lane. Digit at run start, then a bar; git-only
         rows get ·· — the digit, not the hue, is the NO_COLOR carrier.
 
-        The lane is also where selection lives (ADR 0018): on the selected event
-        the bar column — col 8, one cell — carries the selection band on every
-        row of the block, and the bar thickens from `▏` to `▎`. Both are
-        left-aligned eighth-blocks, so the line grows in place: a selection that
-        moved the lane sideways would make the spine of the feed jump.
+        The lane is also where selection lives (ADR 0004 § selection in the
+        lane): on the selected event the bar column — col 8, one cell — carries
+        the selection band on every row of the block, and the bar thickens from
+        `▏` to `▎`. Both are left-aligned eighth-blocks, so the line grows in
+        place: a selection that moved the lane sideways would make the spine of
+        the feed jump.
         """
         t = self.t
         sel = self.has_class("selected")
@@ -397,7 +403,8 @@ class EventWidget(Static):
             # a sum, and ×N is what answers "why is this bigger than one edit?".
             # Only on a claimed run — on a restating one, N would be the number
             # of git polls that happened to catch the file, which is a fact about
-            # GIT_POLL_INTERVAL and not about the agent (ADR 0017).
+            # GIT_POLL_INTERVAL and not about the agent
+            # (ADR 0004 § the Change Run).
             if not e.restates and len(self.calls) > 1:
                 out.append(f"  ×{len(self.calls)}", style=t.style("muted"))
             if e.session_id is None:
@@ -509,7 +516,8 @@ class EventWidget(Static):
         return left
 
     def _fold(self, line: Text, avail: int) -> list[Text]:
-        """A body line as the rows it occupies — the shared rule (ADR 0013)."""
+        """A body line as the rows it occupies — the shared rule
+        (ADR 0004 § fold, don't clip)."""
         return diffrows.fold(self.t, line, avail, self.wrap)
 
     def _body_gutter(self) -> Text:
@@ -528,11 +536,12 @@ class EventWidget(Static):
         The three channels, the wash and its bounds, and the fold all live in
         `diffrows.sign_rows` so that the Watch and the Attributed Diff cannot
         drift apart — including on the selected event, which no longer paints a
-        band of its own over the body (ADR 0018).
+        band of its own over the body (ADR 0004 § selection in the lane).
 
-        A continuation row repeats the gutter rather than blanking it (ADR 0013):
-        the gap column is empty on a body row anyway, and the lane must not break
-        — an event is one block, and a rail with holes in it reads as several.
+        A continuation row repeats the gutter rather than blanking it (ADR 0004
+        § fold, don't clip): the gap column is empty on a body row anyway, and
+        the lane must not break — an event is one block, and a rail with holes
+        in it reads as several.
         """
         gutter = self._body_gutter()
         rows = diffrows.sign_rows(
@@ -729,8 +738,9 @@ class WatchApp(App):
         self._new_below = 0                      # events landed while scrolled
         self._tail_meta: tuple[datetime, str | None] | None = None
         # the last widget mounted — the only one a Change Run may grow (strict
-        # adjacency, ADR 0017). Distinct from `_tail_meta`, which tracks the last
-        # *visible* event because the gap gutter and lane describe what is seen.
+        # adjacency, ADR 0004 § the Change Run). Distinct from `_tail_meta`,
+        # which tracks the last *visible* event because the gap gutter and lane
+        # describe what is seen.
         self._tail_widget: EventWidget | None = None
         self._activity: dict[str, deque[datetime]] = {}
         self._vitals_rows: list[str] = []        # session ids by header row
@@ -808,7 +818,7 @@ class WatchApp(App):
 
     def _reading_gesture(self, click: events.Click) -> bool:
         """True when the click is the tail of a gesture that was about reading
-        the text, not pressing a control (ADR 0019).
+        the text, not pressing a control (ADR 0004 § mouse gestures).
 
         Two shapes end in a `Click` without asking for anything: a **drag** —
         pressed on one cell, released on another, which is a selection being
@@ -864,14 +874,15 @@ class WatchApp(App):
         if ev.session_id:
             self._activity.setdefault(ev.session_id, deque()).append(ev.when)
         feed = self.query_one("#feed", VerticalScroll)
-        # Change Run (ADR 0017): a file event that continues the tail widget's run
-        # folds into it instead of mounting a row of its own. The target is the
-        # last *mounted* widget, not the last visible one, so a run's membership
-        # is a fact about the stream and cannot change when a filter is toggled.
-        # NB: not gated on `tail.is_mounted` — textual mounts asynchronously, so
-        # the widget created earlier in this same poll batch is not mounted yet,
-        # and a batch of consecutive same-file events is the whole point. `_trim`
-        # is what drops the pointer when a widget actually leaves the DOM.
+        # Change Run (ADR 0004 § the Change Run): a file event that continues
+        # the tail widget's run folds into it instead of mounting a row of its
+        # own. The target is the last *mounted* widget, not the last visible
+        # one, so a run's membership is a fact about the stream and cannot
+        # change when a filter is toggled. NB: not gated on `tail.is_mounted` —
+        # textual mounts asynchronously, so the widget created earlier in this
+        # same poll batch is not mounted yet, and a batch of consecutive
+        # same-file events is the whole point. `_trim` is what drops the
+        # pointer when a widget actually leaves the DOM.
         tail = self._tail_widget
         if tail is not None and tail.absorbs(ev):
             tail.absorb(ev, animate=animate and not ev.backfill)
@@ -1100,7 +1111,7 @@ class WatchApp(App):
         seconds it freezes to a static glyph in muted colour. Motion therefore
         maps to arriving data, never to a state word, so a session that was
         killed mid-turn stops pretending to work instead of spinning forever
-        (CONTEXT.md → Activity State; ADR 0011).
+        (CONTEXT.md → Activity State; ADR 0004 § the Activity State).
         """
         t = self.t
         acting = [ls for ls in live if ls.activity]
@@ -1446,15 +1457,16 @@ class WatchApp(App):
         While the entry is collapsed the whole of it is that control: its
         preview rows are the feed's own prose about the event, so a click on
         them opens it. Once it is expanded the body is the text you asked to
-        read, and only the entry's own furniture still toggles (ADR 0019):
-        the header row, and the **left rail** — the gap gutter and session lane
-        that run down every row of the block. A body taller than the screen
-        pushes its header off the top; the rail is beside every line of it.
-        Between the rail and the right edge a click selects, a drag selects a
-        range, and a link stays the terminal's to open.
+        read, and only the entry's own furniture still toggles (ADR 0004 §
+        mouse gestures): the header row, and the **left rail** — the gap gutter
+        and session lane that run down every row of the block. A body taller
+        than the screen pushes its header off the top; the rail is beside every
+        line of it. Between the rail and the right edge a click selects, a drag
+        selects a range, and a link stays the terminal's to open.
 
         Clicks outside any event do nothing, and neither does the click that
-        refocused the terminal (ADR 0014) nor the tail of a reading gesture."""
+        refocused the terminal (ADR 0004 § mouse gestures) nor the tail of a
+        reading gesture."""
         if self._refocus_click() or self._reading_gesture(click):
             return
         if w.expanded and click.y > 0 and click.x >= RAIL_COLS:
@@ -1491,7 +1503,7 @@ def _css(t: Theme) -> str:
     """Palette-resolved stylesheet. Backgrounds exist only on the raised bands;
     at 16 colors / NO_COLOR they degrade to plain rows (the chips carry the
     state). The selection is not a widget background — it is drawn into the
-    session lane, two columns wide (ADR 0018)."""
+    session lane, two columns wide (ADR 0004 § selection in the lane)."""
     if t.paints_backgrounds:
         surface = f"background: {t.css_color('surface')};"
         raised = f"background: {t.css_color('raised')};"

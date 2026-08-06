@@ -1,4 +1,4 @@
-"""`standup install` / `standup uninstall` (ADR 0006).
+"""`standup install` / `standup uninstall` (ADR 0003 § the Session Brief).
 
 Turnkey setup for the Session Brief Stop hook: merges a hook entry into the
 user-level ~/.claude/settings.json so it fires for every session on the machine,

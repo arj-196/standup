@@ -11,21 +11,24 @@ exists rather than being duplicated on both sides:
 
 - **the three channels** — the gutter says *what changed* (`+` / `−`), the code
   colors say *what it is* (syntax, foreground-only), and a removed row's
-  surface says *what changed* a second time (ADR 0012). Redundant by
-  construction, so nothing lives in color alone;
-- **the wash's bounds** (ADR 0012) — it spans the sign column to `width`,
+  surface says *what changed* a second time (ADR 0004 § the removed-row field).
+  Redundant by construction, so nothing lives in color alone;
+- **the wash's bounds** (same section) — it spans the sign column to `width`,
   because a block is only findable if it is a rectangle and a diff's line
   lengths are ragged; and it never reaches the caller's gutter, whose identity
   hue needs clean surface. It has no other background to yield to: the Watch's
-  selection lives in the lane, not on the body (ADR 0018);
-- **fold, don't clip** (ADR 0013) — a body line is the changed code itself, so
-  it continues onto further rows rather than vanishing off the right edge.
-  Continuation rows carry a faint `↳` where the sign would be: the sign states
-  a change once, and a fold is the same source line, not another one.
+  selection lives in the lane, not on the body
+  (ADR 0004 § selection in the lane);
+- **fold, don't clip** (ADR 0004 § fold, don't clip) — a body line is the
+  changed code itself, so it continues onto further rows rather than vanishing
+  off the right edge. Continuation rows carry a faint `↳` where the sign would
+  be: the sign states a change once, and a fold is the same source line, not
+  another one.
 
 This module is Textual-free by construction (rich only), which is what lets the
-static view use it without an app running — the ADR 0008 boundary, applied to
-rendering rather than to the event stream.
+static view use it without an app running — the boundary of
+ADR 0004 § the stream/UI boundary, applied to rendering rather than to the
+event stream.
 """
 
 from __future__ import annotations
@@ -139,7 +142,7 @@ def counts(t: Theme, added: int, removed: int) -> Text:
 
 def fold(t: Theme, line: Text, avail: int, wrap: bool = True,
          wrap_rows: int = WRAP_ROWS) -> list[Text]:
-    """A body line as the rows it occupies (ADR 0013).
+    """A body line as the rows it occupies (ADR 0004 § fold, don't clip).
 
     Wrapping — the default — continues the line onto further rows, because a
     body line you cannot read the end of is the one thing a diff owes you: it is
@@ -166,10 +169,10 @@ def sign_rows(t: Theme, sign: str | None, code: Text, *,
 
     `gutter` is whatever the caller puts left of the sign column — a session
     lane here, a line number there. Its width sets the sign column, and the
-    wash starts there, so the caller's own columns are never washed
-    (ADR 0012). `cont_gutter` is used on folded rows; it defaults to blanks of
-    the same width, which keeps the code column aligned so indentation still
-    reads down the page.
+    wash starts there, so the caller's own columns are never washed (ADR 0004 §
+    the removed-row field). `cont_gutter` is used on folded rows; it defaults
+    to blanks of the same width, which keeps the code column aligned so
+    indentation still reads down the page.
 
     `sign` is a *diff* sign — `"+"`, `"-"`, or None for a context line — never a
     glyph: the renderer owns the glyph, so the removed marker is U+2212 on both

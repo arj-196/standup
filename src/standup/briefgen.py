@@ -1,4 +1,5 @@
-"""Session Brief generator (ADR 0006) — the `standup _brief` code path.
+"""Session Brief generator (ADR 0003 § the Session Brief) — the
+`standup _brief` code path.
 
 Invoked by the Claude Code Stop hook (installed via `standup install`), NOT by
 the interactive `standup` display command. It reads the hook's stdin JSON and,
@@ -6,7 +7,7 @@ if the session is worth summarising, spawns a detached background job that runs
 `claude -p` (Haiku) over a digest of the transcript and writes the Brief to
 ~/.standup/briefs/<sessionId>.brief.md.
 
-Design (ADR 0006):
+Design (ADR 0003 § the Session Brief):
 - **out-of-band**: double-forks so the interactive turn is never blocked, even
   if the hook's `async: true` is unsupported by the running Claude Code;
 - **gated**: only sessions with a code footprint (an Edit/Write) get a Brief;

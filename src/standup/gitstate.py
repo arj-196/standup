@@ -81,7 +81,7 @@ def _pending(path: str) -> list[tuple[str, str]]:
 def _unpushed(path: str, has_remote: bool) -> list[Commit]:
     """Committed-but-not-pushed work. Empty for a Remoteless Repo: with nowhere
     to push, committed is already terminal, so those commits are Done, not
-    Needs-Decision (ADR 0010)."""
+    Needs-Decision (ADR 0006)."""
     if not has_remote:
         return []
     out = git(path, "log", f"--format={LOG_FORMAT}", "@{upstream}..HEAD")
@@ -95,7 +95,7 @@ def _unpushed(path: str, has_remote: bool) -> list[Commit]:
 def _has_remote(path: str) -> bool:
     """Whether the repo has any remote configured. Repo-level, never
     branch-level: a branch with no upstream in a repo that *does* have a remote
-    is genuinely pending a push, and stays in the Unpushed tier (ADR 0010).
+    is genuinely pending a push, and stays in the Unpushed tier (ADR 0006).
     Worktrees share `git-common-dir`, so this cannot split across a Repo Entry."""
     out = git(path, "remote")
     return bool(out and out.strip())
@@ -105,7 +105,7 @@ def _done(path: str, since: datetime, user_email: str | None,
           has_remote: bool) -> list[Commit]:
     """My commits that reached their terminal state within the Recent Window.
 
-    Terminal is repo-relative (ADR 0010): pushed (reachable from a remote ref)
+    Terminal is repo-relative (ADR 0006): pushed (reachable from a remote ref)
     for a normal repo, merely committed for a Remoteless Repo — `--branches` is
     the local mirror of `--remotes`, "everywhere this repo's work has landed".
     Do not "fix" this back to an early return: a Remoteless Repo has no Unpushed

@@ -2,9 +2,10 @@
 
 A Project Handle is *derived*, never registered: it falls out of the names
 currently in the Scan Universe, so it can grow a letter when a colliding
-project appears (CONTEXT.md → Project Handle; ADR 0009). Resolution is tiered
-and **errors on ambiguity** — the `git` idiom Standup already uses for Session
-Handles — so a fragment that fits two projects never silently picks one.
+project appears (CONTEXT.md → Project Handle; ADR 0005 § Project Handles).
+Resolution is tiered and **errors on ambiguity** — the `git` idiom Standup
+already uses for Session Handles — so a fragment that fits two projects never
+silently picks one.
 
 One resolver serves the Triage Inbox, `cost`, and `watch`, so a handle means
 the same thing in every view.

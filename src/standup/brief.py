@@ -1,4 +1,4 @@
-"""Session Brief reader (ADR 0006).
+"""Session Brief reader (ADR 0003 § the Session Brief).
 
 A Session Brief is an LLM-authored, out-of-band account of a Session's objective,
 written *during* the session by a Claude Code Stop hook (installed via
@@ -40,7 +40,7 @@ BRIEFS_DIR = Path(os.path.expanduser("~/.standup")) / "briefs"
 
 # A Brief generated within this slack of the log's last activity is treated as
 # current; beyond it the session advanced past the Brief, so it is marked stale.
-# Mirrors the hook's debounce tolerance (ADR 0006).
+# Mirrors the hook's debounce tolerance (ADR 0003 § the Session Brief).
 STALE_TOLERANCE = timedelta(minutes=5)
 
 
@@ -108,7 +108,8 @@ def _parse(path: Path, session_id: str) -> Brief | None:
 
 
 def overhead_cost(brief: Brief) -> float:
-    """Notional Cost of generating this Brief (Brief Overhead, ADR 0006), priced
+    """Notional Cost of generating this Brief (Brief Overhead,
+    ADR 0003 § the Session Brief), priced
     from the recorded generation usage by the Rate Card. 0.0 if unknown/unpriced.
     """
     if not brief.gen_usage:

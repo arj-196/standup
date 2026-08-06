@@ -164,13 +164,15 @@ def render_transcript(path: Path, show_thinking: bool = False, raw: bool = False
             lines.append(textwrap.fill(ln, width=width) if ln.strip() else "")
         return "\n".join(lines)
 
-    # Session Brief (ADR 0006): read-only. Shown at the top so the reader gets an
-    # instant understanding before the conversation. Absent/body-less → silent.
+    # Session Brief (ADR 0003 § the Session Brief): read-only. Shown at the top
+    # so the reader gets an instant understanding before the conversation.
+    # Absent/body-less → silent.
     brief = brief_mod.load_one(path.stem)
     last_ts: datetime | None = None
 
-    # Loops (ADR 0007): gutter-mark the tool calls of above-floor Loops so the
-    # evidence is visible where you'd eyeball it. One extra pass over one file.
+    # Loops (ADR 0003 § the Audit): gutter-mark the tool calls of above-floor
+    # Loops so the evidence is visible where you'd eyeball it. One extra pass
+    # over one file.
     looped_ids = {tid for l in loops_mod.significant(loops_mod.detect(path))
                   for tid in l.tool_ids}
 

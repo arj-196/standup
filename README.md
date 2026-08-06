@@ -63,7 +63,7 @@ lens over every project** (`standup cost` prices them all), **a repo followed by
 a view is one project at higher magnification** — `standup` → `standup tt` →
 `standup tt diff`. It works for `diff`, `cost`, `watch` and `session`
 (`standup tt session` is tt's newest), and the rewrite happens before dispatch,
-so both spellings are literally the same code (ADR 0015).
+so both spellings are literally the same code (ADR 0005 § two grammars).
 
 Where a view's own argument already implies a repo, the repo you named becomes a
 *check* rather than a conflict: `standup st session 040291bc` reads that session
@@ -87,7 +87,7 @@ the cost overview. It is the acronym for a multi-word name and the shortest
 unique prefix otherwise, so `pm` is ProjectManagement, `cd` is
 ClientDeployment, `st` is standup. Handles are not registered anywhere — they
 fall out of the names currently in the **Scan Universe**, so one can grow a
-letter when a colliding project appears (ADR 0009). Nothing is ever silently
+letter when a colliding project appears (ADR 0005 § Project Handles). Nothing is ever silently
 resolved: a fragment that fits two projects errors and lists both.
 
 ```sh
@@ -100,7 +100,7 @@ standup s                # read the newest session here
 
 Every option has a one-letter form, and **a letter means one thing everywhere**
 — `-s` is `--since` in the inbox, in `cost` and in `watch`, so it can never be
-`--stat` in `diff` ([ADR 0020](docs/adr/0020-a-short-letter-is-owned-across-the-whole-cli.md)):
+`--stat` in `diff` ([ADR 0005 § short option letters](docs/adr/0005-addressing-on-the-command-line.md)):
 
 | | | | |
 |---|---|---|---|
@@ -182,7 +182,7 @@ after 30 seconds so sustained work still produces rows. A claimed run sums the
 hunks it shows; a git-witnessed one states the true net delta, measured against
 a reference snapshot, so a line added and then removed cancels instead of being
 counted twice. Either way the header describes the body printed beneath it
-([ADR 0017](docs/adr/0017-a-file-being-worked-on-is-one-evolving-entry.md)).
+([ADR 0004 § the Change Run](docs/adr/0004-the-watch.md)).
 
 Its status bar carries the **Activity State** of every session that is
 currently mid-turn — `[1] ⠹ thinking 4s · [2] ⠹ running 1m` — so you can tell
@@ -194,7 +194,7 @@ verb is read from the log's own `stop_reason` and pending tool call, except
 holds the bar for a second even after its tool returns, because a `Read` that
 takes 25ms is otherwise a verb nobody can read; and the spinner freezes when
 nothing has been appended for 30 seconds, so motion never outlives the data
-([ADR 0011](docs/adr/0011-activity-state-inferred-motion-never-outlives-data.md)).
+([ADR 0004 § the Activity State](docs/adr/0004-the-watch.md)).
 
 A body line wider than your terminal **folds** rather than running off the
 right edge: it continues onto as many rows as it needs, each continuation marked
@@ -212,7 +212,7 @@ can drag through a diff to select it, double-click to take the whole entry
 (`ctrl+c` copies), and click a link without the thing you were reading folding
 shut. A drag and a double click are never toggles anywhere, and the rail is what
 folds a body taller than the screen, whose header has scrolled off the top
-([ADR 0019](docs/adr/0019-an-open-body-is-text-not-a-control.md)).
+([ADR 0004 § mouse gestures](docs/adr/0004-the-watch.md)).
 
 It's interactive; [docs/watch-manual.md](docs/watch-manual.md) is the full guide
 to the screen and the keys.
@@ -222,9 +222,9 @@ terminal — scroll and `/`-search from the top of the conversation. It prints
 plainly when piped or with `--no-pager`.
 
 Standup is stateless: the same command at the same moment always prints the
-same inbox (ADR 0002). It keeps a derived cache at `~/.standup/cache` to avoid
+same inbox (ADR 0001 § the Recent Window). It keeps a derived cache at `~/.standup/cache` to avoid
 re-parsing unchanged session logs — a pure accelerator that never changes
-output; `rm -rf ~/.standup/cache` is always safe (ADR 0003). The `~/.standup`
+output; `rm -rf ~/.standup/cache` is always safe (ADR 0001 § the Derived Cache). The `~/.standup`
 root also holds durable, non-recomputable data (Session Briefs), so delete the
 `cache/` subdirectory, not the root.
 
@@ -241,7 +241,7 @@ drill-down.
 - **UNPUSHED ONLY** — repos whose only pending work is committed-but-local,
   compressed to one line each. Also ageless. A repo with no remote configured
   never appears here: with nowhere to push, committing *is* the terminal state,
-  so its commits are Done rather than Needs-Decision (ADR 0010).
+  so its commits are Done rather than Needs-Decision (ADR 0006).
 - **DONE** (`-a` only) — work that reached its terminal state within the recent
   window; a retrospective, not a decision queue. Each line names how it got
   there: `N commits pushed`, or `N commits committed · no remote` for a repo
@@ -260,7 +260,7 @@ drill-down.
 - With active work present, the drill-down ends with one dim line naming the
   view after it — `standup st diff · read the changes`.
 
-Only repos some Claude session has ever visited are scanned (ADR 0001) —
+Only repos some Claude session has ever visited are scanned (ADR 0001 § the Scan Universe) —
 but within those repos, *all* dirt is shown, Claude-made or not.
 
 ## The attributed diff
@@ -301,7 +301,7 @@ wrote it and a later edit moved the text so it no longer matches its own log
 verbatim. The matcher only ever recognises text exactly — no fuzzy scoring — so
 it reports the gap rather than guessing, and the gap is a decent signal for
 "worth a second look". Iterating on the same lines produces these routinely
-([ADR 0016](docs/adr/0016-a-hunk-is-attributed-verbatim-or-not-at-all.md)).
+([ADR 0007](docs/adr/0007-a-hunk-is-attributed-verbatim-or-not-at-all.md)).
 
 Three ways to narrow it:
 
@@ -335,7 +335,7 @@ Generation is entirely out-of-band: the hook returns immediately and a detached
 existing Claude Code login — no API key. It only summarises sessions that touched
 code, and debounces to ~once per session. The token cost of generating Briefs is
 tracked as **brief overhead** in `standup cost`, attributed to the repo it
-summarised, so the price of the feature is never hidden (ADR 0006).
+summarised, so the price of the feature is never hidden (ADR 0003 § the Session Brief).
 
 ## Cost
 
@@ -350,6 +350,6 @@ These dollar figures are **Notional Cost** — API-equivalent *load*, a
 comparison weight, **not money paid**. On a subscription the real money is the
 account-level credit overflow, which Anthropic does not attribute to any
 session; Standup deliberately reports no real-spend figure (there is no
-trustworthy local source — see ADR 0005). For your actual bill, use
+trustworthy local source — see ADR 0002). For your actual bill, use
 claude.ai → Settings → Usage. Cost spans all sessions (not just those with
 pending git work) and, like the inbox, is stateless.

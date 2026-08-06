@@ -1,4 +1,4 @@
-"""The Attributed Diff: `standup <repo> diff` (ADR 0015, ADR 0016).
+"""The Attributed Diff: `standup <repo> diff` (ADR 0005 § two grammars, ADR 0007).
 
 The drill-down tells you *three files changed*. This tells you *what changed*,
 and who changed it — the last magnification of the same session-major model:
@@ -11,7 +11,7 @@ Two things it is deliberately not. It is not `watch`: it renders a snapshot, so
 it is paged static text rather than a live view, and it takes git's diff
 *structure* (hunks, context, line numbers) where the Watch takes an added block
 and a removed block. And it is not `git diff`: every hunk carries the Session
-that authored it, which is the whole point of the view (ADR 0016).
+that authored it, which is the whole point of the view (ADR 0007).
 
 Scope is **Active Work** — uncommitted change, read as `git diff HEAD` so
 staged and unstaged both appear (staging your work must not blank the view) and
@@ -149,7 +149,7 @@ def build_active(entry: RepoEntry, sessions_by_id: dict, matcher: Matcher,
     session, unattributed files trail last. That model is fine for a filename
     and dangerous for a body of code, which is exactly why the hunks inside
     carry their own verdicts: where a hunk disagrees with the header it sits
-    under, the view says so (ADR 0016).
+    under, the view says so (ADR 0007).
     """
     checkout_of = {co.branch: co.path for co in entry.checkouts}
     groups: list[Group] = []
@@ -216,12 +216,12 @@ class CommitDiff:
 def resolve_commit(entry: RepoEntry, ref: str) -> tuple[str, str]:
     """`@abc1234` -> (checkout, full sha), inside this Repo Entry only.
 
-    A commit hash addresses nothing globally in Standup (CONTEXT.md); ADR 0015
-    narrows that to "nothing *outside* a named Repo Entry". So the search stops
-    at this repo's checkouts and errors rather than widening — the repo was
-    named, and answering about a different one is the misdirection every other
-    view is built to avoid. Hash prefixes only: `@main` and `@HEAD~2` are
-    revision expressions the glossary has no word for.
+    A commit hash addresses nothing globally in Standup (CONTEXT.md); ADR 0005
+    § two grammars narrows that to "nothing *outside* a named Repo Entry". So
+    the search stops at this repo's checkouts and errors rather than widening —
+    the repo was named, and answering about a different one is the misdirection
+    every other view is built to avoid. Hash prefixes only: `@main` and
+    `@HEAD~2` are revision expressions the glossary has no word for.
     """
     sha = ref[1:] if ref.startswith("@") else ref
     if not sha or not all(c in "0123456789abcdefABCDEF" for c in sha):
@@ -260,7 +260,7 @@ def build_commit(entry: RepoEntry, checkout: str, sha: str, sessions_by_id: dict
     exact = [sid for sid, s in sessions_by_id.items()
              if any(sha.startswith(h) or full.startswith(h)
                     for h in s.commit_hashes)]
-    # evidence recorded after the commit cannot be in it (ADR 0016). The slack
+    # evidence recorded after the commit cannot be in it (ADR 0007). The slack
     # absorbs clock skew and an `--amend` that lands just after the edits.
     before = (when.timestamp() + COMMIT_SLACK) if when else None
     cd = CommitDiff(sha=full or sha, short=short or sha[:8], subject=subject,

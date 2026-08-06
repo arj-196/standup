@@ -1,10 +1,10 @@
-"""Audit reader (ADR 0007).
+"""Audit reader (ADR 0003 § the Audit).
 
 An Audit is the on-demand, LLM-authored judgment of one Session: which turns
 are LLM-as-CPU work, whether the pattern recurs in sibling Sessions, and a
 Handoff Prompt for scripting it away. Produced by the Expert Panel in
 auditgen.py; this module only *reads* — rendering stays deterministic given
-the files on disk, exactly like Session Briefs (ADR 0006).
+the files on disk, exactly like Session Briefs (ADR 0003 § the Session Brief).
 
 Audits live in the durable root (never the disposable cache/):
 
@@ -52,7 +52,8 @@ class Audit:
         )
 
     def overhead_items(self) -> list[tuple[str, float]]:
-        """(label, cost) per pass — the itemisation ADR 0007 requires."""
+        """(label, cost) per pass — the itemisation
+        ADR 0003 § the Audit requires."""
         out = []
         for o in self.overhead:
             u = o.get("usage")

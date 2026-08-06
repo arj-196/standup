@@ -7,7 +7,7 @@ as an agent works in it.
 This manual walks a new user from "what am I looking at" to every key on the
 keyboard. Domain words in **bold** are defined in [CONTEXT.md](../CONTEXT.md);
 the design decision behind the view is
-[ADR 0008](adr/0008-watch-jsonl-primary-textual-behind-boundary.md).
+[ADR 0004 § the stream/UI boundary](adr/0004-the-watch.md).
 
 ---
 
@@ -73,7 +73,7 @@ standup watch -q
 Long body lines fold by default; start with them clipping at the right edge
 instead — `-W`, `--no-wrap`, the `w` toggle (§4) off from the first row. The
 capital says it turns something off; every negative flag in this CLI is spelled
-that way ([ADR 0020](adr/0020-a-short-letter-is-owned-across-the-whole-cli.md)):
+that way ([ADR 0005 § short option letters](adr/0005-addressing-on-the-command-line.md)):
 
 ```bash
 standup watch -W
@@ -277,7 +277,7 @@ header, one body, evolving as the work lands.
 
 ```
   +8s 1▏ ✎  src/standup/watchstream.py  modify  +6  ×5
-       ▏      + # Display floor for a tool verb (ADR 0011, amendment).
+       ▏      + # Display floor for a tool verb (ADR 0004 § the Activity State).
        ▏      + ACT_FLOOR = timedelta(seconds=1.0)
        ▏      +         self.act_tool: str | None = None
        ▏      +             self.act_tool = None
@@ -338,7 +338,7 @@ both added and removed lines are syntax-highlighted (monokai, chosen per file
 extension, foreground only), at identical full strength — the text never says
 which of the two it is. And the surface carries *what changed* a second time:
 removed rows sit on a faint red field, a block you can find without reading
-(ADR 0012). Colors appear live as the text types; a half-typed line is
+(ADR 0004 § the removed-row field). Colors appear live as the text types; a half-typed line is
 half-colored.
 
 The field is a rectangle, running from the `−` column to the right edge of the
@@ -349,7 +349,7 @@ an expanded one, and an expanded commit's diffs alike — and across every row a
 wrapped line folds into, so the shape survives `w` — but not on the
 `… ▸ N more lines` row, which is a count rather than removed code. It is there
 on the selected event too: selection marks the lane and never the body
-([ADR 0018](adr/0018-selection-marks-the-lane-not-the-body.md)), so a diff you
+([ADR 0004 § selection in the lane](adr/0004-the-watch.md)), so a diff you
 are inspecting reads on exactly the surface a diff you are not does. The one
 place the field isn't there is 16-color and `NO_COLOR` terminals, which never
 paint backgrounds at all — and nothing is lost, because the field only ever
@@ -439,7 +439,7 @@ tool verb therefore holds the bar for at least a second before `thinking` may
 replace it. It yields to everything that matters: the bar goes blank the *instant*
 the turn is handed back, and the next tool verb replaces it immediately, so the
 lingering only ever displaces silence. The age is the verb's real age throughout,
-which is why a held one reads `reading 0s` (ADR 0011, amendment).
+which is why a held one reads `reading 0s` (ADR 0004 § the Activity State).
 
 The number is how long it has been in that state, and it is never re-labelled:
 `thinking 14m` stays `thinking 14m` rather than becoming "stalled", because
@@ -519,7 +519,7 @@ rail. Both bars are drawn from the left edge of the same column, so the lane
 grows in place rather than shifting sideways. Nothing right of the lane
 changes, so an expanded diff is read on the terminal's own surface whether it
 is selected or not
-([ADR 0018](adr/0018-selection-marks-the-lane-not-the-body.md)); on a git-only
+([ADR 0004 § selection in the lane](adr/0004-the-watch.md)); on a git-only
 event, which has no lane hue, the band alone carries it. Selection is what
 `enter` and `s` act on. A mouse click selects
 the clicked event directly — no walking — and expands it in the same gesture,
@@ -549,7 +549,7 @@ selection, through the terminal's own clipboard escape — supported by iTerm2,
 Ghostty, WezTerm and kitty, not by Apple Terminal. Whether a click on a URL
 *opens* it is likewise the terminal's business (`⌘-click` in iTerm2, Ghostty,
 kitty): the Watch prints no hyperlinks, it just stops competing for the click
-([ADR 0019](adr/0019-an-open-body-is-text-not-a-control.md)).
+([ADR 0004 § mouse gestures](adr/0004-the-watch.md)).
 
 **The click that brings the terminal forward is not a click on the feed.** When
 you come back from another window by clicking the terminal, that click lands
@@ -560,7 +560,7 @@ along with any other click in the next 0.35s. Focus the window with `⌘-Tab`
 instead and nothing is discarded, because no click needs discarding. This needs
 a terminal that reports focus (iTerm2, Ghostty, WezTerm, kitty, Alacritty);
 Apple Terminal doesn't, so there the refocusing click still counts
-([ADR 0014](adr/0014-the-click-that-refocuses-the-terminal-is-not-a-gesture.md)).
+([ADR 0004 § mouse gestures](adr/0004-the-watch.md)).
 
 `[` and `]` move by chapters instead of events: prompts are the skeleton of
 the narrative, and an hour of work is a handful of `[` presses, not hundreds
@@ -597,7 +597,7 @@ selection needed. Clicking a collapsed event is select-plus-`enter` in one
 gesture; once it is open, `enter` — or a click on its **header row** or its
 **left rail**, which is beside every line of the body — collapses it again. The
 body itself is yours to select from and no longer a button
-([ADR 0019](adr/0019-an-open-body-is-text-not-a-control.md)).
+([ADR 0004 § mouse gestures](adr/0004-the-watch.md)).
 
 `d` is the opposite move: it strips every body from the feed and leaves one
 line per event. Use it when you want the shape of the last few minutes — which
@@ -629,7 +629,7 @@ the path. That split is deliberate: a header is Standup's own prose about an
 event, and it says when it shortened something (`▸ N lines`, `… ▸ N more
 files`); a body is the agent's code, quoted, where clipping would be a lie
 about the content
-([ADR 0013](adr/0013-a-body-line-folds-a-header-line-clips.md)).
+([ADR 0004 § fold, don't clip](adr/0004-the-watch.md)).
 
 `w` turns folding off, over the whole feed, expanded and collapsed bodies
 alike: long lines then clip at the right edge and every event has a fixed row

@@ -1,10 +1,10 @@
 """The Watch's chrome palette: every color is a role, never a decoration.
 
-Source of truth: the "Watch Redesign v2 — Color" design spec, as amended by
-ADR 0012. Three channels, never fewer — the gutter says *what changed*, the
-text says *what it is*, and on removed rows the surface says *what changed* a
-second time. Every role also carries a glyph or attribute (its NO_COLOR
-carrier), so no distinction lives in color alone.
+Source of truth: the "Watch Redesign v2 — Color" design spec, as amended by ADR
+0008 § the removed-row field. Three channels, never fewer — the gutter says
+*what changed*, the text says *what it is*, and on removed rows the surface
+says *what changed* a second time. Every role also carries a glyph or attribute
+(its NO_COLOR carrier), so no distinction lives in color alone.
 
 Three tiers of fallback, straight from the spec's palette table: truecolor
 hexes, explicit 256-color indices, and named 16-color approximations. Under
@@ -66,13 +66,14 @@ ROLES: dict[str, Role] = {
     # file extensions: a desaturated alias in the address family (spec census);
     # the light value is derived — the spec defines only the dark alias
     "ext":       Role("#6FA8B8", "#3E7280", 109, 24, "cyan"),
-    # the removed-row wash (ADR 0012): a red tint one step off `surface`, not a
-    # shade of `removed` — monokai's foregrounds are bright and need a dark
-    # substrate, so the dark value darkens and only the light value lightens.
-    # Deliberately quieter than `selection`, which outranks it. The 256 value is
-    # the one place the whisper can't be honoured: the color cube's darkest red
-    # is #5f0000, dark in luminance but saturated, so a 256-color terminal shows
-    # a louder wash than a truecolor one.
+    # the removed-row wash (ADR 0004 § the removed-row field): a red tint one
+    # step off `surface`, not a shade of `removed` — monokai's foregrounds are
+    # bright and need a dark substrate, so the dark value darkens and only the
+    # light value lightens. Deliberately quieter than `selection`, which
+    # outranks it. The 256 value is the one place the whisper can't be
+    # honoured: the color cube's darkest red is #5f0000, dark in luminance but
+    # saturated, so a 256-color terminal shows a louder wash than a truecolor
+    # one.
     "removed_bg": Role("#291A1E", "#FCEBEB", 52, 224),
 }
 

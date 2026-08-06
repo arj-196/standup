@@ -2,7 +2,32 @@
 
 Read `CONTEXT.md` first: it is the glossary and the source of truth for every
 domain term (Triage Inbox, Session, Loop, Audit, Notional Cost, …). Use its
-vocabulary exactly; when a design decision is architectural, check `docs/adr/`.
+vocabulary exactly; when a design decision is architectural, check `docs/adr/`
+— [`docs/adr/README.md`](docs/adr/README.md) indexes it.
+
+## ADRs are a rationale reference, not an append-only log
+
+Each ADR states what is *currently* true and why, and is rewritten when a later
+decision changes it. Three rules, all of them recoverable from
+`docs/adr/README.md`, and all of them easy to break by accident:
+
+- **numbering is contiguous, `0001..N`, no gaps.** Merging or deleting an ADR
+  renumbers the set, and renumbering is safe *only* when every citation is
+  rewritten in the same change — one mechanical pass over `src/`, `README.md`,
+  `CONTEXT.md`, `TODO.md` and `docs/`. The check: the set of numbers referenced
+  anywhere must equal the set of files present.
+- **cite the section, not just the file.** The larger ADRs cover several
+  decisions, so a bare `(ADR 0004)` in a Watch module tells a reader nothing:
+  write `(ADR 0004 § the removed-row field)`. Section names are part of the
+  contract — renaming a `##` heading means updating the citations to it.
+- **write for agents, not for prose.** Dense and structured. Keep the decision,
+  rationale not recoverable from the code, rejected alternatives with reasons,
+  and accepted costs; drop narrative build-up and anything a docstring already
+  says.
+- **prefer extending an ADR to opening a new number**, and when a rule is
+  reversed, move it to that ADR's *Tried and retracted* section instead of
+  deleting it. The code still carries a retracted rule's shape, and a reader
+  diffing against an older spec would otherwise read current behaviour as a bug.
 
 ## CLI help must stay complete
 
