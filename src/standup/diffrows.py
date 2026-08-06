@@ -15,9 +15,9 @@ exists rather than being duplicated on both sides:
   construction, so nothing lives in color alone;
 - **the wash's bounds** (ADR 0012) — it spans the sign column to `width`,
   because a block is only findable if it is a rectangle and a diff's line
-  lengths are ragged; it never reaches the caller's gutter, whose identity hue
-  needs clean surface; and it yields to a selection band, which carries
-  information the wash does not;
+  lengths are ragged; and it never reaches the caller's gutter, whose identity
+  hue needs clean surface. It has no other background to yield to: the Watch's
+  selection lives in the lane, not on the body (ADR 0018);
 - **fold, don't clip** (ADR 0013) — a body line is the changed code itself, so
   it continues onto further rows rather than vanishing off the right edge.
   Continuation rows carry a faint `↳` where the sign would be: the sign states
@@ -160,8 +160,8 @@ def fold(t: Theme, line: Text, avail: int, wrap: bool = True,
 
 def sign_rows(t: Theme, sign: str | None, code: Text, *,
               gutter: Text, cont_gutter: Text | None = None,
-              width: int, wrap: bool = True, wrap_rows: int = WRAP_ROWS,
-              wash: bool = True) -> list[Text]:
+              width: int, wrap: bool = True,
+              wrap_rows: int = WRAP_ROWS) -> list[Text]:
     """One diff body line as the rows it occupies.
 
     `gutter` is whatever the caller puts left of the sign column — a session
@@ -201,7 +201,7 @@ def sign_rows(t: Theme, sign: str | None, code: Text, *,
             row = (cont_gutter.copy() if cont_gutter is not None else blank.copy())
             row.append(SIGN_FOLD + " ", style=t.style("faint"))
         row.append_text(chunk)
-        if wash and removed:
+        if removed:
             bg = t.background("removed_bg")
             if bg is not None:
                 row.append(" " * max(0, width - row.cell_len))

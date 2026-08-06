@@ -8,8 +8,9 @@ NO_COLOR. Diff bodies are the one saturated register: per-token monokai at
 full strength on added and removed lines alike, backfilled or live — the
 foreground never carries change-semantics. Those live in the ±gutter and, on
 removed rows only, in a faint background wash that restates it (ADR 0012);
-otherwise backgrounds are reserved for the header/status bands and the
-selection, which the wash yields to.
+otherwise backgrounds are reserved for the header/status bands. The feed's
+surface is never repainted under an event — selection marks the session lane,
+not the body (ADR 0018), so a diff reads the same selected or not.
 
 Body lines fold by default and header lines clip (ADR 0013): the feed's own
 prose about an event may be shortened, the code it is quoting may not. The
@@ -329,16 +330,30 @@ class EventWidget(Static):
 
     def _lane_cell(self, head: bool) -> Text:
         """Cols 7–8: the session lane. Digit at run start, then a bar; git-only
-        rows get ·· — the digit, not the hue, is the NO_COLOR carrier."""
+        rows get ·· — the digit, not the hue, is the NO_COLOR carrier.
+
+        The lane is also where selection lives (ADR 0018): on the selected event
+        the bar column — col 8, one cell — carries the selection band on every
+        row of the block, and the bar thickens from `▏` to `▎`. Both are
+        left-aligned eighth-blocks, so the line grows in place: a selection that
+        moved the lane sideways would make the spine of the feed jump.
+        """
         t = self.t
-        if self.event.session_id is None:
-            return Text("··" if head else "· ", style=t.style("faint"))
+        sel = self.has_class("selected")
         cell = Text()
-        if head and 1 <= self.num <= 9:
-            cell.append(str(self.num), style=t.session(self.num, bold=True))
+        if self.event.session_id is None:
+            cell.append("·", style=t.style("faint"))
+            bar = Text("·" if head else " ", style=t.style("faint"))
         else:
-            cell.append(" ")
-        cell.append("▏", style=t.session(self.num))
+            if head and 1 <= self.num <= 9:
+                cell.append(str(self.num), style=t.session(self.num, bold=True))
+            else:
+                cell.append(" ")
+            bar = Text("▎" if sel else "▏", style=t.session(self.num, bold=sel))
+        if sel:
+            band = t.background("selection")
+            bar.stylize(band if band is not None else Style(reverse=True))
+        cell.append_text(bar)
         return cell
 
     def _prefix(self, first: bool) -> Text:
@@ -499,14 +514,17 @@ class EventWidget(Static):
 
         The three channels, the wash and its bounds, and the fold all live in
         `diffrows.sign_rows` so that the Watch and the Attributed Diff cannot
-        drift apart. The one bound that is the Watch's alone is passed in: the
-        wash yields on a *selected* row, because the selection band carries
-        information the wash does not.
+        drift apart — including on the selected event, which no longer paints a
+        band of its own over the body (ADR 0018).
+
+        A continuation row repeats the gutter rather than blanking it (ADR 0013):
+        the gap column is empty on a body row anyway, and the lane must not break
+        — an event is one block, and a rail with holes in it reads as several.
         """
         gutter = self._body_gutter()
         rows = diffrows.sign_rows(
-            self.t, sign, code, gutter=gutter, width=width, wrap=self.wrap,
-            wash=not self.has_class("selected"))
+            self.t, sign, code, gutter=gutter, cont_gutter=gutter,
+            width=width, wrap=self.wrap)
         for row in rows:
             out.append("\n")
             out.append_text(row)
@@ -1415,19 +1433,18 @@ class WatchApp(App):
 
 
 def _css(t: Theme) -> str:
-    """Palette-resolved stylesheet. Backgrounds exist only on the raised bands
-    and the selection; at 16 colors / NO_COLOR the selection degrades to
-    reverse video and the bands to plain rows (the chips carry the state)."""
+    """Palette-resolved stylesheet. Backgrounds exist only on the raised bands;
+    at 16 colors / NO_COLOR they degrade to plain rows (the chips carry the
+    state). The selection is not a widget background — it is drawn into the
+    session lane, two columns wide (ADR 0018)."""
     if t.paints_backgrounds:
         surface = f"background: {t.css_color('surface')};"
         raised = f"background: {t.css_color('raised')};"
-        selection = f"background: {t.css_color('selection')};"
         screen_color = f"color: {t.css_color('primary')};"
         scrollbar = (f"scrollbar-background: {t.css_color('surface')};"
                      f"scrollbar-color: {t.css_color('faint')};")
     else:
         surface = raised = screen_color = scrollbar = ""
-        selection = "text-style: reverse;"
     # textual never reflows anything: every row arrives whole. Under wrap (the
     # default) the widget did the folding itself, which is what keeps the gap
     # gutter and the session lane on every row a fold produces; with wrap off a
@@ -1446,7 +1463,6 @@ def _css(t: Theme) -> str:
     #status {{ dock: bottom; height: 1; {raised} {nowrap} }}
     #boundary {{ height: auto; margin-top: 1; {nowrap} }}
     EventWidget {{ height: auto; {nowrap} }}
-    EventWidget.selected {{ {selection} }}
     EventWidget.chapter {{ margin-top: 1; }}
     """
 

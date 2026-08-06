@@ -98,8 +98,9 @@ now: 3 dirty on main
 ## 3. Reading the screen
 
 Three zones, top to bottom — a raised header band, the feed, and a raised
-status bar. Backgrounds live only on the two bands and the current selection;
-everything else is foreground on the terminal surface.
+status bar. Backgrounds live only on the two bands, the selected event's lane
+bar (one column) and the field behind removed code; everything else is
+foreground on the terminal surface.
 
 ```
  standup · standup-cli   ⑂ main   ✎ 3 dirty            watch 00:12:02   ← vitals band
@@ -191,6 +192,7 @@ chapters are full-width rules, and dim/bold are attributes, not colors.
 | file | `✎` marks, bold basenames | bold weight |
 | git-truth (gold) | `⚑` commits, `⇧` pushes — facts outshine claims | marks |
 | session hues (blue/pink/teal) | lane digit + bar, header number — aid only | lane digit |
+| selection | the band under the selected event's lane bar, col 8 | thick `▎` bar |
 
 The exact values (dark, light, 256- and 16-color fallbacks) live in
 `src/standup/theme.py`, one `Role` per row of this table.
@@ -320,11 +322,13 @@ It never covers the gap gutter or the session lane — the lane's identity hue
 stays on clean surface. It appears on every removed row, in a collapsed body,
 an expanded one, and an expanded commit's diffs alike — and across every row a
 wrapped line folds into, so the shape survives `w` — but not on the
-`… ▸ N more lines` row, which is a count rather than removed code. Two places
-it deliberately isn't there: on the **selected** event, where the selection
-band owns the background and the `−` carries the row alone; and on 16-color and
-`NO_COLOR` terminals, which never paint backgrounds at all. Nothing is lost in
-either case — the field only ever repeats what the `−` already said. Added
+`… ▸ N more lines` row, which is a count rather than removed code. It is there
+on the selected event too: selection marks the lane and never the body
+([ADR 0018](adr/0018-selection-marks-the-lane-not-the-body.md)), so a diff you
+are inspecting reads on exactly the surface a diff you are not does. The one
+place the field isn't there is 16-color and `NO_COLOR` terminals, which never
+paint backgrounds at all — and nothing is lost, because the field only ever
+repeats what the `−` already said. Added
 lines get no field of their own: they type themselves out a character at a
 time, and a rectangle behind a line that hasn't arrived yet would give the
 ending away.
@@ -482,9 +486,16 @@ itself out from under you while you're reading. The stream never stops: new
 events keep appearing below, and the status chip flips to `▲ SCROLLED`
 so you know the bottom is moving on without you.
 
-The first `↑` selects the newest event and highlights it — selection is the
-one background wash in the feed, and the syntax colors read through it
-unchanged. Selection is what `enter` and `s` act on. A mouse click selects
+The first `↑` selects the newest event and marks it **in the session lane**:
+the bar column lights up and the lane's thin `▏` thickens to `▎`, down every
+row of the event — header, diff body, folded continuations, in one unbroken
+rail. Both bars are drawn from the left edge of the same column, so the lane
+grows in place rather than shifting sideways. Nothing right of the lane
+changes, so an expanded diff is read on the terminal's own surface whether it
+is selected or not
+([ADR 0018](adr/0018-selection-marks-the-lane-not-the-body.md)); on a git-only
+event, which has no lane hue, the band alone carries it. Selection is what
+`enter` and `s` act on. A mouse click selects
 the clicked event directly — no walking — and expands it in the same gesture,
 exactly as if you'd pressed `enter` on it; clicking it again collapses it.
 Clicks in empty feed space or the status bar do nothing (a click on a header

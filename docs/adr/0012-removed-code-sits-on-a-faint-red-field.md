@@ -35,7 +35,11 @@ having it.
 
 Five bounds make it a scanning aid rather than a new meaning:
 
-1. **It yields to the selection.** The selection band is also a background, and
+1. **It yields to the selection.** *(Superseded by
+   [ADR 0018](0018-selection-marks-the-lane-not-the-body.md): the selection no
+   longer paints the body, so the collision below cannot happen and the field is
+   painted on the selected event like any other.)* The selection band is also a
+   background, and
    a `Text` bgcolor beats a widget's CSS background — so the naive version
    punches red holes in the selection wash on exactly the event the reader is
    inspecting. On the selected row the wash is dropped. The rule is general:
