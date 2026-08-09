@@ -217,9 +217,10 @@ def attach_loops(session_costs: list[SessionCost], cache) -> None:
 
 
 def attach_brief_overhead(projects: list[ProjectCost]) -> None:
-    """Price each project's Session Briefs and record it as Brief Overhead (ADR
-    0006) — attributed to the repo whose sessions the Briefs summarise. Read-only
-    and separate from Notional Cost; deliberately not folded into `cost`.
+    """Price each project's Session Briefs and record it as Brief Overhead
+    (ADR 0003 § the Session Brief) — attributed to the repo whose sessions the
+    Briefs summarise. Read-only and separate from Notional Cost; deliberately
+    not folded into `cost`.
     """
     from . import brief as brief_mod
     for proj in projects:

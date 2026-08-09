@@ -15,7 +15,10 @@ decision changes it. Three rules, all of them recoverable from
   renumbers the set, and renumbering is safe *only* when every citation is
   rewritten in the same change — one mechanical pass over `src/`, `README.md`,
   `CONTEXT.md`, `TODO.md` and `docs/`. The check: the set of numbers referenced
-  anywhere must equal the set of files present.
+  anywhere must equal the set of files present — run the pinned command in
+  `docs/adr/README.md` § Numbering, which tolerates a citation wrapped across
+  a line break. A line-anchored grep misses wrapped citations, and that is
+  exactly how stale numbers survive a renumbering pass.
 - **cite the section, not just the file.** The larger ADRs cover several
   decisions, so a bare `(ADR 0004)` in a Watch module tells a reader nothing:
   write `(ADR 0004 § the removed-row field)`. Section names are part of the

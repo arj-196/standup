@@ -8,8 +8,8 @@ No model ever decides the panel's shape.
 
 Transport is the Claude Agent SDK — the programmatic face of `claude -p`,
 driving the same Claude Code binary and inheriting its login, so the user's
-subscription keeps paying (verified 2026-07-30; same keyless-auth ground as ADR
-0006 § the Session Brief). Imported lazily so the display path gains no
+subscription keeps paying (verified 2026-07-30; same keyless-auth ground as
+ADR 0003 § the Session Brief). Imported lazily so the display path gains no
 dependency.
 
 Every pass's `usage` is recorded and itemised in the Audit's frontmatter as

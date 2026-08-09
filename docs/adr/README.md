@@ -39,11 +39,22 @@ them.
 — which is safe only because renumbering and rewriting every citation happen in
 the *same* change, as one mechanical pass over `src/` and the docs. Never leave
 a citation pointing at a number that moved; the check is that the set of numbers
-referenced anywhere equals the set of files present:
+referenced anywhere equals the set of files present. Empty diff is a pass:
 
 ```bash
-grep -rho "ADR [0-9]\{4\}" src/ *.md docs/*.md | sort -u
+diff <(grep -rhozE --exclude-dir=__pycache__ "ADR[[:space:]#]*[0-9]{4}" src/ *.md docs/ \
+        | grep -aoE "[0-9]{4}" | sort -u) \
+     <(ls docs/adr/ | grep -oE "^[0-9]{4}" | sort -u)
 ```
+
+Each flag closes a hole a stale citation has escaped through, or could:
+`-z` matches a citation wrapped across a line break (`ADR\n0004`) — a
+line-anchored grep is blind to those, which is exactly how four wrapped
+citations once survived a renumbering pass; `[[:space:]#]*` also absorbs a
+comment prefix on the continuation line. `docs/` is recursive, because
+`docs/*.md` misses `docs/adr/` itself. `--exclude-dir=__pycache__` keeps stale
+compiled docstrings from resurrecting fixed numbers (`-I` does not help:
+binary detection is off under `-z`).
 
 Commit messages naming an ADR by number are the one thing renumbering falsifies
 and cannot fix. That is the accepted cost of a contiguous sequence.

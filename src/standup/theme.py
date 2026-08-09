@@ -1,7 +1,7 @@
 """The Watch's chrome palette: every color is a role, never a decoration.
 
-Source of truth: the "Watch Redesign v2 — Color" design spec, as amended by ADR
-0008 § the removed-row field. Three channels, never fewer — the gutter says
+Source of truth: the "Watch Redesign v2 — Color" design spec, as amended by
+ADR 0004 § the removed-row field. Three channels, never fewer — the gutter says
 *what changed*, the text says *what it is*, and on removed rows the surface
 says *what changed* a second time. Every role also carries a glyph or attribute
 (its NO_COLOR carrier), so no distinction lives in color alone.

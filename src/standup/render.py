@@ -156,10 +156,10 @@ def _dominant_sessions(commits: list[Commit], st: Style) -> str:
 
 
 def _brief_line(brief: "Brief | None", st: Style, width: int, indent: str) -> str | None:
-    """The Session Brief's objective, rendered as a marked *claim* line (ADR
-    0006): a `~` glyph in the honesty family used for `likely` attribution, plus
-    a `(stale)` / status hedge. Never impersonates a derived fact; augments,
-    never replaces, the title line above it.
+    """The Session Brief's objective, rendered as a marked *claim* line
+    (ADR 0003 § the Session Brief): a `~` glyph in the honesty family used for
+    `likely` attribution, plus a `(stale)` / status hedge. Never impersonates
+    a derived fact; augments, never replaces, the title line above it.
     """
     if brief is None or not brief.objective:
         return None
