@@ -36,10 +36,43 @@ def _parse_ts(raw: str | None) -> datetime | None:
         return None
 
 
+def title_hint(line: str) -> bool:
+    """Does this raw JSONL line plausibly carry one of a Session's title fields?
+
+    The cheap prefilter that lets a scanner skip `json.loads` on the ~99% of
+    lines that hold no title. Paired with `apply_title_fields`, this is the one
+    place that knows the log's title schema: `cost` runs a second scanner (it
+    reads per-turn `usage`, which this one does not), and when it carried its
+    own copy of the pair the two drifted — a mistyped prefilter there silently
+    demoted every session title to its last prompt.
+    """
+    return '"custom-title"' in line or '"ai-title"' in line or '"last-prompt"' in line
+
+
+def apply_title_fields(session: Session, obj: dict) -> None:
+    """Fold a parsed line's title fields into the Session, honouring precedence.
+
+    Later lines win (a session retitled mid-run keeps the newer name), but a
+    field is never overwritten with an empty one. `slug` rides on ordinary
+    lines rather than a type of its own, so it is picked up opportunistically
+    from whatever lines the prefilter already admitted — never by widening the
+    prefilter to every line that mentions it.
+    """
+    etype = obj.get("type")
+    if etype == "custom-title":
+        session.custom_title = obj.get("customTitle") or session.custom_title
+    elif etype == "ai-title":
+        session.ai_title = obj.get("aiTitle") or session.ai_title
+    elif etype == "last-prompt":
+        session.last_prompt = obj.get("lastPrompt") or session.last_prompt
+    if obj.get("slug"):
+        session.slug = obj["slug"]
+
+
 def _interesting(line: str) -> bool:
     if '"tool_use"' in line and any(f'"{t}"' in line for t in EDIT_TOOLS):
         return True
-    if '"custom-title"' in line or '"ai-title"' in line or '"last-prompt"' in line:
+    if title_hint(line):
         return True
     if '"toolUseResult"' in line and COMMIT_HINT_RE.search(line):
         return True
@@ -103,14 +136,7 @@ def _full_scan(session: Session, path: Path) -> None:
 
             ts = _parse_ts(obj.get("timestamp"))
             etype = obj.get("type")
-            if etype == "custom-title":
-                session.custom_title = obj.get("customTitle") or session.custom_title
-            elif etype == "ai-title":
-                session.ai_title = obj.get("aiTitle") or session.ai_title
-            elif etype == "last-prompt":
-                session.last_prompt = obj.get("lastPrompt") or session.last_prompt
-            if obj.get("slug"):
-                session.slug = obj["slug"]
+            apply_title_fields(session, obj)
             if obj.get("gitBranch"):
                 session.branches.add(obj["gitBranch"])
             if etype == "assistant":

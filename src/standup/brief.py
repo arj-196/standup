@@ -117,6 +117,20 @@ def overhead_cost(brief: Brief) -> float:
     return rates.turn_cost(brief.model, brief.gen_usage) or 0.0
 
 
+def stamp_staleness(brief: Brief, last_activity: datetime | None) -> None:
+    """A Brief whose session continued past generation is stale.
+
+    `last_activity` is the session log's mtime — "did the file grow after the
+    Brief was written?" — never a view's own activity clock, so every surface
+    agrees whether the claim is still trustworthy (ADR 0003 § the shared model).
+    """
+    try:
+        if brief.generated and last_activity and last_activity > brief.generated + STALE_TOLERANCE:
+            brief.stale = True
+    except TypeError:  # naive vs aware in a hand-edited file — never crash a reader
+        pass
+
+
 def load_one(session_id: str) -> Brief | None:
     """Read a single Session's Brief by id, or None if absent/unreadable."""
     path = BRIEFS_DIR / f"{session_id}.brief.md"
@@ -137,8 +151,7 @@ def load_for_sessions(sessions: list[Session]) -> dict[str, Brief]:
         b = _parse(path, s.session_id)
         if b is None:
             continue
-        if b.generated and s.last_activity and s.last_activity > b.generated + STALE_TOLERANCE:
-            b.stale = True
+        stamp_staleness(b, s.last_activity)  # a Session's last_activity is its log mtime
         s.brief = b
         briefs[s.session_id] = b
     return briefs

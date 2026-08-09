@@ -246,6 +246,14 @@ def _cost_json(projects, window_start, label, now) -> str:
                         "handle": s.handle,
                         "session_id": s.session.session_id,
                         "title": s.title,
+                        # the Session Brief as a claim, hedges attached: a
+                        # consumer that reads the objective reads its status and
+                        # staleness with it, never the bare assertion.
+                        "brief": {
+                            "objective": s.session.brief.objective,
+                            "status": s.session.brief.status,
+                            "stale": s.session.brief.stale,
+                        } if s.session.brief else None,
                         "cost": round(s.cost, 4),
                         "by_model": {m: round(c, 4) for m, c in s.by_model.items()},
                         "tokens": s.tokens,
@@ -276,7 +284,9 @@ def _cost_json(projects, window_start, label, now) -> str:
 def _cmd_cost(argv: list[str]) -> int:
     p = argparse.ArgumentParser(prog="standup cost",
                                 description="Notional Cost by project and session (not real money). "
-                                            "The per-session drill-down also flags Loops — repeated "
+                                            "The per-session drill-down carries each Session's Brief "
+                                            "objective when one exists (~-marked as a claim, hedged when "
+                                            "stale), and flags Loops — repeated "
                                             "tool-call grinds — with each Loop's share of the session's "
                                             "cost (a measured carve-out, not a projected saving).")
     p.add_argument("repo", nargs="?",
@@ -297,7 +307,7 @@ def _cmd_cost(argv: list[str]) -> int:
 
     session_costs = cost.scan_session_costs(projects_dir, window_start)
     projects = cost.group_by_project(session_costs)
-    cost.attach_brief_overhead(projects)
+    cost.attach_briefs(projects)
     cost.attach_audit_overhead(projects)
     cache = cache_mod.open_cache()
     cost.attach_loops(session_costs, cache)

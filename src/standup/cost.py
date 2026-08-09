@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import gitstate, rates
+from . import claude_logs, gitstate, rates
 from .models import Session
 
 _EPOCH = datetime.min.replace(tzinfo=timezone.utc)
@@ -36,6 +36,11 @@ class SessionCost:
     # attach_loops. Loop Cost is a carve-out of this session's Notional Cost,
     # never a saving.
     loops: list = field(default_factory=list)
+    # the log file's mtime, kept from the stat scan_session_costs already does.
+    # The staleness clock for out-of-band artifacts — deliberately *not*
+    # last_activity, which counts only priced assistant turns inside the window
+    # and so under-reports that the session moved on. See attach_briefs.
+    log_mtime: datetime | None = None
 
     @property
     def loop_cost(self) -> float:
@@ -101,17 +106,6 @@ class ProjectCost:
         return max(times) if times else None
 
 
-def _short_title_fields(session: Session, obj: dict, etype: str) -> None:
-    if etype == "custom-title":
-        session.custom_title = obj.get("customTitle") or session.custom_title
-    elif etype == "ai-title":
-        session.ai_title = obj.get("aiTitle") or session.ai_title
-    elif etype == "last-prompt":
-        session.last_prompt = obj.get("lastPrompt") or session.last_prompt
-    if obj.get("slug"):
-        session.slug = obj["slug"]
-
-
 def _scan_file(path: Path, window_start: datetime) -> SessionCost | None:
     session = Session(session_id=path.stem, log_path=str(path))
     sc = SessionCost(session=session)
@@ -119,8 +113,10 @@ def _scan_file(path: Path, window_start: datetime) -> SessionCost | None:
     with open(path, errors="replace") as fh:
         for line in fh:
             has_usage = '"usage"' in line
-            has_meta = ('"cwd"' in line or '"-title"' in line
-                        or '"slug"' in line or '"lastPrompt"' in line)
+            # title handling is claude_logs' (the inbox's scanner): this view
+            # reads per-turn usage, which that one does not, but the two must
+            # agree about what a Session is *called*.
+            has_meta = '"cwd"' in line or claude_logs.title_hint(line)
             if not (has_usage or has_meta):
                 continue
             try:
@@ -129,7 +125,7 @@ def _scan_file(path: Path, window_start: datetime) -> SessionCost | None:
                 continue
             if session.cwd is None and obj.get("cwd"):
                 session.cwd = obj["cwd"]
-            _short_title_fields(session, obj, obj.get("type", ""))
+            claude_logs.apply_title_fields(session, obj)
             if not has_usage or obj.get("type") != "assistant":
                 continue
             msg = obj.get("message") or {}
@@ -177,6 +173,7 @@ def scan_session_costs(projects_dir: Path, window_start: datetime) -> list[Sessi
             continue
         sc = _scan_file(log, window_start)
         if sc and sc.session.cwd:
+            sc.log_mtime = mtime
             out.append(sc)
     return out
 
@@ -216,11 +213,21 @@ def attach_loops(session_costs: list[SessionCost], cache) -> None:
         sc.loops = loops_mod.significant(scan)
 
 
-def attach_brief_overhead(projects: list[ProjectCost]) -> None:
-    """Price each project's Session Briefs and record it as Brief Overhead
-    (ADR 0003 § the Session Brief) — attributed to the repo whose sessions the
-    Briefs summarise. Read-only and separate from Notional Cost; deliberately
+def attach_briefs(projects: list[ProjectCost]) -> None:
+    """Attach each Session's Brief and price it as Brief Overhead
+    (ADR 0003 § the Session Brief).
+
+    One pass, because the drill-down needs both halves of the same file: the
+    objective (rendered as a `~`-marked claim under the session's title, which
+    it augments and never replaces) and the generation's own usage — attributed
+    to the repo whose sessions the Briefs summarise, read-only and deliberately
     not folded into `cost`.
+
+    Staleness is stamped against the log's mtime, never this view's
+    last_activity: the question is whether the session advanced past the Brief,
+    and last_activity here sees only priced assistant turns inside the window.
+    A view-local clock would let the same Brief read `(stale)` in the inbox and
+    unhedged here.
     """
     from . import brief as brief_mod
     for proj in projects:
@@ -228,6 +235,8 @@ def attach_brief_overhead(projects: list[ProjectCost]) -> None:
             b = brief_mod.load_one(sc.session.session_id)
             if b is None:
                 continue
+            brief_mod.stamp_staleness(b, sc.log_mtime)
+            sc.session.brief = b
             proj.brief_overhead += brief_mod.overhead_cost(b)
             proj.brief_count += 1
 

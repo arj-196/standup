@@ -46,9 +46,13 @@ def _term_width() -> int:
     return shutil.get_terminal_size((100, 24)).columns
 
 
+def _visible_len(line: str) -> int:
+    return len(ANSI_RE.sub("", line))
+
+
 def _clamp(line: str, width: int) -> str:
     """Guarantee the line fits; a clamped line loses styling rather than wrap."""
-    if len(ANSI_RE.sub("", line)) <= width:
+    if _visible_len(line) <= width:
         return line
     plain = ANSI_RE.sub("", line)
     return plain[: max(0, width - 1)].rstrip() + "…"
@@ -384,16 +388,20 @@ def _model_split(by_model: dict[str, float]) -> str:
     return " · ".join(f"{f} {c / total * 100:.0f}%" for f, c in parts[:3])
 
 
-def _cost_disclaimer(st: Style) -> str:
-    return st.dim("notional API-equivalent load — not money paid (real spend: claude.ai)")
+def _cost_disclaimer(st: Style, width: int) -> str:
+    """Shortened rather than truncated when narrow: clamping this line would eat
+    the words that make it a disclaimer, leaving a figure that reads as money."""
+    full = "notional API-equivalent load — not money paid (real spend: claude.ai)"
+    short = "notional load — not money paid"
+    return st.dim(_clamp(full if len(full) <= width else short, width))
 
 
 def render_cost_overview(projects: list[ProjectCost], window: str, now: datetime) -> str:
     st = _style()
     width = _term_width()
-    out = [st.bold(f"COST · {window}"), _cost_disclaimer(st), ""]
+    out = [_clamp(st.bold(f"COST · {window}"), width), _cost_disclaimer(st, width), ""]
     if not projects:
-        out.append(st.dim("no priced sessions in the window"))
+        out.append(_clamp(st.dim("no priced sessions in the window"), width))
         return "\n".join(out)
 
     total = sum(p.cost for p in projects)
@@ -411,18 +419,21 @@ def render_cost_overview(projects: list[ProjectCost], window: str, now: datetime
             merged[m] = merged.get(m, 0.0) + c
     tail = "  ·  " + " · ".join(f"{f} {_money(c)}"
                                 for f, c in sorted(_by_family(merged).items(), key=lambda kv: -kv[1]))
-    out += ["  " + "─" * w, f"  {_money(total):>{w}}  {st.bold('total')}{st.dim(tail)}"]
+    out += [_clamp("  " + "─" * w, width),
+            _clamp(f"  {_money(total):>{w}}  {st.bold('total')}{st.dim(tail)}", width)]
 
     overhead = sum(p.brief_overhead for p in projects)
     n_briefs = sum(p.brief_count for p in projects)
     if n_briefs:
-        out.append(st.dim(f"  {_money(overhead):>{w}}  brief overhead"
-                          f"  ({_plural(n_briefs, 'brief')}) — cost of keeping Session Briefs current"))
+        out.append(_clamp(st.dim(f"  {_money(overhead):>{w}}  brief overhead"
+                                 f"  ({_plural(n_briefs, 'brief')}) — cost of keeping Session Briefs current"),
+                          width))
     audit_overhead = sum(p.audit_overhead for p in projects)
     n_audits = sum(p.audit_count for p in projects)
     if n_audits:
-        out.append(st.dim(f"  {_money(audit_overhead):>{w}}  audit overhead"
-                          f"  ({_plural(n_audits, 'audit')}) — cost of the Expert Panel runs"))
+        out.append(_clamp(st.dim(f"  {_money(audit_overhead):>{w}}  audit overhead"
+                                 f"  ({_plural(n_audits, 'audit')}) — cost of the Expert Panel runs"),
+                          width))
     return "\n".join(out)
 
 
@@ -430,11 +441,19 @@ def render_cost_detail(project: ProjectCost, window: str, now: datetime) -> str:
     st = _style()
     width = _term_width()
     head = st.bold(project.name) + st.dim(f" — {_money(project.cost)} notional · {window}")
+    # the overheads are appended segments, so the header grows vertically rather
+    # than off the edge when they do not fit beside the total
+    extra = []
     if project.brief_count:
-        head += st.dim(f"  · +{_money(project.brief_overhead)} brief overhead")
+        extra.append(f"+{_money(project.brief_overhead)} brief overhead")
     if project.audit_count:
-        head += st.dim(f"  · +{_money(project.audit_overhead)} audit overhead")
-    out = [head, _cost_disclaimer(st), ""]
+        extra.append(f"+{_money(project.audit_overhead)} audit overhead")
+    one_line = head + "".join(st.dim(f"  · {e}") for e in extra)
+    if _visible_len(one_line) <= width:
+        out = [one_line]
+    else:
+        out = [_clamp(head, width)] + [_clamp("  " + st.dim(e), width) for e in extra]
+    out += [_cost_disclaimer(st, width), ""]
     w = max((len(_money(s.cost)) for s in project.sessions), default=5)
     for s in project.sessions:
         why = f"  {st.yellow(s.why)}" if s.why else ""
@@ -446,19 +465,25 @@ def render_cost_detail(project: ProjectCost, window: str, now: datetime) -> str:
         head = (f"  {_money(s.cost):>{w}}  {_session_ref(s.handle, st)}  \"{s.title}\""
                 f"  {st.dim(_abbr_model(s.dominant_model or '?'))}{why}{loop_tag}")
         out.append(_clamp(head, width))
+        indent = " " * (w + 4)
+        # the Session Brief's objective, in the stanza position the Triage Inbox
+        # and `standup session` both use: under the title it augments, above the
+        # arithmetic. Briefless sessions render exactly as before.
+        bl = _brief_line(s.session.brief, st, width, indent)
+        if bl:
+            out.append(bl)
         t = s.tokens
         meta = (f"in {_tok(t['input'])} · out {_tok(t['output'])} · "
                 f"cache-w {_tok(t['cache_write'])} · cache-r {_tok(t['cache_read'])}")
         if s.session.last_activity:
             meta += f" · {humanize(s.session.last_activity, now)}"
-        indent = " " * (w + 4)
         out.append(_clamp(indent + st.dim(meta), width))
         for l in s.loops:
             evid = f"⟳ {l.iterations}× {l.label} — {_money(l.cost)} loop cost"
             if l.unpriced_turns:
                 evid += f" (+{l.unpriced_turns} unpriced turns)"
             out.append(_clamp(indent + st.dim(evid), width))
-        out.append(indent + st.dim(f"standup session {s.handle}"))
+        out.append(_clamp(indent + st.dim(f"standup session {s.handle}"), width))
         out.append("")
     return "\n".join(out)
 
@@ -473,5 +498,12 @@ def render_cost_footer(session_costs: list["SessionCost"], window: str) -> str:
             merged[m] = merged.get(m, 0.0) + c
     split = " · ".join(f"{f} {_money(c)}"
                        for f, c in sorted(_by_family(merged).items(), key=lambda kv: -kv[1]))
-    tail = f"  ({split})" if split else ""
-    return st.dim(f"notional load · {_window_label(window)}: {_money(total)}{tail} — not real money")
+    head = f"notional load · {_window_label(window)}: {_money(total)}"
+    width = _term_width()
+    # the per-family split is a detail, the "not real money" is the point: drop
+    # the split before clamping, so narrow terminals never lose the caveat
+    for tail in (f"  ({split})" if split else "", ""):
+        line = f"{head}{tail} — not real money"
+        if len(line) <= width:
+            return st.dim(line)
+    return st.dim(_clamp(line, width))

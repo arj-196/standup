@@ -349,7 +349,11 @@ summarised, so the price of the feature is never hidden (ADR 0003 § the Session
 `standup cost` prices your session logs against the published API rate card to
 show where consumption concentrates — ranked by project, then by session, with
 a token-bucket breakdown and a one-word "why" tag (`cache-heavy`, `out-heavy`,
-`fable`) so the expensive shape is visible. Drill into a session with
+`fable`) so the expensive shape is visible. Each session in the drill-down is
+named by its title, with its **Session Brief** objective on the line beneath —
+`~`-marked as a claim and hedged `(stale)` exactly as in the inbox, so an
+expensive row says what it was *for* and not merely what it cost.
+Drill into a session with
 `standup session <handle>` to read the actual prompts and responses, each
 assistant turn annotated with its cost. Tool calls collapse to one-liners
 there; `--tools` prints each one's whole input beneath it — the static

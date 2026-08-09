@@ -26,6 +26,18 @@ Both artifacts have all six properties:
 | Priced by the Rate Card, surfaced as labelled **Overhead** | real token work that touches no repo, so a mis-tuned generator is caught by the view it inflates |
 | Pruned with the session log | orphans go the way of a cache row |
 
+**Staleness is measured against the session log's mtime**, on every surface —
+never a view's own notion of activity. Trustworthiness is a property of the
+*artifact*, so two views must never disagree about it, and the question
+staleness asks ("did the session advance past the claim?") is answered
+literally by "did the file grow?". A view-local clock answers a narrower
+question and always under-reports: `cost`'s activity timestamp, for instance,
+advances only on *priced assistant turns inside its window*, so a session that
+continued with unpriced turns, or with a prompt not yet answered, looks frozen
+to it. Rejected: giving each view its own clock — cheaper per view, but it lets
+the same Brief render `(stale)` in the inbox and unhedged in `cost`, which is
+the one failure the `~`-marking exists to prevent.
+
 Both generate by **shelling out to Claude Code, not the Anthropic API**, so the
 user's existing login pays. Verified 2026-07-22 (Claude Code 2.1.201): headless
 `claude -p` authenticates with no `ANTHROPIC_API_KEY` and no TTY — turnkey for
