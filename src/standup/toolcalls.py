@@ -38,11 +38,13 @@ _MCP_PREFIX = "mcp__"
 _UUIDISH = re.compile(r"\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-"
                       r"[0-9a-f]{4}-[0-9a-f]{12}\Z", re.IGNORECASE)
 
-# Argument keys worth showing bare, in preference order. Not a completeness
-# claim and never a source of silence: an input matching none of them falls to
-# the compact-JSON digest below, so a tool absent from this tuple loses
-# readability, never its argument. (Before the fallback existed, an MCP call
-# keyed on `id` rendered as its bare name and said nothing at all.)
+# Argument keys worth showing bare, in preference order. The tuple only decides
+# what *leads* the digest — it never decides what the digest contains, because
+# the remaining keys follow it as compact JSON (ADR 0004 § Calls). Ranking one
+# key used to mean discarding its siblings, which cost 1108 of this machine's
+# 4615 non-Bash calls their remaining arguments and rendered `notion-update-page`
+# as the bare verb `update_content`: the key naming the page was dropped because
+# `command` outranks `page_id`.
 _ARG_KEYS = ("file_path", "notebook_path", "command", "path", "pattern",
              "query", "url", "uri", "prompt", "id", "page_id", "expression")
 
@@ -65,21 +67,49 @@ def display_name(raw: str) -> str:
 
 
 def arg_digest(inp: object, limit: int = 160) -> str:
-    """The call's input as one line: a preferred key's value bare, else the
-    whole input as compact JSON. Clipped to `limit` — a header clips (ADR 0004
-    § fold, don't clip), and the caller can show the untruncated form in a body.
+    """The call's input as one line, carrying as much of it as `limit` holds:
+    the preferred key's value bare and first, then every remaining key as
+    compact JSON. Clipped — a header clips (ADR 0004 § fold, don't clip) — and
+    `input_rows` is the untruncated reading the caller shows in a body.
+
+    A single-key input therefore reads exactly as it always did (`WebFetch
+    https://…`); a multi-key one no longer loses its siblings to the ranking.
     """
     if not isinstance(inp, dict) or not inp:
         return ""
-    for k in _ARG_KEYS:
-        v = inp.get(k)
-        if isinstance(v, str) and v.strip():
-            return _clip(" ".join(v.split()), limit)
-    try:
-        text = json.dumps(inp, ensure_ascii=False)
-    except (TypeError, ValueError):
-        text = str(inp)
-    return _clip(" ".join(text.split()), limit)
+    lead = next((k for k in _ARG_KEYS
+                 if isinstance(inp.get(k), str) and inp[k].strip()), None)
+    parts = []
+    if lead is not None:
+        parts.append(" ".join(inp[lead].split()))
+    rest = {k: v for k, v in inp.items() if k != lead}
+    if rest:
+        parts.append(" ".join(_json(rest).split()))
+    return _clip("  ".join(parts), limit)
+
+
+def input_rows(inp: object) -> list[tuple[str | None, str]]:
+    """The call's input **entire**, as `(path, text)` rows a caller lays out.
+
+    Every leaf of the input gets its dotted/indexed path (`content_updates[0]
+    .new_str`) and its value; a value's own line breaks become their own rows,
+    carrying `None` for the path, so multi-line text reads as text instead of
+    as `\\n` escapes. Nothing is clipped and nothing is dropped — the point of
+    the body is that it *is* the request (ADR 0004 § Calls).
+
+    Path-per-leaf rather than pretty JSON: a 5KB markdown value is the thing
+    being read here, and `json.dumps(indent=2)` leaves it a single escaped
+    string. The structure stays recoverable from the paths, so the reshape
+    loses nothing — it is presentation, like the diff row shape.
+    """
+    if not inp:      # a call with no arguments has no body, not a `{}` row
+        return []
+    rows: list[tuple[str | None, str]] = []
+    for path, value in _leaves(inp, ""):
+        lines = value.splitlines() or [""]
+        rows.append((path, lines[0]))
+        rows.extend((None, ln) for ln in lines[1:])
+    return rows
 
 
 def one_liner(name: str, inp: object, limit: int = 160) -> str:
@@ -87,6 +117,28 @@ def one_liner(name: str, inp: object, limit: int = 160) -> str:
     shown = display_name(name)
     arg = arg_digest(inp, limit)
     return f"{shown} {arg}" if arg else shown
+
+
+def _leaves(value: object, path: str):
+    """Walk to every scalar, yielding `(path or None, text)`. An *empty* dict or
+    list is itself a leaf (`{}`, `[]`) — a key whose value is empty must still
+    appear, or the body would silently answer a question it was not asked."""
+    if isinstance(value, dict) and value:
+        for k, v in value.items():
+            yield from _leaves(v, f"{path}.{k}" if path else str(k))
+    elif isinstance(value, list) and value:
+        for i, v in enumerate(value):
+            yield from _leaves(v, f"{path}[{i}]")
+    else:
+        yield (path or None,
+               value if isinstance(value, str) else _json(value))
+
+
+def _json(value: object) -> str:
+    try:
+        return json.dumps(value, ensure_ascii=False)
+    except (TypeError, ValueError):
+        return str(value)
 
 
 def _clip(s: str, limit: int) -> str:

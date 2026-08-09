@@ -93,9 +93,16 @@ class FeedEvent:
     # for `Bash` alone — the one tool whose argument is a shell command and so
     # renders `$ …` with shell lexing — and `args` is every other tool's input
     # digest. `command` and `args` are never both set.
+    #
+    # `tool_input` is the input **itself**, kept because a digest cannot be
+    # expanded back into what it summarised: `args` used to be the only copy the
+    # feed held, so `{page_id, command, content_updates}` reached the UI as the
+    # 14-character string `update_content` and `enter` had nothing to open. The
+    # header still reads from `args`; the body reads from here (ADR 0004 § Calls).
     tool: str | None = None
     command: str | None = None
     args: str = ""
+    tool_input: dict | None = None
     ok: bool | None = None       # call_result verdict
     tool_id: str | None = None   # joins call -> call_result; on a file event, the
                                  # tool call it came from, so a Change Run can
@@ -372,7 +379,11 @@ class _Tailer:
                     # generous: the header clips at its own width and the
                     # expanded body folds, so the event carries more than one
                     # row's worth rather than deciding the display's limit here
-                    args="" if cmd else toolcalls.arg_digest(inp, 2000)))
+                    args="" if cmd else toolcalls.arg_digest(inp, 2000),
+                    # unclipped and unflattened — the body is the request, not a
+                    # summary of it. Median 173 bytes across this machine's logs,
+                    # p99 4KB, so a full BACKFILL_CAP of Calls costs ~200KB.
+                    tool_input=inp if isinstance(inp, dict) else None))
             else:
                 fp = inp.get("file_path") or inp.get("notebook_path")
                 if not fp or not os.path.isabs(fp):

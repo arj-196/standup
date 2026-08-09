@@ -40,6 +40,7 @@ standup <repo> session   # the newest session in a named project
 standup <repo> session <handle>    # that session, checked to be one of the repo's
 standup session --in <repo>         # the verb-first spelling of both
 standup session <handle> --thinking   # include hidden thinking
+standup session <handle> --tools      # each tool call's whole input, never its result
 standup session <handle> --raw        # untouched session JSONL
 standup session <handle> --no-pager   # print instead of opening the pager
 
@@ -98,7 +99,7 @@ standup st d             # standup's attributed diff
 standup s                # read the newest session here
 ```
 
-Every option has a one-letter form, and **a letter means one thing everywhere**
+Most options have a one-letter form, and **a letter means one thing everywhere**
 — `-s` is `--since` in the inbox, in `cost` and in `watch`, so it can never be
 `--stat` in `diff` ([ADR 0005 § short option letters](docs/adr/0005-addressing-on-the-command-line.md)):
 
@@ -114,9 +115,11 @@ left unclaimed: a future `--pager` or `--wrap` should get the honest letter.
 `-U` takes a value (it's git's spelling), so it isn't in that class. `-n` for
 `--stat` is git's `--numstat`: per-file *numbers*, no bodies.
 
-Two options have no letter on purpose. `audit --refresh` re-runs the Expert
+Three options have no letter on purpose. `audit --refresh` re-runs the Expert
 Panel against your subscription, so it costs the whole word — the same rule
-that leaves `install`/`uninstall` unaliased. `--projects-dir` is a hidden
+that leaves `install`/`uninstall` unaliased. `session --tools` finds `-t` taken
+by `--thinking`, and `-T` is reserved for a negation, so it spends the word
+rather than bending either rule. `--projects-dir` is a hidden
 entry point and stays hidden.
 
 The dash is a namespace boundary, so these never collide with the subcommand
@@ -149,8 +152,10 @@ completion at the alias too with `compdef s=standup` in your `.zshrc`.
 Session's edits (typed out as they land, syntax-highlighted by file type,
 with a `+`/`−` gutter carrying the diff and a faint red field behind removed
 code, so a deletion is findable without reading), **Calls** — every tool call
-that changes no file, shown as its name, its argument and a `✓`/`✗` when the
-result lands, so an agent whose whole turn is MCP requests still narrates —
+that changes no file, shown as its name, as much of its input as the row holds
+and a `✓`/`✗` when the result lands, with `enter` opening the whole request
+(never its result), so an agent whose whole turn is MCP requests still
+narrates —
 your prompts as full-width chapter rules, commits/pushes, and Unattributed
 Changes as they appear. Each session gets a lane (a numbered, hue-tinted bar
 down the left),
@@ -346,7 +351,10 @@ show where consumption concentrates — ranked by project, then by session, with
 a token-bucket breakdown and a one-word "why" tag (`cache-heavy`, `out-heavy`,
 `fable`) so the expensive shape is visible. Drill into a session with
 `standup session <handle>` to read the actual prompts and responses, each
-assistant turn annotated with its cost.
+assistant turn annotated with its cost. Tool calls collapse to one-liners
+there; `--tools` prints each one's whole input beneath it — the static
+counterpart to expanding a **Call** in `watch`, and bound by the same rule
+that a result is never shown.
 
 These dollar figures are **Notional Cost** — API-equivalent *load*, a
 comparison weight, **not money paid**. On a subscription the real money is the

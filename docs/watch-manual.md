@@ -20,8 +20,9 @@ plus its worktrees) into a single chronological feed:
   edits to one file fold into a single entry that evolves, so a file being
   worked on reads as one act of work rather than a row per tool call
 - **Calls** — every tool call that changes no file: a shell command, an MCP
-  request, a web fetch, a subagent spawn. Each shows the tool's name, one line
-  of its argument, and `✓`/`✗` when the result comes back. Local reads
+  request, a web fetch, a subagent spawn. Each shows the tool's name, as much
+  of its input as the row holds, and `✓`/`✗` when the result comes back;
+  `enter` opens the input in full. Local reads
   (`Read`, `Grep`, `Glob`) are the exception and stay silent
 - **your prompts**, as the chapter breaks of the narrative
 - **commits** — each carrying its own diff — **pushes, branch switches**
@@ -195,7 +196,7 @@ Then a kind mark and the content:
 |---|---|---|
 | `✎` | file | a file was written, edited, or deleted (session-claimed) |
 | `~` amber | file | the same, but *git is the only witness* — tagged `~unattributed` |
-| `⏺` | call | a tool call that changed no file — `$ cmd` for Bash, otherwise the tool's name and its argument. `✓` or `✗` appended when it returns |
+| `⏺` | call | a tool call that changed no file — `$ cmd` for Bash, otherwise the tool's name and as much of its input as the row holds. `✓` or `✗` appended when it returns; `▸ N lines` at the right edge when there is more input than the header showed |
 | `──` violet | prompt | **you** typed something — a full-width chapter rule |
 | `⚑` gold | commit | a new commit reached HEAD, `@<sha>` and its diff |
 | `⇧` gold | push | commits left for a remote |
@@ -595,8 +596,13 @@ added and removed text — on a **Change Run**, every hunk it folded, not just
 the window. On a **commit** it cycles through the three levels —
 header, file list, every file's full diff, and around again. On a prompt it
 shows your full message (when the rule had to truncate it); on a **Call** it
-shows the untruncated command or argument — never the result, which the Watch
-never reads. Expanding also finishes any in-progress
+shows the whole input — every key of it, one row per leaf, by path
+(`content_updates[0].new_str`), with the value's own line breaks kept, so
+markdown being written to a page reads as markdown. Never the result, which the
+Watch never reads: to see what a call *returned*, read the session
+(`standup session <handle>`). A Call whose header already carried its whole
+input has no body and says so by showing no `▸` — so a row with no marker is
+not a row that refuses to open. Expanding also finishes any in-progress
 typing immediately — if you want to *read* it, you've stopped wanting to
 watch it appear.
 

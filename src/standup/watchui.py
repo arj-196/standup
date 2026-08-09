@@ -42,7 +42,7 @@ from textual.containers import VerticalScroll
 from textual.geometry import Offset
 from textual.widgets import Static
 
-from . import diffrows
+from . import diffrows, toolcalls
 from .diffrows import lexed_command, styled_lines
 from .theme import Theme
 from .watchstream import LIVE_THRESHOLD, FeedEvent, LiveSessionInfo, WatchStream
@@ -56,6 +56,8 @@ SNAP_SPEED = 8000.0        # beyond this, blocks land instantly (flash, no typin
 HEAD_LINES = 12            # animated window into a large block; rest collapses
 REMOVED_LINES = 4          # removed-text lines shown collapsed
 COMMIT_FILE_LINES = 6      # commit's file list shown collapsed; rest counted
+CALL_HEAD_LIMIT = 100      # chars of a Call's argument the header carries; past
+                           # this it clips and the body holds the rest
 MAX_EVENTS = 500           # DOM cap; oldest events beyond it are dropped
 TRIM_SLACK = 200           # extra events tolerated while reading scrollback
 GAP_SHOW = 5               # gaps below this many seconds stay quiet
@@ -147,7 +149,7 @@ class EventWidget(Static):
 
     A file widget is not fixed at one event. Consecutive file events for the
     same path and the same witness are folded into it as a **Change Run** (ADR
-    0008 § the Change Run), so one file being worked on reads as one entry that
+    0004 § the Change Run), so one file being worked on reads as one entry that
     evolves
     rather than a row per tool call or per git poll."""
 
@@ -171,6 +173,20 @@ class EventWidget(Static):
         self.added_raw = event.added.split("\n") if event.kind == "file" and event.added else []
         self.removed_raw = event.removed.split("\n") if event.kind == "file" and event.removed else []
         self._lexed: dict[str, list[Text]] = {}
+        # A Call's body: the input entire, as `(path, text)` rows. Bash keeps its
+        # own reading — the command's lines lead, shell-lexed, and its remaining
+        # keys follow as ordinary rows, so no tool is silently carved out of "the
+        # body is the input" (ADR 0004 § Calls).
+        self.shell_rows = 0
+        self.call_rows: list[tuple[str | None, str]] = []
+        if event.kind == "call":
+            rest = dict(event.tool_input or {})
+            if event.command is not None:
+                lines = event.command.splitlines() or [""]
+                self.shell_rows = len(lines)
+                self.call_rows = [(None, ln) for ln in lines]
+                rest.pop("command", None)
+            self.call_rows += toolcalls.input_rows(rest)
         # the collapsed window into the body, and the animation's char budget
         self.win_start = self.win_end = 0
         self.lines_above = self.lines_below = 0
@@ -189,6 +205,17 @@ class EventWidget(Static):
     @property
     def expanded(self) -> bool:
         return self.expand_level > 0
+
+    @property
+    def call_expandable(self) -> bool:
+        """Does this Call hold more than its header row showed? One scalar the
+        header carried whole is not more — and saying so is the point: a Call
+        used to advertise nothing either way, so a row with nothing to open was
+        indistinguishable from one that simply refused to open."""
+        rows = self.call_rows
+        if len(rows) > 1:
+            return True
+        return bool(rows) and len(rows[0][1]) > CALL_HEAD_LIMIT
 
     # -- the Change Run ---------------------------------------------------------
 
@@ -383,8 +410,11 @@ class EventWidget(Static):
 
     # -- header content -----------------------------------------------------------
 
-    def _header(self) -> tuple[Text, Text | None]:
-        """(header content from the mark column on, right-edge disclosure)."""
+    def _header(self, width: int) -> tuple[Text, Text | None]:
+        """(header content from the mark column on, right-edge disclosure).
+
+        `width` is the row budget: a Call sizes its argument against what the
+        verdict and the disclosure marker have already claimed."""
         e, t = self.event, self.t
         out = Text()
         right: Text | None = None
@@ -420,21 +450,41 @@ class EventWidget(Static):
             # which. Bash is the tool whose argument is a shell command, so it
             # keeps `$` and shell lexing; every other tool shows its name and
             # its input digest (ADR 0004 § Calls).
+            # A Call advertises its body like every other expandable event —
+            # `▸ N lines` beside a file event, `▸ N files` beside a commit. Its
+            # absence is now load-bearing: no marker means the header already
+            # showed the whole request, not that expanding is broken.
+            #
+            # Marker and verdict are settled *before* the argument, and the
+            # argument is budgeted against what is left. They are the row's two
+            # facts — did it work, is there more — while the argument is the one
+            # part with somewhere else to be read in full, so it is the part
+            # that yields (ADR 0004 § fold, don't clip).
+            if self.call_expandable:
+                n = len(self.call_rows)
+                right = (Text("▾ ", style=t.style("primary")) if self.expanded
+                         else Text(f"▸ {n} line{'s' if n != 1 else ''} ",
+                                   style=t.style("faint")))
+            verdict = (("  ✓", "added") if self.call_ok is True else
+                       ("  ✗", "removed") if self.call_ok is False else None)
+            lead = 5 + (0 if e.command is not None else len(e.tool or "tool"))
+            spent = (self._prefix(first=True).cell_len + lead
+                     + (len(verdict[0]) if verdict else 0)
+                     + (right.cell_len + 2 if right is not None else 0))
+            budget = max(16, min(CALL_HEAD_LIMIT, width - spent))
             out.append("⏺", style=t.style("muted"))
             if e.command is not None:
                 out.append("  $ ", style=t.style("faint"))
-                out.append_text(lexed_command(_one_line(e.command, 100),
+                out.append_text(lexed_command(_one_line(e.command, budget),
                                               t.depth == "none"))
             else:
                 out.append("  ")
                 out.append(e.tool or "tool", style=t.style("primary", bold=True))
                 if e.args:
                     out.append("  ")
-                    out.append(_one_line(e.args, 100), style=t.style("muted"))
-            if self.call_ok is True:
-                out.append("  ✓", style=t.style("added", bold=True))
-            elif self.call_ok is False:
-                out.append("  ✗", style=t.style("removed", bold=True))
+                    out.append(_one_line(e.args, budget), style=t.style("muted"))
+            if verdict:
+                out.append(verdict[0], style=t.style(verdict[1], bold=True))
         elif e.kind == "commit":
             out.append("⚑", style=t.style("git", bold=True))
             out.append("  ")
@@ -517,11 +567,20 @@ class EventWidget(Static):
     # -- rendering --------------------------------------------------------------
 
     def _rline(self, left: Text, right: Text | None, width: int) -> Text:
+        """Header, then its right-edge marker at the far column.
+
+        A header clips (ADR 0004 § fold, don't clip) — but it clips *itself*,
+        never its marker. The marker is the row's only statement about whether a
+        body exists, so a long argument that ran past the width used to push the
+        one thing worth keeping off the screen. The left side yields instead.
+        """
         if right is not None:
             pad = width - left.cell_len - right.cell_len
             if pad > 0:
                 left.append(" " * pad)
             else:
+                left.truncate(max(0, width - right.cell_len - 2),
+                              overflow="ellipsis")
                 left.append("  ")
             left.append_text(right)
         return left
@@ -624,11 +683,12 @@ class EventWidget(Static):
                         out.append_text(chunk)
             return out
 
-        head, right = self._header()
+        head, right = self._header(width)
         if stat_mode:
             right = (Text("▸ ", style=t.style("faint"))
                      if (e.kind == "file" and (e.added or e.removed))
-                     or (e.kind == "commit" and e.files) else None)
+                     or (e.kind == "commit" and e.files)
+                     or (e.kind == "call" and self.call_expandable) else None)
         line = self._prefix(first=True)
         line.append_text(head)
         out = self._rline(line, right, width)
@@ -638,19 +698,24 @@ class EventWidget(Static):
         if e.kind == "commit":
             return self._commit_body(out, width) if self.expanded and e.files else out
         if e.kind == "call":
-            # the body is worth having whenever the header row can't carry the
-            # whole argument — because it was folded to one line, or because the
-            # row simply isn't that wide. What was *asked* is all it ever shows:
-            # the Watch never renders a tool's result (ADR 0004 § Calls)
-            text = e.command if e.command is not None else e.args
-            clipped = len(_one_line(text)) < len(text) or out.cell_len > width
-            if self.expanded and text and clipped:
-                shell = e.command is not None
-                for raw in text.splitlines():
-                    self._sign_row(out, None,
-                                   lexed_command(raw, t.depth == "none") if shell
-                                   else Text(raw, style=t.style("primary")),
-                                   width)
+            # The body is the request itself: every key of the input, by path,
+            # unclipped, with the log's own line structure. It is *not* built
+            # from the header's digest — that was the old defect, since a digest
+            # cannot be expanded back into what it summarised. What was **asked**
+            # is still all it ever shows: the Watch never renders a tool's
+            # result, expanded or not (ADR 0004 § Calls).
+            if self.expanded and self.call_expandable:
+                for i, (path, text) in enumerate(self.call_rows):
+                    if i < self.shell_rows:
+                        code = lexed_command(text, t.depth == "none")
+                    elif path is None:      # a value's own second and later lines
+                        code = Text(text, style=t.style("primary"))
+                    else:
+                        code = Text(path, style=t.style("muted"))
+                        if text:
+                            code.append("  ")
+                            code.append(text, style=t.style("primary"))
+                    self._sign_row(out, None, code, width)
             return out
 
         # file event body: the gutter says what changed, the colors say what it
@@ -1378,8 +1443,12 @@ class WatchApp(App):
         for w in reversed(list(self.query(EventWidget))):
             if not w.display:
                 continue
-            if (w.lines_above or w.lines_below
-                    or w.event.kind in ("prompt", "call") or w.event.files):
+            # a Call that has nothing to open must not be what bare `enter`
+            # picks — otherwise "expand the newest expandable event" lands on a
+            # row that then does nothing, which is the failure this fixed
+            if (w.lines_above or w.lines_below or w.event.kind == "prompt"
+                    or w.event.files
+                    or (w.event.kind == "call" and w.call_expandable)):
                 return w
         return None
 

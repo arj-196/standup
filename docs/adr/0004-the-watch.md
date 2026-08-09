@@ -146,11 +146,39 @@ being visible, never invisible, and an allowlist is a table that goes stale by
 default. A local read is the one thing genuinely worth dropping: it changes
 nothing, and `reading` in the status bar already answers for it.
 
-**The header shows the tool's name and one line of its input; the body shows
-more of the same input; neither ever shows the result.** An expanded `Bash`
-event has always shown the command and never its output — the Watch renders
-what was *asked*. A `notion-fetch` result is 50KB of page markdown, and putting
-it in the feed makes the Watch a Transcript.
+**The header carries as much of the input as the row holds; the body carries it
+entire; neither ever shows the result.** The Watch renders what was *asked* — an
+expanded `Bash` event has always shown the command and never its output. A
+`notion-fetch` result is 50KB of page markdown, and putting it in the feed makes
+the Watch a Transcript. The ban covers the expanded body too, so a failed Call
+shows the request that failed and not the error: accepted, and the reason
+`session --tools` exists as the retrospective surface.
+
+**The body is built from the input, never from the header's digest.** A digest
+cannot be expanded back into what it summarised, and for a year the digest was
+the only copy the feed held: `FeedEvent.args` was a string, so
+`{page_id, command, content_updates}` reached the UI as the 14-character
+`update_content` and `enter` had nothing to open. The event carries the input
+dict; the header reads a digest of it, the body reads the input. Median 173
+bytes across this machine's logs, p99 4KB, max 29KB — a full `BACKFILL_CAP` of
+Calls is ~200KB, so there is no size argument for keeping only the summary.
+
+**The body is one row per leaf, by path** (`content_updates[0].new_str`), with a
+value's own newlines becoming rows. Not `json.dumps(indent=2)`: the value being
+read here is 5KB of markdown, which pretty-printing leaves as a single escaped
+string. Structure stays recoverable from the paths, so the reshape is
+presentation, like the diff row shape. No cap and no second expand level — an
+expanded file event already shows every line, and 97% of inputs are under 2KB,
+so a level for the rest is a rule that almost never fires.
+
+**A Call advertises its body** — `▸ N lines`, flipping to `▾`, exactly as a file
+event shows `▸ N lines` and a commit `▸ N files`. It is absent when the header
+already carried the whole input, which makes the absence load-bearing: a Call
+used to advertise nothing either way, so "nothing to open" and "expanding is
+broken" looked identical, and the row that showed least was the one that refused
+to open. Marker and verdict are budgeted *before* the argument and the argument
+clips against what remains: they are the row's two facts — did it work, is there
+more — while the argument is the one part with somewhere else to be read.
 
 **One renderer, shared with the Transcript** (`toolcalls`), which was already
 rendering tool one-liners and rendering them badly: raw
@@ -164,11 +192,11 @@ its input key `id` was absent from a preferred-key tuple. Same payoff as
   carries the same UUID). Printing it names nothing and costs 36 columns of a
   header that clips. A server the log *can* name is kept and joined with `·`,
   because two servers may expose the same `computer`.
-- **The argument is a preferred key's value, else the whole input as compact
-  JSON.** The preferred-key tuple survives from the Transcript because
-  `Read /path` beats `Read {"file_path": "/path"}` — but it is no longer a
-  source of *silence*, which was its actual defect. The JSON fallback means a
-  tool absent from the tuple loses readability, never its argument.
+- **The preferred key decides what *leads* the argument, never what it
+  contains.** The tuple survives from the Transcript because `Read /path` beats
+  `Read {"file_path": "/path"}`; the remaining keys follow it as compact JSON,
+  and a tool absent from the tuple falls to JSON for all of them. Ranking a key
+  used to mean discarding its siblings — see *Tried and retracted*.
 
 **Calls do not fold.** Ten `notion-fetch` calls are ten rows. The Change Run
 exists because `MultiEdit` hunks and git-poll windows are *artifactual*
@@ -182,6 +210,14 @@ split one kind into two marks, which is what the unification was for.
 
 Accepted costs, stated rather than engineered around:
 
+- **Most Calls now carry a disclosure marker.** 2648 of 2957 Calls replayed from
+  this machine's logs (90%) hold more than their header shows, so the right edge
+  is rarely empty. That is the measurement, not a regression: file events carry
+  `▸ N lines` at the same rate, and the 10% without one are exactly the
+  single-argument calls where the header is the whole story.
+- **A long argument now clips sooner.** The digest carries every key, so it
+  reaches the width more often, and the header gives ground before the verdict
+  or the marker do. The argument is the part with a body to be read in full.
 - **The feed is taller.** Those three sessions go 6→29, 26→75, 8→43 rows. A
   Call landing between two edits of one file *closes* that file's Change Run
   under strict adjacency — correct by that rule (the reason two rows didn't
@@ -493,8 +529,20 @@ keyboard.
 
 ## Tried and retracted
 
-Four shipped rules were reversed. The code still carries their shape, so a reader
+Five shipped rules were reversed. The code still carries their shape, so a reader
 diffing against an older spec would otherwise read current behaviour as a bug.
+
+- **"The argument is a preferred key's value" — the key that wins excludes the
+  rest.** Shipped with Calls and reversed *(2026-08-09)*. The tuple was written
+  for single-argument tools, where a bare value beats JSON; 72% of this machine's
+  4615 non-Bash calls are multi-key, and 1108 of them lost their remaining
+  arguments to the ranking. The worst shape is `{page_id, command, …}`, where
+  `command` outranks `page_id` and the row renders as the bare verb
+  `update_content` — a whole screen of Notion writes reading identically, none
+  naming its page. Compounding it, the body was gated on the header having
+  *visibly clipped*, so those 14-character rows were also the ones `enter`
+  refused to open. Both halves are gone: the digest keeps every key, and the body
+  is built from the input.
 
 - **"Highlighting is foreground only — no line washes."** The original
   two-channel doctrine, stated in `theme.py`, the UI docstrings and the manual.

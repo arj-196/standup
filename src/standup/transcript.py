@@ -1,7 +1,8 @@
 """`standup session <handle>` — render a Session's Transcript.
 
 Your prompts and Claude's responses in reading order. Tool calls collapse to
-one-liners; thinking is hidden unless asked for; injected noise (system
+one-liners — `--tools` prints each one's whole input beneath it, never its
+result; thinking is hidden unless asked for; injected noise (system
 reminders, hook output, tool results) is stripped so "you" is what you typed.
 Each assistant turn is annotated with its per-turn Notional Cost.
 
@@ -77,10 +78,20 @@ def _tool_line(block: dict) -> str:
     return toolcalls.one_liner(block.get("name", "tool"), block.get("input"), 60)
 
 
+def _tool_input_lines(block: dict) -> list[str]:
+    """`--tools`: the call's whole input beneath its one-liner — the static
+    counterpart to expanding a **Call** in the Watch, through the same renderer,
+    and bound by the same refusal to show a result (ADR 0004 § Calls)."""
+    rows = toolcalls.input_rows(block.get("input"))
+    return [f"      {path}  {text}" if path else f"      {text}"
+            for path, text in rows]
+
+
 def _assistant_parts(content, show_thinking: bool,
                      looped_ids: frozenset[str] | set[str] = frozenset(),
-                     ) -> tuple[list[str], list[tuple[str, bool]]]:
-    """(prose texts, [(tool one-liner, is part of an above-floor Loop)])."""
+                     show_tools: bool = False,
+                     ) -> tuple[list[str], list[tuple[str, bool, list[str]]]]:
+    """(prose texts, [(tool one-liner, is part of an above-floor Loop, input rows)])."""
     texts, tools = [], []
     if not isinstance(content, list):
         return texts, tools
@@ -93,7 +104,8 @@ def _assistant_parts(content, show_thinking: bool,
         elif t == "thinking" and show_thinking and b.get("thinking", "").strip():
             texts.append("[thinking] " + b["thinking"].strip())
         elif t == "tool_use":
-            tools.append((_tool_line(b), b.get("id") in looped_ids))
+            tools.append((_tool_line(b), b.get("id") in looped_ids,
+                          _tool_input_lines(b) if show_tools else []))
     return texts, tools
 
 
@@ -141,7 +153,8 @@ def _brief_block(brief, st, width: int, wrap) -> list[str]:
     return lines
 
 
-def render_transcript(path: Path, show_thinking: bool = False, raw: bool = False) -> str:
+def render_transcript(path: Path, show_thinking: bool = False, raw: bool = False,
+                      show_tools: bool = False) -> str:
     if raw:
         return path.read_text(errors="replace")
 
@@ -183,8 +196,9 @@ def render_transcript(path: Path, show_thinking: bool = False, raw: bool = False
         out.append(st.yellow(f"── claude {body[10:]}") + tag)
         for t in block["texts"]:
             out.append(wrap(t))
-        for tl, looped in block["tools"]:
+        for tl, looped, inp_lines in block["tools"]:
             out.append(st.dim(f"  ⟳ {tl}") if looped else st.dim(f"  ⏺ {tl}"))
+            out.extend(st.dim(ln) for ln in inp_lines)
         out.append("")
         block = None
 
@@ -218,7 +232,8 @@ def render_transcript(path: Path, show_thinking: bool = False, raw: bool = False
                     out.append(wrap(text))
                     out.append("")
             elif etype == "assistant":
-                texts, tools = _assistant_parts(msg.get("content"), show_thinking, looped_ids)
+                texts, tools = _assistant_parts(msg.get("content"), show_thinking,
+                                                looped_ids, show_tools)
                 if not texts and not tools:
                     continue
                 if block is None:

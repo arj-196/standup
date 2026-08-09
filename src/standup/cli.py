@@ -36,6 +36,10 @@ SUBCOMMANDS = {"cost", "watch", "session", "audit", "diff", "completion",
 #   -t --thinking  -r --raw       -n --stat      -U --context
 #   -P --no-pager  -W --no-wrap
 #
+# Letterless by the same table: `--refresh` and `--projects-dir`, plus
+# `session --tools` — `-t` is `--thinking` and `-T` is reserved for a negation,
+# so it spends the whole word rather than bending either rule.
+#
 # Three rules keep the table honest, and each one costs something:
 #   * an uppercase *boolean* is the negation of its lowercase, which is why
 #     `-p` and `-w` stay unclaimed — a future affirmative `--pager`/`--wrap`
@@ -531,6 +535,7 @@ _standup() {
           _arguments \
             '(-i --in)'{-i,--in}'[newest session in this project instead of here]:project:_standup_projects' \
             '(-t --thinking)'{-t,--thinking}'[include hidden thinking blocks]' \
+            '--tools[each tool call'"'"'s whole input, never its result]' \
             '(-r --raw)'{-r,--raw}'[dump the untouched session JSONL]' \
             '(-P --no-pager)'{-P,--no-pager}'[print instead of paging]' \
             '1:session:_standup_sessions'
@@ -725,7 +730,8 @@ def _cmd_session(argv: list[str]) -> int:
     p = argparse.ArgumentParser(prog="standup session",
                                 description="Read a session's Transcript (prompts + responses). "
                                             "Leads with the Session Brief when one exists; tool calls "
-                                            "collapse to one-liners, and calls belonging to a detected "
+                                            "collapse to one-liners (--tools prints each one's whole "
+                                            "input, never its result), and calls belonging to a detected "
                                             "Loop are gutter-marked ⟳. With no handle: the most recent "
                                             "session in the repo you are standing in — or in the repo "
                                             "you name with --in.")
@@ -738,6 +744,11 @@ def _cmd_session(argv: list[str]) -> int:
                         "current directory; with a handle, a check that the handle is "
                         "one of that project's sessions")
     p.add_argument("-t", "--thinking", action="store_true", help="include hidden thinking blocks")
+    # no short letter: `-t` is `--thinking` globally, and `-T` is reserved for a
+    # negation under ADR 0005 § short option letters
+    p.add_argument("--tools", action="store_true",
+                   help="print each tool call's whole input beneath its one-liner "
+                        "(never its result)")
     p.add_argument("-r", "--raw", action="store_true", help="dump the untouched session JSONL")
     p.add_argument("-P", "--no-pager", action="store_true", help="print instead of opening a pager")
     p.add_argument("--projects-dir", default=os.path.expanduser("~/.claude/projects"), help=argparse.SUPPRESS)
@@ -770,7 +781,8 @@ def _cmd_session(argv: list[str]) -> int:
     except transcript.HandleError as e:
         print(str(e), file=sys.stderr)
         return 1
-    text = header + transcript.render_transcript(path, show_thinking=args.thinking, raw=args.raw)
+    text = header + transcript.render_transcript(path, show_thinking=args.thinking,
+                                                 raw=args.raw, show_tools=args.tools)
     if args.no_pager:
         print(text)
     else:
