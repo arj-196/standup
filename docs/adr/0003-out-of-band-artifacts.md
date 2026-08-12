@@ -63,7 +63,13 @@ function.
   hedging earlier would hedge every artifact written on time. They were
   previously two constants in two modules kept equal by a comment, which is a
   drift waiting to happen — a debounce raised without the tolerance would mark
-  correct artifacts stale.
+  correct artifacts stale. The two measure different quantities on purpose —
+  the debounce compares the *artifact's mtime* to now (it must decide before
+  parsing the file), the hedge compares its `generated` to the *log's* mtime —
+  so they are not each other's inverse at the boundary. The invariant the
+  shared constant buys is one-directional and is what the tests pin: the window
+  in which the generator declines to rewrite sits wholly inside the window in
+  which a reader trusts the claim.
 - **The clock is chosen inside the seam.** `log_advanced_past(generated,
   log_path)` stats the log itself; callers pass a *path*, never a timestamp, so
   no view can substitute its own notion of activity. Exactly *at* the tolerance
@@ -81,15 +87,6 @@ function.
 - **`ROOT` is read at call time**, never captured in a default argument, so the
   durable root is rebindable in one place (which is also what keeps a test run
   out of the real `~/.standup`).
-
-## Tried and retracted
-
-- **The Transcript computing its own staleness** — `standup session` compared
-  the Brief against the newest `timestamp` *inside* the JSONL, because it holds
-  a log path and no Session. That is a view-local clock by another name: a log
-  can grow lines that carry no timestamp the view reads, and the two surfaces
-  could then disagree about the same Brief. Retracted in favour of the one
-  comparison above; the Transcript now passes its log path to the store.
 
 ## The Session Brief
 
@@ -188,6 +185,15 @@ Overhead**, printed after each run. No confirmation prompt — typing the comman
 is the consent — but the price is always shown. The panel roster is versioned
 code: adding an Expert is a code change with an itemised cost trail, not a
 prompt tweak.
+
+## Tried and retracted
+
+- **The Transcript computing its own staleness** — `standup session` compared
+  the Brief against the newest `timestamp` *inside* the JSONL, because it holds
+  a log path and no Session. That is a view-local clock by another name: a log
+  can grow lines that carry no timestamp the view reads, and the two surfaces
+  could then disagree about the same Brief. Retracted in favour of the one
+  comparison above; the Transcript now passes its log path to the store.
 
 ## Alternatives considered
 

@@ -193,24 +193,32 @@ class Store:
 
     def write(self, session_id: str, fields: Mapping[str, object], body: str) -> Path:
         """Write atomically: a reader racing a generator sees the old artifact
-        or the new one, never half a frontmatter block."""
+        or the new one, never half a frontmatter block. The scratch file is
+        per-process, so two generators racing cannot interleave into one."""
         path = self.path_for(session_id)
         path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_name(path.name + ".tmp")
+        tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
         tmp.write_text(_render(fields) + "\n\n" + body.strip() + "\n")
         tmp.replace(path)
         return path
 
-    def written_within_tolerance(self, session_id: str, now: datetime) -> bool:
-        """The generation debounce: an artifact this young is current enough,
-        so generating again would buy nothing a reader could see
-        (ADR 0003 § the Artifact store)."""
+    def written_within_tolerance(self, session_id: str) -> bool:
+        """The generation debounce: an artifact this young is current enough
+        that regenerating would buy nothing a reader could see
+        (ADR 0003 § the Artifact store).
+
+        Reads the artifact's *mtime* against wall-clock now — deliberately not
+        the `generated` field against the log, which is the reader's question:
+        the debounce must answer before the file is parsed, and its job is only
+        to rate-limit the generator. The two meet at the one tolerance, so an
+        artifact the generator declines to rewrite is never one a reader hedges.
+        """
         try:
             written = datetime.fromtimestamp(
                 self.path_for(session_id).stat().st_mtime, tz=timezone.utc)
         except OSError:
             return False
-        return (_utc(now) - written) < TOLERANCE
+        return (datetime.now(timezone.utc) - written) < TOLERANCE
 
     def prune_orphans(self, live_ids: Iterable[str]) -> None:
         """Delete artifacts whose Session log is gone — an orphan goes the way

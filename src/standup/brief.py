@@ -69,17 +69,17 @@ def load_for_sessions(sessions: list[Session]) -> dict[str, Brief]:
     return briefs
 
 
-def save(session_id: str, objective: str, status: str | None, body: str,
-         model: str, usage: dict | None, generated: datetime) -> Path:
-    """Write one Brief. The generator's only door into the store — `briefgen`
-    decides *what* to claim, this decides what a Brief looks like on disk."""
-    return STORE.write(session_id, {
-        "objective": objective,
-        "status": status,
-        "generated": generated,
-        "model": model,
-        "gen_usage": usage if isinstance(usage, dict) else None,
-    }, body or "")
+def save(brief: Brief) -> Path:
+    """Write one Brief — the inverse of `load_one`, so the frontmatter contract
+    is stated once in each direction. `briefgen` decides *what* to claim; this
+    decides what a Brief looks like on disk."""
+    return STORE.write(brief.session_id, {
+        "objective": brief.objective,
+        "status": brief.status,
+        "generated": brief.generated,
+        "model": brief.model,
+        "gen_usage": brief.gen_usage if isinstance(brief.gen_usage, dict) else None,
+    }, brief.body or "")
 
 
 def overhead_cost(brief: Brief) -> float:

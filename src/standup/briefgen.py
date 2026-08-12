@@ -34,6 +34,7 @@ from pathlib import Path
 
 from . import brief, transcript
 from .claude_logs import EDIT_TOOLS
+from .models import Brief
 
 MODEL = "claude-haiku-4-5"
 GEN_TIMEOUT = 120                 # seconds for the claude -p call
@@ -164,8 +165,9 @@ def _generate(session_id: str, transcript: Path, cwd: str | None) -> None:
         if not objective:
             return
         usage = data.get("usage") if isinstance(data.get("usage"), dict) else None
-        brief.save(session_id, objective, status, body, MODEL, usage,
-                   datetime.now(timezone.utc))
+        brief.save(Brief(session_id=session_id, objective=objective, status=status,
+                         generated=datetime.now(timezone.utc), model=MODEL,
+                         body=body, gen_usage=usage))
     except (subprocess.SubprocessError, OSError):
         return
     finally:
@@ -213,7 +215,7 @@ def run_from_hook_stdin() -> int:
     if not tpath.exists() or not _has_footprint(tpath):
         return 0
 
-    if brief.STORE.written_within_tolerance(session_id, datetime.now(timezone.utc)):
+    if brief.STORE.written_within_tolerance(session_id):
         return 0  # debounce
 
     if not _detach():

@@ -17,6 +17,30 @@ from standup import artifacts
 from standup import audit as audit_mod
 from standup import brief as brief_mod
 from standup import claude_logs, cli, render, transcript
+from standup.audit import Audit
+from standup.models import Brief
+
+
+def _save_brief(session_id: str, *, objective: str = "An objective",
+                status: str | None = None, body: str = "body",
+                model: str = "claude-haiku-4-5", usage: dict | None = None,
+                generated: datetime | None = None) -> Brief:
+    b = Brief(session_id=session_id, objective=objective, status=status,
+              generated=generated or datetime.now(timezone.utc), model=model,
+              body=body, gen_usage=usage)
+    brief_mod.save(b)
+    return b
+
+
+def _save_audit(session_id: str, *, title: str = "A title", siblings: int = 0,
+                body: str = "## Verdict\nbody", overhead: list | None = None,
+                generated: datetime | None = None) -> Audit:
+    a = Audit(session_id=session_id, body=body,
+              generated=generated or datetime.now(timezone.utc),
+              target_title=title, siblings_considered=siblings,
+              overhead=overhead or [])
+    audit_mod.save(a)
+    return a
 
 
 def test_a_store_lives_in_the_durable_root_never_the_cache(fake_home):
@@ -30,7 +54,10 @@ def test_a_store_lives_in_the_durable_root_never_the_cache(fake_home):
 
 def test_frontmatter_round_trips_through_the_store():
     """What the generator writes is what the reader reads — every value type the
-    two artifacts carry (text, timestamp, count, JSON object, JSON list)."""
+    two artifacts carry (text, timestamp, count, JSON object, JSON list). One
+    contract, stated once in each direction
+    (ADR 0003 § the Artifact store).
+    """
     store = brief_mod.STORE
     generated = datetime(2026, 7, 22, 21, 40, tzinfo=timezone.utc)
     store.write("sid", {
@@ -74,6 +101,8 @@ def _log_written_at(projects_dir, session_log, when: datetime):
 ], ids=["past tolerance", "exactly at tolerance", "no lag"])
 def test_a_session_that_grew_past_the_claim_stales_it(projects_dir, session_log,
                                                       lag, stale):
+    """Staled, not refreshed, and not until past the tolerance the generator is
+    allowed to lag by (ADR 0003 § the Artifact store)."""
     generated = datetime.now(timezone.utc) - timedelta(hours=2)
     log = _log_written_at(projects_dir, session_log, generated + lag)
 
@@ -82,7 +111,9 @@ def test_a_session_that_grew_past_the_claim_stales_it(projects_dir, session_log,
 
 def test_a_naive_generated_timestamp_is_read_as_utc(projects_dir, session_log):
     """Every writer stamps UTC, so a naive `generated` is a hand edit that
-    dropped the offset — it is compared, not silently exempted from hedging."""
+    dropped the offset — it is compared, not silently exempted from hedging
+    (ADR 0003 § the Artifact store, which retracts refusing the comparison).
+    """
     aware = datetime.now(timezone.utc) - timedelta(hours=2)
     log = _log_written_at(projects_dir, session_log, aware + timedelta(minutes=6))
 
@@ -107,8 +138,8 @@ def test_every_surface_hedges_the_same_brief(projects_dir, session_log, null_cac
     says the Session moved on — and that is the clock both surfaces read."""
     generated = datetime.now(timezone.utc) - timedelta(minutes=30)
     log = _log_written_at(projects_dir, session_log, datetime.now(timezone.utc))
-    brief_mod.save(log.stem, "Teach the inbox to read", "in-progress",
-                   "did some things", "claude-haiku-4-5", None, generated)
+    _save_brief(log.stem, objective="Teach the inbox to read", status="in-progress",
+                body="did some things", generated=generated)
 
     (session,) = claude_logs.scan_sessions(projects_dir, null_cache)
     inbox = brief_mod.load_for_sessions([session])
@@ -121,20 +152,15 @@ def test_every_surface_hedges_the_same_brief(projects_dir, session_log, null_cac
 # ── pruning: an orphan goes the way of a cache row ─────────────────────────
 
 
-def _write_artifact(store, session_id: str) -> None:
-    if store is brief_mod.STORE:
-        brief_mod.save(session_id, "An objective", None, "body",
-                       "claude-haiku-4-5", None, datetime.now(timezone.utc))
-    else:
-        audit_mod.save(session_id, "A title", 0, "## Verdict\nbody", [],
-                       datetime.now(timezone.utc))
+# (store, writer) per artifact kind — the same pruning, over both adapters
+KINDS = [(brief_mod.STORE, _save_brief), (audit_mod.STORE, _save_audit)]
 
 
-@pytest.mark.parametrize("store", [brief_mod.STORE, audit_mod.STORE],
-                         ids=["briefs", "audits"])
-def test_an_orphan_artifact_is_pruned_and_a_live_one_kept(store):
-    _write_artifact(store, "live")
-    _write_artifact(store, "dead")
+@pytest.mark.parametrize("store, save", KINDS, ids=["briefs", "audits"])
+def test_an_orphan_artifact_is_pruned_and_a_live_one_kept(store, save):
+    """An orphan goes the way of a cache row (ADR 0003 § the shared model)."""
+    save("live")
+    save("dead")
 
     store.prune_orphans({"live"})
 
@@ -142,9 +168,8 @@ def test_an_orphan_artifact_is_pruned_and_a_live_one_kept(store):
     assert store.read("dead") is None
 
 
-@pytest.mark.parametrize("store", [brief_mod.STORE, audit_mod.STORE],
-                         ids=["briefs", "audits"])
-def test_pruning_an_absent_store_is_not_an_error(store):
+@pytest.mark.parametrize("store, save", KINDS, ids=["briefs", "audits"])
+def test_pruning_an_absent_store_is_not_an_error(store, save):
     """Nothing has ever been generated: pruning is best-effort, never raises."""
     assert not store.dir.exists()
     store.prune_orphans({"live"})
@@ -157,8 +182,8 @@ def test_the_inbox_prunes_both_kinds_of_artifact(projects_dir, scratch_repo,
     repo = scratch_repo("tt")
     log = session_log(cwd=str(repo.path)).save(projects_dir)
     for sid in (log.stem, "dead"):
-        _write_artifact(brief_mod.STORE, sid)
-        _write_artifact(audit_mod.STORE, sid)
+        _save_brief(sid)
+        _save_audit(sid)
 
     assert cli.main(["--projects-dir", str(projects_dir), "-j"]) == 0
     capsys.readouterr()
@@ -172,31 +197,36 @@ def test_the_inbox_prunes_both_kinds_of_artifact(projects_dir, scratch_repo,
 # ── one tolerance behind both the debounce and the hedge ───────────────────
 
 
-@pytest.mark.parametrize("lag, fresh", [
-    (timedelta(minutes=4), True),
-    (timedelta(minutes=6), False),
-], ids=["inside tolerance", "past tolerance"])
-def test_the_generation_debounce_flips_where_the_hedge_does(projects_dir, session_log,
-                                                            lag, fresh):
-    """The generator declines to rewrite exactly while a reader would not hedge:
-    one number, not two kept equal by a comment
-    (ADR 0003 § the Artifact store)."""
+@pytest.mark.parametrize("lag, fresh, stale", [
+    (timedelta(minutes=4), True, False),
+    (artifacts.TOLERANCE, False, False),   # the generator may rewrite here; a
+    (timedelta(minutes=6), False, True),   # reader does not hedge until past it
+], ids=["inside tolerance", "at tolerance", "past tolerance"])
+def test_the_generator_never_declines_to_rewrite_what_a_reader_hedges(
+        projects_dir, session_log, lag, fresh, stale):
+    """The debounce and the hedge are the same number, so the window where the
+    generator refuses to rewrite sits wholly inside the window where a reader
+    trusts the claim — never the other way round
+    (ADR 0003 § the Artifact store). They read different quantities: the
+    artifact's own mtime against now, and its `generated` against the log.
+    """
     now = datetime.now(timezone.utc)
     generated = now - lag
-    brief_mod.save("sid", "An objective", None, "body", "claude-haiku-4-5",
-                   None, generated)
+    _save_brief("sid", generated=generated)
     os.utime(brief_mod.STORE.path_for("sid"),
              (generated.timestamp(), generated.timestamp()))
     log = _log_written_at(projects_dir, session_log, now)
 
-    assert brief_mod.STORE.written_within_tolerance("sid", now) is fresh
-    assert artifacts.log_advanced_past(generated, log) is not fresh
+    assert brief_mod.STORE.written_within_tolerance("sid") is fresh
+    assert artifacts.log_advanced_past(generated, log) is stale
+    assert not (fresh and stale)     # the invariant the shared constant buys
 
 
 def test_a_generation_lock_can_be_taken_on_a_fresh_install():
     """The lock is the first thing a generation writes, and on a machine that
     has never produced an artifact its directory does not exist yet. The store
-    owns the location, so the store makes the room."""
+    owns the location, so the store makes the room
+    (ADR 0003 § the Artifact store)."""
     assert not brief_mod.STORE.dir.exists()
 
     lock = brief_mod.STORE.lock_for("sid")
@@ -214,8 +244,8 @@ def test_a_generation_lock_can_be_taken_on_a_fresh_install():
 def test_a_saved_brief_reads_back_as_the_brief_the_views_render():
     generated = datetime.now(timezone.utc)
     usage = {"input_tokens": 12, "output_tokens": 340}
-    brief_mod.save("sid", "Teach the inbox to read", "in-progress",
-                   "- did a thing", "claude-haiku-4-5", usage, generated)
+    _save_brief("sid", objective="Teach the inbox to read", status="in-progress",
+                body="- did a thing", usage=usage, generated=generated)
 
     b = brief_mod.load_one("sid")
 
@@ -237,8 +267,9 @@ def test_a_saved_audit_reads_back_with_its_itemised_overhead():
          "usage": {"input_tokens": 400, "output_tokens": 600}},
         {"label": "no-usage", "model": "claude-sonnet-5", "usage": None},
     ]
-    audit_mod.save("sid", "Teach the inbox to read", 12,
-                   "## Verdict\nMostly scriptable.", overhead, generated)
+    _save_audit("sid", title="Teach the inbox to read", siblings=12,
+                body="## Verdict\nMostly scriptable.", overhead=overhead,
+                generated=generated)
 
     a = audit_mod.load_one("sid")
 
@@ -256,19 +287,19 @@ def test_both_artifacts_render_as_marked_claims(projects_dir, session_log):
     are only a status, not a conclusion (CONTEXT.md → Session Brief, Audit)."""
     generated = datetime.now(timezone.utc)
     log = _log_written_at(projects_dir, session_log, generated)
-    brief_mod.save(log.stem, "Teach the inbox to read", "in-progress",
-                   "- read a fixture", "claude-haiku-4-5", None, generated)
-    audit_mod.save(log.stem, "Teach the inbox to read", 3,
-                   "## Verdict\nMostly scriptable.",
-                   [{"label": "concluder", "model": "claude-opus-5",
-                     "usage": {"input_tokens": 400, "output_tokens": 600}}],
-                   generated)
+    _save_brief(log.stem, objective="Teach the inbox to read", status="in-progress",
+                body="- read a fixture", generated=generated)
+    _save_audit(log.stem, title="Teach the inbox to read", siblings=3,
+                body="## Verdict\nMostly scriptable.",
+                overhead=[{"label": "concluder", "model": "claude-opus-5",
+                           "usage": {"input_tokens": 400, "output_tokens": 600}}],
+                generated=generated)
 
     transcript_text = transcript.render_transcript(log)
     audit_text = cli._render_audit(audit_mod.load_one(log.stem),
                                    render._style(), 100)
 
-    assert "~ brief · in-progress" in transcript_text
+    assert "── ~ brief · in-progress " in transcript_text   # the claim's header
     assert "Teach the inbox to read" in transcript_text
     assert "- read a fixture" in transcript_text
     assert generated.date().isoformat() in transcript_text   # provenance line
@@ -280,7 +311,8 @@ def test_both_artifacts_render_as_marked_claims(projects_dir, session_log):
 
 def test_an_unreadable_artifact_degrades_to_absent():
     """A hand-edited file the reader cannot make sense of is not an error — the
-    view shows what it showed before the artifact existed."""
+    view shows what it showed before the artifact existed
+    (ADR 0003 § the shared model)."""
     brief_mod.STORE.path_for("sid").parent.mkdir(parents=True, exist_ok=True)
     brief_mod.STORE.path_for("sid").write_text("no frontmatter, no objective\n")
 

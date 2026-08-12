@@ -31,6 +31,7 @@ from pathlib import Path
 from . import audit as audit_mod
 from . import brief as brief_mod
 from . import gitstate, loops, transcript
+from .audit import Audit
 from .models import Session
 
 EXPERT_MODEL = "claude-sonnet-5"
@@ -305,5 +306,7 @@ def generate(log_path: Path, projects_dir: Path, cache, progress=lambda r: None)
     except Exception as e:  # SDK/transport errors: surface, never store partials
         raise AuditError(str(e)) from e
 
-    return audit_mod.save(sid, target.title, len(siblings), concluder["text"],
-                          reports + [concluder], datetime.now(timezone.utc))
+    return audit_mod.save(Audit(
+        session_id=sid, body=concluder["text"],
+        generated=datetime.now(timezone.utc), target_title=target.title,
+        siblings_considered=len(siblings), overhead=reports + [concluder]))

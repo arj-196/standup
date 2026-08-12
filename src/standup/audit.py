@@ -79,16 +79,15 @@ def load_one(session_id: str) -> Audit | None:
     )
 
 
-def save(session_id: str, target_title: str, siblings_considered: int,
-         body: str, overhead: list[dict], generated: datetime) -> Path:
-    """Write one Audit. The panel's only door into the store — `auditgen`
-    decides what the panel concluded, this decides what an Audit looks like
-    on disk."""
-    return STORE.write(session_id, {
-        "session_id": session_id,
-        "target_title": target_title,
-        "generated": generated,
-        "siblings_considered": siblings_considered,
+def save(audit: Audit) -> Path:
+    """Write one Audit — the inverse of `load_one`. A pass that recorded no
+    `usage` is not written: it could not be itemised as Audit Overhead, and an
+    Audit's frontmatter is exactly what the cost views can price."""
+    return STORE.write(audit.session_id, {
+        "session_id": audit.session_id,
+        "target_title": audit.target_title,
+        "generated": audit.generated,
+        "siblings_considered": audit.siblings_considered,
         "overhead": [{"label": o["label"], "model": o["model"], "usage": o["usage"]}
-                     for o in overhead if o.get("usage")],
-    }, body)
+                     for o in audit.overhead if o.get("usage")],
+    }, audit.body)
