@@ -12,7 +12,7 @@ their reasons, and accepted costs. Drop everything else.
 |---|---|---|
 | [0001](0001-what-standup-reads-and-what-it-keeps.md) | What Standup reads, what it keeps, and what time means | Scan Universe; retired Checkpoint and the Recent Window; Derived Cache and the durable-root split; the one log reader and what `last_activity` means; one module owns the scan (Repo Entry identity, cache lifecycle); `--since` as the only knob; ageless attribution |
 | [0002](0002-notional-cost-rate-card.md) | Notional Cost from a single dated Rate Card | why no Real Spend is reported at all; subagent usage folds into the parent Session |
-| [0003](0003-out-of-band-artifacts.md) | Out-of-Band Artifacts | the model both share; the Session Brief and its Stop hook; the Audit, Loops, and the fixed Expert Panel |
+| [0003](0003-out-of-band-artifacts.md) | Out-of-Band Artifacts | the model both share; the one Artifact store behind them (tolerance, clock, naive timestamps); the Session Brief and its Stop hook; the Audit, Loops, and the fixed Expert Panel |
 | [0004](0004-the-watch.md) | The Watch | event source; stream/UI boundary; motion never outliving data; Activity State; Change Runs; removed-row field; fold vs clip; selection in the lane; mouse gestures |
 | [0005](0005-addressing-on-the-command-line.md) | Addressing on the command line | Project Handles; verb-first vs object-first; `@hash`; short option letters; the reserved-letter rule |
 | [0006](0006-committed-is-terminal-in-a-remoteless-repo.md) | Committed is terminal in a Remoteless Repo | repo-relative terminal state |

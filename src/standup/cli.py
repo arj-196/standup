@@ -9,6 +9,7 @@ from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from . import artifacts
 from . import audit as audit_mod
 from . import brief as brief_mod
 from . import cost, handles, loops, rates, render, transcript, universe
@@ -437,11 +438,7 @@ def _cmd_audit(argv: list[str]) -> int:
                 return 1
             print()
 
-    try:
-        mtime = datetime.fromtimestamp(log_path.stat().st_mtime, tz=timezone.utc)
-    except OSError:
-        mtime = None
-    audit_mod.stamp_staleness(existing, mtime)
+    artifacts.stamp_staleness(existing, log_path)
     text = _render_audit(existing, st, min(width, 100))
     if args.no_pager or not sys.stdout.isatty():
         print(text)
@@ -924,12 +921,12 @@ def _cmd_inbox(argv: list[str]) -> int:
         sessions = u.sessions()
 
         # Session Briefs (ADR 0003 § the Session Brief): read-only join, then
-        # drop briefs for dead logs.
+        # drop the artifacts of dead logs — both kinds, through the one store
+        # (ADR 0003 § the Artifact store).
         briefs = brief_mod.load_for_sessions(sessions)
         live_ids = {s.session_id for s in sessions}
-        brief_mod.prune_orphans(live_ids)
-        # Audits mirror the Brief lifecycle (ADR 0003 § the Audit)
-        audit_mod.prune_orphans(live_ids)
+        brief_mod.STORE.prune_orphans(live_ids)
+        audit_mod.STORE.prune_orphans(live_ids)
 
         if args.json:
             print(_to_json(entries, sessions, since, now))
