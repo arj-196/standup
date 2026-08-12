@@ -87,18 +87,15 @@ def turn_cost(model: str | None, u: dict) -> float | None:
 def turn_tokens(u: dict) -> dict[str, int]:
     """Four display buckets for one turn.
 
-    Deliberately not `cache_write_split`: display reads the flat
-    `cache_creation_input_tokens` first and the sub-object only as a fallback,
-    the opposite preference to pricing. The two agree on every log seen so far;
-    which one is right when they disagree is not this change's question.
+    The cache-write bucket is `cache_write_split`'s sum, so the number shown is
+    the number priced. Display used to prefer the flat
+    `cache_creation_input_tokens` and fall back to the sub-object — the
+    opposite preference to pricing — which agreed on every log seen but would
+    have priced one figure and printed another on a log where the two differ.
     """
-    cw = u.get("cache_creation_input_tokens", 0)
-    if not cw:
-        cc = u.get("cache_creation") or {}
-        cw = cc.get("ephemeral_5m_input_tokens", 0) + cc.get("ephemeral_1h_input_tokens", 0)
     return {
         "input": u.get("input_tokens", 0),
         "output": u.get("output_tokens", 0),
-        "cache_write": cw,
+        "cache_write": sum(cache_write_split(u)),
         "cache_read": u.get("cache_read_input_tokens", 0),
     }

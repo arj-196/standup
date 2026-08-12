@@ -267,7 +267,11 @@ def _cost_json(projects, window_start, label, now, order) -> str:
                             }
                             for l in s.loops
                         ],
-                        "last_activity": s.session.last_activity.isoformat() if s.session.last_activity else None,
+                        # the newest turn this row's figures counted
+                        # (`SessionCost.last_turn`), which is what the view
+                        # ranks and shows — not the log's mtime, which the
+                        # inbox payload's field of this name carries
+                        "last_activity": s.last_turn.isoformat() if s.last_turn else None,
                     }
                     for s in p.sessions
                 ],
@@ -308,7 +312,7 @@ def _cmd_cost(argv: list[str]) -> int:
     order = "recent" if args.recent else "cost"
 
     with universe.open_universe(args.projects_dir) as u:
-        session_costs = cost.scan_session_costs(u.projects_dir, window_start)
+        session_costs = cost.scan_session_costs(u.projects_dir, window_start, u.cache)
         projects = cost.group_by_project(session_costs, order)
         cost.attach_briefs(projects)
         cost.attach_audit_overhead(projects)
@@ -946,7 +950,7 @@ def _cmd_inbox(argv: list[str]) -> int:
         print(render.render_overview(entries, since, now, show_all=args.all,
                                      window=window, briefs=briefs))
         if args.all:  # optional notional-load footer, retrospective only (CONTEXT.md)
-            sc = cost.scan_session_costs(u.projects_dir, since)
+            sc = cost.scan_session_costs(u.projects_dir, since, u.cache)
             print(render.render_cost_footer(sc, window))
     return 0
 

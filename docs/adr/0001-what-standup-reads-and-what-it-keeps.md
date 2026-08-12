@@ -116,9 +116,18 @@ separate files and therefore separate readings; folding them is the caller's.
 log last grew — and nothing else. It is the staleness clock for out-of-band
 artifacts (ADR 0003), which ask whether the session moved on after an artifact
 was written; only the file's own clock answers that. "When the model last
-spoke" is a different question and has its own name, `ParsedLog.last_turn`.
-The cost view still overwrites the field with a window-bounded reading of its
-own; removing that divergence is what migrating it onto this reader is for.
+spoke" is a different question and has its own name, `ParsedLog.last_turn`;
+its window-bounded form, which the cost view ranks `--recent` by and prints as
+a row's recency, is `cost.SessionCost.last_turn`. No view overwrites the field.
+
+**The cost view is migrated** (its scanner is deleted): it reads each log with
+`read_log`, filters `turns` by the window, and folds them with
+`usage_totals` — one fold over the parent's turns concatenated with its
+subagents', because pricing is per-turn (ADR 0002) and one Session's turns are
+one list however many files they came from. A subagent transcript is a log
+too, so it gets a cache row of its own; because it lives below the sweep's
+`*/*.jsonl` glob and is no Session, `scan_sessions` names those ids live
+explicitly or the prune would discard them on every inbox run.
 
 Expand first, then contract: the typed reading landed beside the existing
 scanners rather than under them, so no view changed behaviour on the day the

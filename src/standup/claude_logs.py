@@ -76,11 +76,11 @@ def _parse_ts(raw: str | None) -> datetime | None:
 def title_hint(line: str) -> bool:
     """Does this raw JSONL line plausibly carry one of a Session's title fields?
 
-    The cheap prefilter that lets a scanner skip `json.loads` on the ~99% of
-    lines that hold no title. Paired with `apply_title_fields`, this is the one
-    place that knows the log's title schema: `cost` runs a second scanner (it
-    reads per-turn `usage`, which the inbox's sweep does not), and when it
-    carried its own copy of the pair the two drifted.
+    The cheap prefilter that lets the inbox's sweep skip `json.loads` on the
+    ~99% of lines that hold no title. Paired with `apply_title_fields`, this is
+    the one place that knows the log's title schema — `cost` used to carry its
+    own copy of the pair, and a mistyped prefilter in it silently demoted every
+    session title to its last prompt (ADR 0001 § the one log reader).
     """
     return '"custom-title"' in line or '"ai-title"' in line or '"last-prompt"' in line
 
@@ -531,6 +531,12 @@ def scan_sessions(projects_dir: Path, cache) -> list[Session]:
             cache.put_session(sid, st.st_size, st.st_mtime_ns, _to_cache(session))
         if session.cwd:
             sessions.append(session)
+    # A subagent transcript is a log with a cache row of its own — the cost
+    # view reads one per delegating Session (ADR 0002 § subagent usage) — but
+    # it lives a level below this sweep's glob and is no Session, so it never
+    # enters the list above. Name it live anyway: a prune that knew only the
+    # ids here would drop those readings on every inbox run.
+    live_ids.update(f.stem for f in projects_dir.glob("*/*/subagents/agent-*.jsonl"))
     cache.prune(live_ids)
     return sessions
 

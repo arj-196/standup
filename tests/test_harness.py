@@ -67,12 +67,13 @@ def test_titles_follow_their_precedence(projects_dir, null_cache):
     assert s.last_prompt == "do the thing"
 
 
-def test_the_cost_scanner_prices_the_fixture_turns(projects_dir, session_log):
+def test_the_cost_view_prices_the_fixture_turns(projects_dir, session_log,
+                                               null_cache):
     session = session_log(cwd="/tmp/tt")
     session.save(projects_dir)
     window_start = datetime.now(timezone.utc) - timedelta(days=1)
 
-    (sc,) = cost.scan_session_costs(projects_dir, window_start)
+    (sc,) = cost.scan_session_costs(projects_dir, window_start, null_cache)
 
     assert sc.turns == len(session.usages)
     assert sc.unpriced_turns == 0
