@@ -9,7 +9,16 @@ change in how the question is *phrased* to git has to leave these events alone.
 
 from __future__ import annotations
 
+from standup import universe
 from standup.watchstream import PUSH_POLL_EVERY, WatchStream
+
+
+def _watch(repo, projects_dir) -> WatchStream:
+    """A WatchStream over the Scan Universe, which the Watch reads once at
+    launch and does not hold open (the Derived Cache is closed before the feed
+    runs)."""
+    with universe.open_universe(projects_dir) as u:
+        return WatchStream(u, str(repo.path))
 
 
 def _git_poll(ws) -> list:
@@ -19,7 +28,7 @@ def _git_poll(ws) -> list:
 
 def test_a_dirty_file_is_narrated_as_its_own_delta(scratch_repo, projects_dir):
     repo = scratch_repo("tt")
-    ws = WatchStream(str(repo.path), projects_dir)
+    ws = _watch(repo, projects_dir)
 
     repo.write("alpha.py", "print('one')\n")
     (ev,) = [e for e in _git_poll(ws) if e.kind == "file"]
@@ -41,7 +50,7 @@ def test_dirt_that_predates_the_watch_is_old_news(scratch_repo, projects_dir):
     repo = scratch_repo("tt")
     repo.write("alpha.py", "print('one')\n")
 
-    ws = WatchStream(str(repo.path), projects_dir)
+    ws = _watch(repo, projects_dir)
 
     assert ws.git.dirty_count() == 1
     assert [e for e in _git_poll(ws) if e.kind == "file"] == []
@@ -54,7 +63,7 @@ def test_a_commit_is_an_event_carrying_its_own_files(scratch_repo, projects_dir)
     repo = scratch_repo("tt")
     repo.write("alpha.py", "print('one')\n")
     repo.commit("Add alpha")
-    ws = WatchStream(str(repo.path), projects_dir)
+    ws = _watch(repo, projects_dir)
 
     repo.write("alpha.py", "print('one')\nprint('two')\n")
     repo.write("beta.py", "print('three')\n")
@@ -73,7 +82,7 @@ def test_a_commit_is_an_event_carrying_its_own_files(scratch_repo, projects_dir)
 def test_a_commit_is_attributed_to_the_session_that_claimed_its_sha(
         scratch_repo, projects_dir):
     repo = scratch_repo("tt")
-    ws = WatchStream(str(repo.path), projects_dir)
+    ws = _watch(repo, projects_dir)
     repo.write("alpha.py", "print('one')\n")
     short = repo.commit("Add alpha")
 
@@ -86,7 +95,7 @@ def test_a_commit_is_attributed_to_the_session_that_claimed_its_sha(
 
 def test_a_branch_switch_is_an_event(scratch_repo, projects_dir):
     repo = scratch_repo("tt")
-    ws = WatchStream(str(repo.path), projects_dir)
+    ws = _watch(repo, projects_dir)
 
     repo.git("checkout", "-b", "feature")
 
@@ -102,7 +111,7 @@ def test_a_push_is_counted_off_the_unpushed_count(scratch_repo, projects_dir):
     repo = scratch_repo("tt", remote=True)
     repo.write("alpha.py", "print('one')\n")
     repo.commit("Add alpha")
-    ws = WatchStream(str(repo.path), projects_dir)
+    ws = _watch(repo, projects_dir)
     assert ws.git.unpushed[str(repo.path)] == 1
 
     repo.push()
@@ -122,7 +131,7 @@ def test_a_remoteless_repo_never_reports_a_push(scratch_repo, projects_dir):
     repo = scratch_repo("tt")
     repo.write("alpha.py", "print('one')\n")
     repo.commit("Add alpha")
-    ws = WatchStream(str(repo.path), projects_dir)
+    ws = _watch(repo, projects_dir)
 
     for _ in range(PUSH_POLL_EVERY * 2):
         assert [e for e in _git_poll(ws) if e.kind == "push"] == []
