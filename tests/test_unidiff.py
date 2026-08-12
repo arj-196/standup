@@ -79,7 +79,8 @@ def test_a_quoted_path_is_unquoted_once_for_both_surfaces(scratch_repo):
     """git C-quotes a path holding non-ASCII bytes (`"b/caf\\303\\251.txt"`).
     Both readers used to leave debris — the Watch's kept the `b/`, `unidiff`'s
     kept the quotes too — and `diffview` joins the path onto the checkout to
-    attribute it, so debris means a path that matches nothing on disk."""
+    attribute it, so debris means a path that matches nothing on disk
+    (ADR 0004 § the stream/UI boundary)."""
     repo = scratch_repo("quoted")
     repo.write("café.txt", "x\n")
     sha = repo.commit("add a non-ASCII path")
@@ -92,7 +93,41 @@ def test_a_quoted_path_is_unquoted_once_for_both_surfaces(scratch_repo):
     assert [fd.path for fd in unidiff.parse(out)] == ["café.txt"]
 
 
+def test_a_deleted_quoted_path_reads_off_the_git_header(scratch_repo):
+    """A delete has no `+++` to be authoritative — it is `/dev/null` — so the
+    `diff --git` line is the only source, and there both quoted sides sit on
+    one line. The closing quote ends the a-side (ADR 0004 § the stream/UI
+    boundary)."""
+    repo = scratch_repo("delquoted")
+    repo.write("café.txt", "x\n")
+    repo.commit("add it")
+    (repo.path / "café.txt").unlink()
+    sha = repo.commit("delete it")
+
+    (f,) = commit_files(repo, sha)
+
+    assert (f.path, f.change, f.removed) == ("café.txt", "delete", "x")
+
+
+def test_a_path_with_a_space_drops_gits_tab_delimiter(scratch_repo):
+    """git terminates a `+++` field with a literal tab when the name holds a
+    space — `+++ b/my file.txt\\t`. The tab is git's delimiter, not part of the
+    name; keeping it yields a path matching nothing on disk. This is the
+    reading the Watch had and `unidiff` did not, so merging the two had to take
+    the union (ADR 0004 § the stream/UI boundary)."""
+    repo = scratch_repo("spaced")
+    repo.write("my file.txt", "x\n")
+    sha = repo.commit("add a spaced path")
+
+    (f,) = commit_files(repo, sha)
+
+    assert (f.path, f.change) == ("my file.txt", "create")
+
+
 def test_a_rename_reads_the_post_image_path(scratch_repo):
+    """`rename to` names the new path, and it is the new path the Watch shows:
+    a rename event is about where the file *is* (ADR 0004 § the stream/UI
+    boundary)."""
     repo = scratch_repo("renamed")
     repo.write("old.py", "x = 1\n" * 20)
     repo.commit("add old.py")
@@ -179,6 +214,8 @@ def test_a_binary_file_is_left_out_of_the_file_list(scratch_repo):
 
 
 def test_the_file_summary_line_is_composed_once():
+    """`path · change · +N −M`, in `diffrows` beside the shared row shape
+    (ADR 0004 § the stream/UI boundary)."""
     t = Theme(depth="truecolor")
 
     line = diffrows.file_summary(t, "src/a.py", "modify", 2, 1)
@@ -187,6 +224,8 @@ def test_the_file_summary_line_is_composed_once():
 
 
 def test_the_file_summary_pads_the_path_column_to_a_width():
+    """`pad` aligns the change column down a list of ragged paths; standing
+    alone the line takes two spaces (ADR 0004 § the stream/UI boundary)."""
     t = Theme(depth="truecolor")
 
     line = diffrows.file_summary(t, "a.py", "create", 3, 0, pad=10)
@@ -196,7 +235,8 @@ def test_the_file_summary_pads_the_path_column_to_a_width():
 
 def test_the_file_summary_carries_a_note_instead_of_counts():
     """A binary file, or one the Attributed Diff could not read, says so where
-    the counts would be — never `+0 −0`, which claims an empty change."""
+    the counts would be — never `+0 −0`, which claims an empty change
+    (ADR 0004 § the stream/UI boundary)."""
     t = Theme(depth="truecolor")
 
     line = diffrows.file_summary(t, "blob.bin", "modify", 0, 0, note="binary")
@@ -207,7 +247,8 @@ def test_the_file_summary_carries_a_note_instead_of_counts():
 def test_both_diff_surfaces_render_the_same_file_summary():
     """The Watch's commit file list and the Attributed Diff's `--stat` line are
     the same statement about the same file, so they are one composition. Only
-    each surface's own gutter may differ."""
+    each surface's own gutter may differ (ADR 0004 § the stream/UI
+    boundary)."""
     t = Theme(depth="truecolor")
     pad = len("src/a.py") + 2          # the Watch's own rule for a one-file list
     summary = diffrows.file_summary(t, "src/a.py", "modify", 2, 1, pad=pad)

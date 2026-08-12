@@ -611,7 +611,8 @@ class _GitWatcher:
     @staticmethod
     def _line_diff(old: str, new: str) -> tuple[str, str]:
         """(added, removed) line blocks between two snapshots — the dirty-file
-        counterpart of `_commit_files`, and the same flat shape.
+        counterpart of `_commit_files`, and the same flat shape
+        (ADR 0004 § the stream/UI boundary).
 
         Read off the matcher's **opcodes**, never off a formatted diff. This
         used to call `difflib.unified_diff` and strain `---`/`+++` back out of
