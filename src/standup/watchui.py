@@ -654,10 +654,8 @@ class EventWidget(Static):
                 out.append("\n")
                 out.append_text(self._prefix(first=False))
                 out.append("      ")
-                out.append_text(diffrows.path_text(self.t, f.path))
-                out.append(" " * max(1, pad - len(f.path)))
-                out.append(f"{f.change}  ", style=t.style("muted"))
-                out.append_text(diffrows.counts(self.t, plus, minus))
+                out.append_text(diffrows.file_summary(t, f.path, f.change,
+                                                      plus, minus, pad=pad))
             if len(blocks) > COMMIT_FILE_LINES:
                 self._more_row(out, len(blocks) - COMMIT_FILE_LINES, "files")
             return out

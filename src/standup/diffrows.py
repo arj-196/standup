@@ -140,6 +140,31 @@ def counts(t: Theme, added: int, removed: int) -> Text:
     return out
 
 
+def file_summary(t: Theme, path: str, change: str, added: int, removed: int,
+                 *, pad: int = 0, note: str | None = None) -> Text:
+    """One file's line in a file list: `path · change · +N −M`.
+
+    Both diff surfaces print it — the Watch's expanded commit at level 1, the
+    Attributed Diff's `--stat` — about the same file, from the same parser, so
+    it is one composition here rather than two that drift. Each surface still
+    owns what sits *left* of it: a session lane there, a branch tag here.
+
+    `pad` right-pads the path so the change column lines up down a list of
+    ragged paths (0 = two spaces, for a line standing alone). `note` replaces
+    the counts where there is no body to count — a binary blob, a diff that
+    could not be read — because `+0 −0` claims an empty change rather than an
+    unread one.
+    """
+    out = path_text(t, path)
+    out.append(" " * max(1, pad - len(path)) if pad else "  ")
+    out.append(f"{change}  ", style=t.style("muted"))
+    if note is not None:
+        out.append(note, style=t.style("faint"))
+    else:
+        out.append_text(counts(t, added, removed))
+    return out
+
+
 def fold(t: Theme, line: Text, avail: int, wrap: bool = True,
          wrap_rows: int = WRAP_ROWS) -> list[Text]:
     """A body line as the rows it occupies (ADR 0004 § fold, don't clip).
