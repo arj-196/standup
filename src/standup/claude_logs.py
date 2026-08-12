@@ -47,9 +47,14 @@ _CMD_ARGS_RE = re.compile(r"<command-args>(.*?)</command-args>", re.DOTALL)
 _CMD_TAG_RE = re.compile(r"</?command-[^>]*>", re.DOTALL)
 
 
-def _mtime(path: Path) -> datetime | None:
+def log_mtime(path: Path) -> datetime | None:
     """A log's last-append time — the one meaning of a Session's
-    `last_activity` (ADR 0001 § the one log reader)."""
+    `last_activity` (ADR 0001 § the one log reader), and what a windowed view
+    gates a file on before opening it. None when the file cannot be stat'd.
+
+    Public because it is the same question outside this module: the cost view
+    asks it of every log and every subagent transcript.
+    """
     try:
         return datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
     except OSError:
@@ -404,7 +409,7 @@ def parse_log(path: Path | str) -> ParsedLog:
     """
     path = Path(path)
     session = Session(session_id=path.stem, log_path=str(path),
-                      last_activity=_mtime(path))
+                      last_activity=log_mtime(path))
     parsed = ParsedLog(session=session)
     try:
         fh = open(path, errors="replace")

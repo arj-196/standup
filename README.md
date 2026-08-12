@@ -365,8 +365,8 @@ summarised, so the price of the feature is never hidden (ADR 0003 § the Session
 show where consumption concentrates — ranked by project, then by session, with
 a token-bucket breakdown and a one-word "why" tag (`cache-heavy`, `out-heavy`,
 `fable`) so the expensive shape is visible. The default ranking is by cost;
-`--recent` (`-l`, *latest first*) re-orders both levels by last activity,
-newest first — for reviewing
+`--recent` (`-l`, *latest first*) re-orders both levels by their newest counted
+turn — the recency of the priced work itself, not of the log file — for reviewing
 what your latest sessions cost, however cheap. A re-ordered view says so: the
 header gains `by recency`, and each overview line shows the recency that ranked
 it, so the money column never reads as mis-sorted. Each session in the drill-down is

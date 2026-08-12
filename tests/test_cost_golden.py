@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 from datetime import datetime, timedelta, timezone
 
 from standup import cli
@@ -106,6 +107,24 @@ def test_the_drill_down_is_what_it_was(projects_dir, capsys, monkeypatch):
                "--projects-dir", str(projects_dir))
 
     assert _normalise(out) == DETAIL
+
+
+def test_the_view_is_byte_identical_warm_cold_and_deleted(
+        projects_dir, fake_home, capsys, monkeypatch):
+    """The cost view is served from the Derived Cache now, so it inherits the
+    cache's contract as well as its speed: a pure accelerator never changes
+    output (ADR 0001 § the Derived Cache)."""
+    monkeypatch.setenv("COLUMNS", "100")
+    _universe(projects_dir)
+    argv = ("cost", "-s", "30d", "-P", "--projects-dir", str(projects_dir))
+
+    cold = _run(capsys, *argv)
+    assert (fake_home / ".standup" / "cache").is_dir(), "nothing was cached"
+    warm = _run(capsys, *argv)
+    shutil.rmtree(fake_home / ".standup" / "cache")
+    deleted = _run(capsys, *argv)
+
+    assert cold == warm == deleted
 
 
 def test_the_json_payload_is_what_it_was(projects_dir, capsys):

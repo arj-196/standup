@@ -52,11 +52,12 @@ def test_a_warm_cost_scan_reparses_nothing(projects_dir, session_log, monkeypatc
 
 def test_a_subagent_reading_survives_the_inboxs_prune(
         projects_dir, session_log, monkeypatch):
-    """The Derived Cache prunes the rows of logs that are gone. A subagent
-    transcript is a log the inbox's sweep never enumerates — it globs
-    `*/*.jsonl` and a transcript sits a level below that — so a prune that
-    knew only the sweep's ids would throw away the cost view's subagent
-    readings on every inbox run (`standup -a` does both in one command)."""
+    """The Derived Cache prunes the rows of logs that are gone
+    (ADR 0001 § the Derived Cache). A subagent transcript is a log the inbox's
+    sweep never enumerates — it globs `*/*.jsonl` and a transcript sits a level
+    below that — so a prune that knew only the sweep's ids would throw away the
+    cost view's subagent readings on every inbox run (`standup -a` does both in
+    one command; ADR 0001 § the one log reader)."""
     parent = session_log(cwd="/tmp/tt")
     agent = SessionLog(session_id="a1", cwd="/tmp/tt", sidechain=True).turn("delegated")
     parent.save(projects_dir)

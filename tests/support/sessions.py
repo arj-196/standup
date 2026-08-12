@@ -68,7 +68,7 @@ def project_dir_name(cwd: str) -> str:
     non-alphanumeric character replaced by a dash
     (`/Users/arjun/x` -> `-Users-arjun-x`).
 
-    Nothing in Standup parses this name — both scanners glob `*/*.jsonl` and
+    Nothing in Standup parses this name — both readings glob `*/*.jsonl` and
     read `cwd` from inside the file — but a fixture tree that does not look like
     the real one invites a future reader to assume the wrong thing.
     """

@@ -300,8 +300,8 @@ def _cmd_cost(argv: list[str]) -> int:
     # `-l` as in *latest first*: the honest letter `-r` is `--raw` globally,
     # and `-R` is reserved as its negation (ADR 0005 § short option letters)
     p.add_argument("-l", "--recent", action="store_true",
-                   help="order by last activity (newest first) instead of cost — "
-                        "sessions in the drill-down, projects in the overview")
+                   help="order by recency — newest counted turn first — instead of "
+                        "cost: sessions in the drill-down, projects in the overview")
     p.add_argument("-j", "--json", action="store_true", help="structured output")
     p.add_argument("-P", "--no-pager", action="store_true", help="print instead of opening a pager")
     universe.add_projects_dir_argument(p)
@@ -522,7 +522,7 @@ _standup() {
         cost|c)
           _arguments \
             '(-s --since)'{-s,--since}'[window override]:when (3d, 2w, all, ISO date):' \
-            '(-l --recent)'{-l,--recent}'[order by last activity instead of cost]' \
+            '(-l --recent)'{-l,--recent}'[order by recency instead of cost]' \
             '(-j --json)'{-j,--json}'[structured output]' \
             '(-P --no-pager)'{-P,--no-pager}'[print instead of paging]' \
             '1:project:_standup_projects'

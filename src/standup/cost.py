@@ -143,13 +143,6 @@ class ProjectCost:
         return max(times) if times else None
 
 
-def _mtime(path: Path) -> datetime | None:
-    try:
-        return datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
-    except OSError:
-        return None
-
-
 def _in_window(turns, window_start: datetime) -> list:
     """The turns a windowed figure counts.
 
@@ -168,7 +161,8 @@ def _subagent_logs(parent_log: Path, window_start: datetime) -> list[Path]:
     turns are timestamp-filtered anyway.
     """
     agents_dir = parent_log.parent / parent_log.stem / "subagents"
-    live = ((f, _mtime(f)) for f in sorted(agents_dir.glob("agent-*.jsonl")))
+    live = ((f, claude_logs.log_mtime(f))
+            for f in sorted(agents_dir.glob("agent-*.jsonl")))
     return [f for f, m in live if m is not None and m >= window_start]
 
 
@@ -210,7 +204,7 @@ def scan_session_costs(projects_dir: Path, window_start: datetime,
     """
     out: list[SessionCost] = []
     for log in sorted(projects_dir.glob("*/*.jsonl")):
-        mtime = _mtime(log)
+        mtime = claude_logs.log_mtime(log)
         if mtime is None or mtime < window_start:
             continue
         sc = _session_cost(log, window_start, cache)
