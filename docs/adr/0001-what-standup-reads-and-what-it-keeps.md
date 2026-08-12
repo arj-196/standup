@@ -4,7 +4,8 @@ Date: 2026-07-23
 
 Four decisions in sequence: the second retires the only state the tool had, the
 third reintroduces a store and must justify itself against the second, the
-fourth deletes a knob the third made pointless.
+fourth deletes a knob the third made pointless. A fifth says where all four are
+implemented.
 
 ## The Scan Universe
 
@@ -95,3 +96,43 @@ Cost: pending-change matching has no window, so an old session that once touched
 a path can tag it with a `likely ~` claim. Attributions sort recent-first so it
 ranks last. If stale tags surface, the fix is an *internal* horizon (~60–90d),
 never a resurrected user knob.
+
+## One module owns the scan
+
+**`universe.py` answers "what does Standup see"**; every view is a consumer.
+The pipeline (open cache → scan Sessions → discover repos → attribute → flush)
+exists once, in `open_universe()`. A view parses flags, asks, renders.
+
+Why these particular things are hidden there, and not left to the views:
+
+- **the cache's lifecycle** — a missed flush breaks no output (pure
+  accelerator), so it is *invisible*: it silently reparses next run. Invisible
+  duties do not survive being copied per view. Hence a context manager, flushing
+  on exception paths too.
+- **the "no logs found" failure** — a view *raises* (`UniverseError`) and `main`
+  prints it, because six copies of one print-and-return-1 drift in wording.
+- **Repo Entry identity** — was four hand-rolled copies, and they had already
+  drifted: the CLI's Session-target list named an entry after whichever cwd it
+  saw first, so a worktree could name it while discovery named the main
+  checkout. `owner_of` promotes to the main checkout, so one answer stands.
+
+Two consequences worth stating:
+
+- **a non-repo cwd owns itself** (`is_repo=False`). `cost` spans Sessions with
+  no git at all, and it needed that fallback; expressing it in the one rule
+  keeps the callers from re-inventing it four ways.
+- **`handles.py` knows no git**, so Project Handle resolution is testable
+  without a checkout. Name matching is handles'; turning a *path* into a Target
+  is the Universe's.
+
+Rejected:
+- **`git worktree list` to find the main checkout** — a subprocess per repo, on
+  the shell-completion path that was tuned to avoid exactly that. The common dir
+  already names it (`<main>/.git` → its parent); layouts that break the shape
+  test (separate git dir, bare repo) fall back to git's reported toplevel.
+- **a process-wide identity cache** — identity is per-command state; a Watch
+  running for an hour would pin an answer git had moved on from.
+
+Cost: a Universe is a *command's* view of the world, not a live one — it
+memoizes. The Watch therefore reads one at launch and lets it go rather than
+holding the cache open for the minutes it stays on screen.

@@ -73,11 +73,6 @@ def humanize(dt: datetime | None, now: datetime) -> str:
     return local.strftime("%b %d")
 
 
-def _shorten_home(path: str) -> str:
-    home = os.path.expanduser("~")
-    return "~" + path[len(home):] if path.startswith(home) else path
-
-
 def _window_label(raw: str) -> str:
     if re.fullmatch(r"\d+[dhw]", raw):
         return f"last {raw}"
@@ -244,7 +239,7 @@ def render_overview(entries: list[RepoEntry], since: datetime, now: datetime,
                 head += f" · {_plural(_unpushed_total(e), 'commit')} unpushed"
             out.append(_clamp(head, width))
             dirty_branches = list(dict.fromkeys(co.branch for co in e.checkouts if co.pending))
-            out.append(_clamp(f"  {st.dim(_shorten_home(e.main_path) + ' · ' + ', '.join(dirty_branches))}", width))
+            out.append(_clamp(f"  {st.dim(handles.shorten_home(e.main_path) + ' · ' + ', '.join(dirty_branches))}", width))
             for r in rolls:
                 out.extend(_rollup_stanza(r, now, st, width, briefs))
             out.append("")
@@ -284,7 +279,7 @@ def render_detail(entry: RepoEntry, now: datetime,
     width = _term_width()
     # a Remoteless Repo states it here, unconditionally: the drill-down is the
     # one view you asked for by name, and the inbox stays silent (ADR 0006)
-    head = st.bold(entry.name) + "  " + st.dim(_shorten_home(entry.main_path))
+    head = st.bold(entry.name) + "  " + st.dim(handles.shorten_home(entry.main_path))
     if not entry.has_remote:
         head += st.dim(" · no remote")
     out = [_clamp(head, width), ""]
