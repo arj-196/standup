@@ -78,7 +78,7 @@ Rejected:
 
 ## The one log reader
 
-Five modules parsed the same JSONL, each with its own idea of what it says:
+Six modules parsed the same JSONL, each with its own idea of what it says:
 `claude_logs` (titles, edited paths, captured hashes), `cost` (per-turn
 `usage`), `fragments` (edit text), `loops` (tool-call shapes), `watchstream`
 and `transcript` (prompt text). The duplication was not theoretical — a
@@ -101,10 +101,15 @@ mixed fast and standard turns would mis-price if its tokens were summed first.
 Cached rows therefore hold token counts, never dollars — a Rate Card edit
 (ADR 0002) re-prices old logs without a cache bump.
 
-**Cached as one row** in `logs`, keyed `(size, mtime_ns, READER_VERSION)`,
-zlib-compressed and capped like the fragment index — the reading carries the
-text of every edit and every prompt. A row too large, malformed, or written by
-another reader version costs a reparse and changes no output.
+**Cached as one row** in `logs` — one row per `session_id`, served only when
+`(size, mtime_ns, READER_VERSION)` all match — zlib-compressed and capped like
+the fragment index, because the reading carries the text of every edit and
+every prompt. A row too large, malformed, or written by another reader version
+costs a reparse and changes no output.
+
+A `ParsedLog` is **one file**, so its totals are one log's. A Session's usage
+also includes its subagent transcripts (ADR 0002 § subagent usage), which are
+separate files and therefore separate readings; folding them is the caller's.
 
 **`last_activity` on a parsed Session means the log file's mtime** — when the
 log last grew — and nothing else. It is the staleness clock for out-of-band
@@ -116,7 +121,15 @@ own; removing that divergence is what migrating it onto this reader is for.
 
 Expand first, then contract: the typed reading landed beside the existing
 scanners rather than under them, so no view changed behaviour on the day the
-seam appeared.
+seam appeared. Two differences are therefore *known and pinned by test*, to be
+decided when each consumer migrates rather than discovered then:
+
+- **branches** — the full reading takes them off every line, the inbox's
+  prefiltered sweep only off the lines it admits. The full reading's set is a
+  superset, and the more correct one.
+- **prompts** — the reading is the Transcript's (prose makes a prompt); the
+  Watch additionally drops any user line carrying a `toolUseResult`. They part
+  only on a tool result that also carries prose.
 
 Rejected:
 - **A reading per consumer, kept in sync by review** — the status quo, and the

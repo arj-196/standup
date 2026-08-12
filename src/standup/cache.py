@@ -31,6 +31,12 @@ PARSER_VERSION = 1  # bump when session parse logic changes (invalidates rows)
 
 CACHE_PATH = Path(os.path.expanduser("~/.standup")) / "cache" / "cache.db"
 
+# The ceiling on one compressed blob row (the fragment index, the typed
+# reading). A session that wrote a hundred large files should not be allowed to
+# grow the DB without bound, and declining the write costs a reparse and
+# changes no output — which is exactly what a pure accelerator may do.
+MAX_BLOB_BYTES = 8 * 1024 * 1024
+
 
 def loops_detector_version() -> int:
     from .loops import DETECTOR_VERSION  # the detector owns its own version
@@ -47,18 +53,14 @@ def fragments_index_version() -> int:
     return INDEX_VERSION
 
 
-def _compress(data, max_bytes: int) -> bytes | None:
-    """A cache blob, or None when it cannot or should not be stored.
-
-    A blob still oversized after compression is dropped rather than stored —
-    skipping a write costs a reparse and changes no output, which is exactly
-    what a pure accelerator may do.
-    """
+def _compress(data) -> bytes | None:
+    """A cache blob, or None when it cannot or should not be stored
+    (see MAX_BLOB_BYTES)."""
     try:
         blob = zlib.compress(json.dumps(data).encode(), 6)
     except (ValueError, TypeError, zlib.error):
         return None
-    return blob if len(blob) <= max_bytes else None
+    return blob if len(blob) <= MAX_BLOB_BYTES else None
 
 
 def _decompress(blob):
@@ -182,54 +184,40 @@ class Cache:
     def put_loops(self, session_id: str, size: int, mtime_ns: int, data: dict) -> None:
         self._loops[session_id] = (size, mtime_ns, data)
 
-    # --- edit fragments (ADR 0007: the hunk-attribution index) -----------
+    # --- the compressed blob rows ----------------------------------------
     #
-    # Stored zlib-compressed: the index is the literal text of every edit a
-    # session made, which compresses several-fold as source. A blob that is
-    # still oversized after compression is dropped rather than stored (see
-    # fragments.MAX_CACHED_BYTES) — skipping a write costs a reparse and
-    # changes no output, which is exactly what a pure accelerator may do.
+    # The edit-fragment index (ADR 0007: what hunk attribution matches against)
+    # and the typed full reading (ADR 0001 § the one log reader). Both are
+    # stored zlib-compressed, because both carry the literal text a session
+    # wrote, which compresses several-fold as source.
 
-    def get_fragments(self, session_id: str, size: int, mtime_ns: int) -> list | None:
+    def _blob(self, table: str, version_column: str, version: int,
+              session_id: str, size: int, mtime_ns: int):
         try:
             row = self._conn.execute(
-                "SELECT data FROM fragments "
-                "WHERE session_id=? AND size=? AND mtime_ns=? AND index_version=?",
-                (session_id, size, mtime_ns, fragments_index_version()),
+                f"SELECT data FROM {table} "
+                f"WHERE session_id=? AND size=? AND mtime_ns=? AND {version_column}=?",
+                (session_id, size, mtime_ns, version),
             ).fetchone()
         except sqlite3.Error:
             return None
-        if not row:
-            return None
-        return _decompress(row[0])
+        return _decompress(row[0]) if row else None
+
+    def get_fragments(self, session_id: str, size: int, mtime_ns: int) -> list | None:
+        return self._blob("fragments", "index_version", fragments_index_version(),
+                          session_id, size, mtime_ns)
 
     def put_fragments(self, session_id: str, size: int, mtime_ns: int, data: list) -> None:
-        from .fragments import MAX_CACHED_BYTES
-        blob = _compress(data, MAX_CACHED_BYTES)
+        blob = _compress(data)
         if blob is not None:
             self._fragments[session_id] = (size, mtime_ns, blob)
 
-    # --- the typed full reading (ADR 0001 § the one log reader) ----------
-    #
-    # Compressed and capped like the fragment index, and for the same reason:
-    # the reading carries the text of every edit and every prompt.
-
     def get_log(self, session_id: str, size: int, mtime_ns: int) -> dict | None:
-        try:
-            row = self._conn.execute(
-                "SELECT data FROM logs "
-                "WHERE session_id=? AND size=? AND mtime_ns=? AND reader_version=?",
-                (session_id, size, mtime_ns, log_reader_version()),
-            ).fetchone()
-        except sqlite3.Error:
-            return None
-        if not row:
-            return None
-        return _decompress(row[0])
+        return self._blob("logs", "reader_version", log_reader_version(),
+                          session_id, size, mtime_ns)
 
     def put_log(self, session_id: str, size: int, mtime_ns: int, data: dict) -> None:
-        from .claude_logs import MAX_CACHED_BYTES
-        blob = _compress(data, MAX_CACHED_BYTES)
+        blob = _compress(data)
         if blob is not None:
             self._logs[session_id] = (size, mtime_ns, blob)
 

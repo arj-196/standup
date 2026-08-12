@@ -50,6 +50,21 @@ def test_a_multiedit_fans_out_to_one_block_per_hunk_under_one_tool_id(projects_d
     assert len({e.tool_id for e in parsed.edits}) == 1
 
 
+def test_a_multiedit_with_no_readable_hunks_still_records_the_path(projects_dir):
+    """Attribution is path-overlap first (CONTEXT.md → Attribution Tier): the
+    call says the Session touched this file, whatever the reader can make of
+    its hunks. Losing the path here would quietly drop a Session Rollup."""
+    log = (SessionLog(cwd="/tmp/tt")
+           .edit("/tmp/tt/alpha.py", tool="MultiEdit")
+           .save(projects_dir))
+
+    parsed = claude_logs.parse_log(log)
+
+    assert [(e.path, e.new, e.old) for e in parsed.edits] == [
+        ("/tmp/tt/alpha.py", "", "")]
+    assert set(parsed.session.edited_files) == {"/tmp/tt/alpha.py"}
+
+
 def test_the_path_alias_and_the_new_text_fallback_read_as_one_shape(projects_dir):
     """A NotebookEdit names its target `notebook_path` and its text
     `new_source`. A relative path attributes nothing, so it is dropped rather
@@ -170,6 +185,25 @@ def test_the_parsed_log_carries_the_session_the_inbox_scan_reads(
     assert set(parsed.commit_hashes) == {"abc1234"}
 
 
+def test_the_full_reading_sees_branches_the_prefiltered_sweep_misses(
+        projects_dir, null_cache):
+    """The one place the two readings of a Session differ, pinned so the
+    migration onto the full reading is a decision rather than a surprise: the
+    inbox's sweep only ever parses lines its prefilter admits, so a branch
+    that moved between an edit and a title is invisible to it."""
+    log = (SessionLog(cwd="/tmp/tt", branch="main")
+           .edit("/tmp/tt/alpha.py")
+           .save(projects_dir))
+    moved = SessionLog(cwd="/tmp/tt", branch="feature").turn("on the branch")
+    with open(log, "a") as fh:
+        fh.write(moved.to_jsonl())
+
+    (scanned,) = claude_logs.scan_sessions(projects_dir, null_cache)
+
+    assert scanned.branches == {"main"}
+    assert claude_logs.parse_log(log).session.branches == {"main", "feature"}
+
+
 def test_last_activity_means_the_logs_mtime_in_every_reading(
         projects_dir, null_cache):
     """One meaning on the parsed Session (ADR 0001 § the one log reader): when
@@ -232,6 +266,34 @@ def test_the_reading_survives_a_cache_that_cannot_hold_it(projects_dir, null_cac
     log = fixture_session(cwd="/tmp/tt").save(projects_dir)
 
     assert claude_logs.read_log(log, null_cache) == claude_logs.parse_log(log)
+
+
+def test_a_malformed_cached_row_costs_a_reparse_and_nothing_else(projects_dir):
+    """A row this version cannot read is not an error the user ever sees."""
+    log = fixture_session(cwd="/tmp/tt").save(projects_dir)
+    st = log.stat()
+    cache = cache_mod.open_cache()
+    cache.put_log(log.stem, st.st_size, st.st_mtime_ns, {"session": {}, "junk": 1})
+    cache.flush()
+
+    parsed = claude_logs.read_log(log, cache_mod.open_cache())
+
+    assert parsed == claude_logs.parse_log(log)
+
+
+def test_a_reading_too_large_to_store_is_declined_not_truncated(
+        projects_dir, monkeypatch):
+    """The cache may refuse a row — it is a pure accelerator
+    (ADR 0001 § the Derived Cache) — and refusing changes no output."""
+    log = fixture_session(cwd="/tmp/tt").save(projects_dir)
+    monkeypatch.setattr(cache_mod, "MAX_BLOB_BYTES", 1)
+    cache = cache_mod.open_cache()
+    first = claude_logs.read_log(log, cache)
+    cache.flush()
+
+    assert first == claude_logs.parse_log(log)
+    st = log.stat()
+    assert cache_mod.open_cache().get_log(log.stem, st.st_size, st.st_mtime_ns) is None
 
 
 def test_an_older_cache_db_gains_the_new_table_and_keeps_its_rows(fake_home):

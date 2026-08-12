@@ -41,6 +41,21 @@ def is_priced(model: str | None) -> bool:
     return model in CARD
 
 
+def cache_write_split(u: dict) -> tuple[int, int]:
+    """One turn's cache writes as (5-minute, 1-hour) tokens.
+
+    The two lifetimes are priced differently, so the split is part of pricing
+    and lives here. An older log carries one undifferentiated
+    `cache_creation_input_tokens` instead of the sub-object; it is read as 5m.
+    """
+    cc = u.get("cache_creation") or {}
+    w5 = cc.get("ephemeral_5m_input_tokens", 0)
+    w1 = cc.get("ephemeral_1h_input_tokens", 0)
+    if not (w5 or w1):
+        w5 = u.get("cache_creation_input_tokens", 0)
+    return w5, w1
+
+
 def turn_cost(model: str | None, u: dict) -> float | None:
     """Notional Cost of one assistant turn, or None if the model is unpriced."""
     card = CARD.get(model or "")
@@ -50,11 +65,7 @@ def turn_cost(model: str | None, u: dict) -> float | None:
     if (u.get("speed") or "standard") == "fast" and "fast" in card:
         base_in, out_rate = card["fast"]
 
-    cc = u.get("cache_creation") or {}
-    w5 = cc.get("ephemeral_5m_input_tokens", 0)
-    w1 = cc.get("ephemeral_1h_input_tokens", 0)
-    if not (w5 or w1):  # older logs: undifferentiated cache-write, assume 5m
-        w5 = u.get("cache_creation_input_tokens", 0)
+    w5, w1 = cache_write_split(u)
 
     dollars = (
         u.get("input_tokens", 0) * base_in
@@ -74,7 +85,13 @@ def turn_cost(model: str | None, u: dict) -> float | None:
 
 
 def turn_tokens(u: dict) -> dict[str, int]:
-    """Four display buckets for one turn."""
+    """Four display buckets for one turn.
+
+    Deliberately not `cache_write_split`: display reads the flat
+    `cache_creation_input_tokens` first and the sub-object only as a fallback,
+    the opposite preference to pricing. The two agree on every log seen so far;
+    which one is right when they disagree is not this change's question.
+    """
     cw = u.get("cache_creation_input_tokens", 0)
     if not cw:
         cc = u.get("cache_creation") or {}

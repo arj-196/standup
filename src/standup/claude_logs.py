@@ -34,9 +34,6 @@ EDIT_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit"}
 
 # bump when the typed reading changes shape or meaning (invalidates cache rows)
 READER_VERSION = 1
-# a cached reading larger than this is dropped rather than stored, exactly as
-# the fragment index is: the cache is a pure accelerator and may decline a row
-MAX_CACHED_BYTES = 8 * 1024 * 1024
 # `[branch abc1234]` / `[main (root-commit) abc1234]` / `[detached HEAD abc1234]`
 COMMIT_LINE_RE = re.compile(r"^\[[^\[\]\n]{1,80} ([0-9a-f]{7,40})\]", re.MULTILINE)
 # cheap hint on the raw JSON line (stdout newlines are escaped as \\n there)
@@ -153,10 +150,14 @@ def _edit_blocks(obj: dict, ts: datetime | None) -> list[EditBlock]:
             continue
         tid = item.get("id") or ""
         if name == "MultiEdit":
-            for e in inp.get("edits") or []:
-                if isinstance(e, dict):
-                    out.append(EditBlock(name, fp, e.get("new_string") or "",
-                                         e.get("old_string") or "", ts, tid))
+            hunks = [e for e in inp.get("edits") or [] if isinstance(e, dict)]
+            # a MultiEdit whose hunks are missing or malformed still says the
+            # Session touched this file, and path overlap is the attribution
+            # that rests on that alone (CONTEXT.md → Attribution Tier). Dropping
+            # the call would silently cost the file its Session Rollup.
+            for e in hunks or [{}]:
+                out.append(EditBlock(name, fp, e.get("new_string") or "",
+                                     e.get("old_string") or "", ts, tid))
         else:
             new = (inp.get("new_string") or inp.get("new_source")
                    or inp.get("content") or "")
@@ -200,9 +201,20 @@ class Prompt:
     reminders, the bodies Claude Code splices in behind a slash command
     (`isMeta`), and turns that carry nothing but a tool result are all dropped
     here, so a consumer never has to know which of them exist.
+
+    One divergence to settle when the consumers migrate: this reading is the
+    Transcript's (a user line is a prompt if it holds prose), while the Watch
+    additionally drops any user line carrying a `toolUseResult`. The two agree
+    on every shape but a tool result that also carries prose.
     """
     text: str
     when: datetime | None = None
+
+
+def _tagged(pattern: re.Pattern, text: str) -> str:
+    """The first capture of `pattern` in `text`, stripped; "" when it misses."""
+    m = pattern.search(text)
+    return m.group(1).strip() if m else ""
 
 
 def _prompt_text(content) -> str | None:
@@ -221,9 +233,7 @@ def _prompt_text(content) -> str | None:
     else:
         return None
     if "<command-name>" in text:
-        name = (_CMD_NAME_RE.search(text) or [None, ""])[1].strip()
-        args = (_CMD_ARGS_RE.search(text) or [None, ""])[1].strip()
-        text = f"{name} {args}".strip()
+        text = f"{_tagged(_CMD_NAME_RE, text)} {_tagged(_CMD_ARGS_RE, text)}".strip()
     text = _CMD_TAG_RE.sub("", _REMINDER_RE.sub("", text)).strip()
     return text or None
 
@@ -288,11 +298,7 @@ def _turn_usage(obj: dict, ts: datetime | None) -> TurnUsage | None:
     u = msg.get("usage")
     if not isinstance(u, dict):
         return None
-    cc = u.get("cache_creation") or {}
-    w5 = cc.get("ephemeral_5m_input_tokens", 0)
-    w1 = cc.get("ephemeral_1h_input_tokens", 0)
-    if not (w5 or w1):   # older logs: undifferentiated cache-write, assume 5m
-        w5 = u.get("cache_creation_input_tokens", 0)
+    w5, w1 = rates.cache_write_split(u)
     stu = u.get("server_tool_use") or {}
     return TurnUsage(
         model=msg.get("model"),
@@ -362,9 +368,13 @@ class ParsedLog:
 
     @property
     def totals(self) -> UsageTotals:
-        """This log's whole Notional Cost. A view with a window filters
-        `turns` by their own timestamps first — the totals are derived, so
-        there is no second meaning to keep in sync."""
+        """*This log's* Notional Cost. A Session's is more: its subagent
+        transcripts are separate files carrying usage the parent never echoes,
+        and folding them in is the caller's job (ADR 0002 § subagent usage).
+
+        A view with a window filters `turns` by their own timestamps first —
+        the totals are derived, so there is no second meaning to keep in sync.
+        """
         return usage_totals(self.turns)
 
     @property
@@ -388,8 +398,9 @@ def parse_log(path: Path | str) -> ParsedLog:
     sweep sees. More complete, and the answer a consumer switching over gets.
 
     A log that cannot be opened comes back as an empty reading rather than
-    raising: an unreadable log is a Session with nothing to say, exactly as it
-    is for `scan_sessions`.
+    raising — a log a view asked for by path may have been deleted under it,
+    and a Session with nothing to say is dropped downstream by its missing
+    `cwd`.
     """
     path = Path(path)
     session = Session(session_id=path.stem, log_path=str(path),
