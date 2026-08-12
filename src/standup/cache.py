@@ -6,10 +6,11 @@ holds non-recomputable data (Session Briefs, see brief.py), so only `cache/` is
 disposable. `rm -rf ~/.standup/cache` is always safe; the root is not.
 
 Holds results derived deterministically from the session logs — one row per
-session file (the fully parsed Session), an immutable commit_files(sha) table,
-detected Loops, and the edit-fragment index that hunk attribution reads
-(ADR 0007). Keyed on (size, mtime_ns) so a stale entry is always detected and
-reparsed; output is byte-identical whether the cache is warm, cold, or deleted.
+session file (the fully parsed Session), the typed full reading beside it
+(ADR 0001 § the one log reader), an immutable commit_files(sha) table, detected
+Loops, and the edit-fragment index that hunk attribution reads (ADR 0007).
+Keyed on (size, mtime_ns) so a stale entry is always detected and reparsed;
+output is byte-identical whether the cache is warm, cold, or deleted.
 
 The cache is disposable. Any read error, a schema/parser version mismatch, or a
 future-version DB triggers a silent cold rebuild; if ~/.standup can't be used at
@@ -25,7 +26,7 @@ import sqlite3
 import zlib
 from pathlib import Path
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 PARSER_VERSION = 1  # bump when session parse logic changes (invalidates rows)
 
 CACHE_PATH = Path(os.path.expanduser("~/.standup")) / "cache" / "cache.db"
@@ -36,9 +37,36 @@ def loops_detector_version() -> int:
     return DETECTOR_VERSION
 
 
+def log_reader_version() -> int:
+    from .claude_logs import READER_VERSION  # the reader owns its own version
+    return READER_VERSION
+
+
 def fragments_index_version() -> int:
     from .fragments import INDEX_VERSION  # the index owns its own version
     return INDEX_VERSION
+
+
+def _compress(data, max_bytes: int) -> bytes | None:
+    """A cache blob, or None when it cannot or should not be stored.
+
+    A blob still oversized after compression is dropped rather than stored —
+    skipping a write costs a reparse and changes no output, which is exactly
+    what a pure accelerator may do.
+    """
+    try:
+        blob = zlib.compress(json.dumps(data).encode(), 6)
+    except (ValueError, TypeError, zlib.error):
+        return None
+    return blob if len(blob) <= max_bytes else None
+
+
+def _decompress(blob):
+    """A stored blob back, or None when the row is unreadable (→ reparse)."""
+    try:
+        return json.loads(zlib.decompress(blob).decode())
+    except (ValueError, TypeError, zlib.error, UnicodeDecodeError):
+        return None
 
 
 class NullCache:
@@ -48,6 +76,12 @@ class NullCache:
         return None
 
     def put_session(self, session_id, size, mtime_ns, data):
+        pass
+
+    def get_log(self, session_id, size, mtime_ns):
+        return None
+
+    def put_log(self, session_id, size, mtime_ns, data):
         pass
 
     def get_commit_files(self, sha):
@@ -82,6 +116,7 @@ class Cache:
         self._commits: dict[str, list[str]] = {}
         self._loops: dict[str, tuple[int, int, dict]] = {}
         self._fragments: dict[str, tuple[int, int, bytes]] = {}
+        self._logs: dict[str, tuple[int, int, bytes]] = {}
         self._live: set[str] | None = None
 
     # --- sessions -------------------------------------------------------
@@ -166,19 +201,37 @@ class Cache:
             return None
         if not row:
             return None
-        try:
-            return json.loads(zlib.decompress(row[0]).decode())
-        except (ValueError, TypeError, zlib.error, UnicodeDecodeError):
-            return None
+        return _decompress(row[0])
 
     def put_fragments(self, session_id: str, size: int, mtime_ns: int, data: list) -> None:
         from .fragments import MAX_CACHED_BYTES
-        try:
-            blob = zlib.compress(json.dumps(data).encode(), 6)
-        except (ValueError, TypeError, zlib.error):
-            return
-        if len(blob) <= MAX_CACHED_BYTES:
+        blob = _compress(data, MAX_CACHED_BYTES)
+        if blob is not None:
             self._fragments[session_id] = (size, mtime_ns, blob)
+
+    # --- the typed full reading (ADR 0001 § the one log reader) ----------
+    #
+    # Compressed and capped like the fragment index, and for the same reason:
+    # the reading carries the text of every edit and every prompt.
+
+    def get_log(self, session_id: str, size: int, mtime_ns: int) -> dict | None:
+        try:
+            row = self._conn.execute(
+                "SELECT data FROM logs "
+                "WHERE session_id=? AND size=? AND mtime_ns=? AND reader_version=?",
+                (session_id, size, mtime_ns, log_reader_version()),
+            ).fetchone()
+        except sqlite3.Error:
+            return None
+        if not row:
+            return None
+        return _decompress(row[0])
+
+    def put_log(self, session_id: str, size: int, mtime_ns: int, data: dict) -> None:
+        from .claude_logs import MAX_CACHED_BYTES
+        blob = _compress(data, MAX_CACHED_BYTES)
+        if blob is not None:
+            self._logs[session_id] = (size, mtime_ns, blob)
 
     # --- lifecycle ------------------------------------------------------
 
@@ -214,8 +267,15 @@ class Cache:
                     [(sid, sz, mt, fragments_index_version(), sqlite3.Binary(blob))
                      for sid, (sz, mt, blob) in self._fragments.items()],
                 )
+            if self._logs:
+                self._conn.executemany(
+                    "INSERT OR REPLACE INTO logs(session_id,size,mtime_ns,reader_version,data) "
+                    "VALUES(?,?,?,?,?)",
+                    [(sid, sz, mt, log_reader_version(), sqlite3.Binary(blob))
+                     for sid, (sz, mt, blob) in self._logs.items()],
+                )
             if self._live is not None:
-                for table in ("sessions", "loops", "fragments"):
+                for table in ("sessions", "loops", "fragments", "logs"):
                     existing = {r[0] for r in self._conn.execute(f"SELECT session_id FROM {table}")}
                     stale = existing - self._live
                     if stale:
@@ -260,6 +320,13 @@ def _init_schema(conn: sqlite3.Connection) -> None:
             index_version INTEGER NOT NULL,
             data          BLOB NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS logs (
+            session_id     TEXT PRIMARY KEY,
+            size           INTEGER NOT NULL,
+            mtime_ns       INTEGER NOT NULL,
+            reader_version INTEGER NOT NULL,
+            data           BLOB NOT NULL
+        );
         """
     )
     conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
@@ -296,6 +363,7 @@ def open_cache(path: Path = CACHE_PATH):
             conn.execute("SELECT 1 FROM commit_files LIMIT 1")
             conn.execute("SELECT 1 FROM loops LIMIT 1")
             conn.execute("SELECT 1 FROM fragments LIMIT 1")
+            conn.execute("SELECT 1 FROM logs LIMIT 1")
             return Cache(conn)
         except sqlite3.Error:
             if conn is not None:

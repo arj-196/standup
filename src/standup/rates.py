@@ -31,6 +31,11 @@ CACHE_WRITE_1H = 2.0
 
 WEB_SEARCH_PER_REQ = 0.01  # $10 / 1000 searches
 
+# the four display buckets `turn_tokens` splits a turn into, in display order.
+# Named here because the Rate Card is what makes them four: they are the counts
+# priced differently, not an arbitrary grouping.
+BUCKETS = ("input", "output", "cache_write", "cache_read")
+
 
 def is_priced(model: str | None) -> bool:
     return model in CARD
