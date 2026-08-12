@@ -203,8 +203,8 @@ def test_the_real_home_is_out_of_reach(fake_home):
 
 @pytest.mark.parametrize("path", [
     lambda: cache_mod.CACHE_PATH,
-    lambda: brief_mod.BRIEFS_DIR,
-    lambda: audit_mod.AUDITS_DIR,
+    lambda: brief_mod.STORE.dir,
+    lambda: audit_mod.STORE.dir,
     lambda: install.SETTINGS,
 ], ids=["cache", "briefs", "audits", "settings"])
 def test_durable_roots_point_inside_the_fake_home(path, fake_home):

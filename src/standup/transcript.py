@@ -15,9 +15,9 @@ from __future__ import annotations
 import json
 import re
 import textwrap
-from datetime import datetime
 from pathlib import Path
 
+from . import artifacts
 from . import brief as brief_mod
 from . import loops as loops_mod
 from . import rates, toolcalls
@@ -109,15 +109,6 @@ def _assistant_parts(content, show_thinking: bool,
     return texts, tools
 
 
-def _parse_ts(raw: str | None) -> datetime | None:
-    if not raw:
-        return None
-    try:
-        return datetime.fromisoformat(raw)
-    except ValueError:
-        return None
-
-
 def _brief_block(brief, st, width: int, wrap) -> list[str]:
     """The Session Brief header shown at the very top of a Transcript.
 
@@ -174,7 +165,6 @@ def render_transcript(path: Path, show_thinking: bool = False, raw: bool = False
     # so the reader gets an instant understanding before the conversation.
     # Absent/body-less → silent.
     brief = brief_mod.load_one(path.stem)
-    last_ts: datetime | None = None
 
     # Loops (ADR 0003 § the Audit): gutter-mark the tool calls of above-floor
     # Loops so the evidence is visible where you'd eyeball it. One extra pass
@@ -211,10 +201,6 @@ def render_transcript(path: Path, show_thinking: bool = False, raw: bool = False
             etype = obj.get("type")
             msg = obj.get("message") or {}
 
-            ts = _parse_ts(obj.get("timestamp"))
-            if ts and (last_ts is None or ts > last_ts):
-                last_ts = ts
-
             if not header_done and obj.get("cwd"):
                 out.append(_session_ref(path.stem[:8], st) + "  "
                            + st.bold(Path(obj["cwd"]).name))
@@ -248,13 +234,10 @@ def render_transcript(path: Path, show_thinking: bool = False, raw: bool = False
     flush()
 
     if brief is not None:
-        # Stamp staleness the way the inbox does, but against the session's own
-        # last-activity timestamp scanned from this JSONL (show has no Session).
-        try:
-            if brief.generated and last_ts and last_ts > brief.generated + brief_mod.STALE_TOLERANCE:
-                brief.stale = True
-        except TypeError:  # naive vs aware in a hand-edited brief — don't crash show
-            pass
+        # Hedged by the same comparison the inbox uses, against the same clock —
+        # the store owns both, so no surface can invent its own notion of
+        # "the session moved on" (ADR 0003 § the shared model).
+        artifacts.stamp_staleness(brief, path)
         block_lines = _brief_block(brief, st, width, wrap)
         idx = brief_insert_idx if brief_insert_idx is not None else 0
         out[idx:idx] = block_lines

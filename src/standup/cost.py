@@ -18,16 +18,15 @@ filtered by their own timestamp so sessions straddling the edge count exactly.
 from __future__ import annotations
 
 import json
-import os
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import claude_logs, gitstate, rates
+from . import claude_logs, rates
 from .models import Session
 
 _EPOCH = datetime.min.replace(tzinfo=timezone.utc)
-BUCKETS = ("input", "output", "cache_write", "cache_read")
+BUCKETS = rates.BUCKETS   # the display buckets are the Rate Card's, not this view's
 
 
 @dataclass
@@ -46,11 +45,6 @@ class SessionCost:
     # attach_loops. Loop Cost is a carve-out of this session's Notional Cost,
     # never a saving.
     loops: list = field(default_factory=list)
-    # the log file's mtime, kept from the stat scan_session_costs already does.
-    # The staleness clock for out-of-band artifacts — deliberately *not*
-    # last_activity, which counts only priced assistant turns inside the window
-    # and so under-reports that the session moved on. See attach_briefs.
-    log_mtime: datetime | None = None
 
     @property
     def loop_cost(self) -> float:
@@ -237,36 +231,36 @@ def scan_session_costs(projects_dir: Path, window_start: datetime) -> list[Sessi
             continue
         sc = _scan_file(log, window_start)
         if sc and sc.session.cwd:
-            sc.log_mtime = mtime
             out.append(sc)
     return out
 
 
 def group_by_project(session_costs: list[SessionCost],
                      order: str = "cost") -> list[ProjectCost]:
-    """Bucket sessions by Repo Entry identity, cwd-slug fallback for non-repos.
+    """Bucket sessions by Repo Entry identity (`universe.owner_of` — worktrees
+    fold into their main checkout), the directory itself for a non-repo cwd.
 
     `order` ranks both levels the same way: "cost" (the default — where the
     load concentrates) or "recent" (newest last activity first — what the
     last few sessions cost, however cheap). A session that counted no dated
     turn sorts last under "recent" rather than borrowing a rank.
     """
+    # imported here, not at module scope: `universe` reaches `render`, which
+    # reads this module's ProjectCost — a top-level import would close the loop.
+    from . import universe
+
     cwds = list(dict.fromkeys(sc.session.cwd for sc in session_costs if sc.session.cwd))
-    resolved = {cwd: gitstate._resolve(cwd) for cwd in cwds}
+    owners = {cwd: universe.owner_of(cwd) for cwd in cwds}
 
     projects: dict[str, ProjectCost] = {}
     for sc in session_costs:
-        cwd = sc.session.cwd
-        res = resolved.get(cwd)
-        if res:
-            toplevel, key = res
-            name, path = os.path.basename(toplevel), toplevel
-        else:
-            key = os.path.realpath(cwd)
-            name, path = os.path.basename(cwd.rstrip("/")) or cwd, cwd
-        proj = projects.get(key)
+        owner = owners.get(sc.session.cwd)
+        if owner is None:
+            continue    # unreachable: scan_session_costs drops a cwd-less session
+        proj = projects.get(owner.key)
         if proj is None:
-            proj = projects[key] = ProjectCost(key=key, name=name, path=path)
+            proj = projects[owner.key] = ProjectCost(key=owner.key, name=owner.name,
+                                                     path=owner.path)
         proj.sessions.append(sc)
 
     if order == "recent":
@@ -300,19 +294,18 @@ def attach_briefs(projects: list[ProjectCost]) -> None:
     to the repo whose sessions the Briefs summarise, read-only and deliberately
     not folded into `cost`.
 
-    Staleness is stamped against the log's mtime, never this view's
-    last_activity: the question is whether the session advanced past the Brief,
-    and last_activity here sees only priced assistant turns inside the window.
-    A view-local clock would let the same Brief read `(stale)` in the inbox and
-    unhedged here.
+    Hedging is the store's, against the log the Session was read from: this
+    view never gets to pick its own clock, or the same Brief could read
+    `(stale)` in the inbox and unhedged here (ADR 0003 § the shared model).
     """
+    from . import artifacts
     from . import brief as brief_mod
     for proj in projects:
         for sc in proj.sessions:
             b = brief_mod.load_one(sc.session.session_id)
             if b is None:
                 continue
-            brief_mod.stamp_staleness(b, sc.log_mtime)
+            artifacts.stamp_staleness(b, sc.session.log_path)
             sc.session.brief = b
             proj.brief_overhead += brief_mod.overhead_cost(b)
             proj.brief_count += 1

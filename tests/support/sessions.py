@@ -2,15 +2,18 @@
 
 Standup reads exactly one thing from the outside world it does not control: the
 JSONL under `~/.claude/projects/<cwd-slug>/<sessionId>.jsonl` (ADR 0001 § the
-Scan Universe). Two scanners read it — `claude_logs` (titles, edits, captured
-commit hashes) and `cost` (per-turn `usage`) — so a fixture that satisfies only
-one of them is a trap.
+Scan Universe). `claude_logs` reads it twice over — the inbox's prefiltered
+sweep, and the typed full reading every other view is moving onto
+(ADR 0001 § the one log reader) — and `cost` still runs a scanner of its own, so
+a fixture that satisfies only one of them is a trap.
 
-`SessionLog` emits the line shapes both scanners prefilter on, in the schema the
+`SessionLog` emits the line shapes those readings look for, in the schema the
 real logs use: a `type` per line, `cwd`/`gitBranch`/`timestamp` on the
 conversation lines, tool calls as `tool_use` blocks inside an assistant
-`message`, and a `git commit` announcement in a user line's `toolUseResult`.
-Titles ride their own line types (`ai-title`, `custom-title`, `last-prompt`).
+`message` (a NotebookEdit naming its target `notebook_path`, not `file_path`),
+per-turn `usage` on every assistant line, injected bodies marked `isMeta`, and
+a `git commit` announcement in a user line's `toolUseResult`. Titles ride their
+own line types (`ai-title`, `custom-title`, `last-prompt`).
 
 `fixture_session()` is the canonical small Session the issue asks for — titles,
 two edits, one commit hash, priced per-turn usage — and is what most tests
@@ -105,6 +108,13 @@ class SessionLog:
                            "lastPrompt": text, "leafUuid": self._uuid()})
         return self
 
+    def meta(self, text: str) -> "SessionLog":
+        """A user line Claude Code injected rather than one you typed — a skill
+        or slash-command body, marked `isMeta`. Never a prompt, and the trap a
+        prompt reading falls into when it trusts `type: "user"` alone."""
+        self._conversation("user", {"role": "user", "content": text}, isMeta=True)
+        return self
+
     def ai_title(self, title: str) -> "SessionLog":
         self.lines.append({"type": "ai-title", "sessionId": self.session_id,
                            "aiTitle": title})
@@ -128,15 +138,20 @@ class SessionLog:
         `file_path` must be absolute: `claude_logs` ignores relative paths,
         because a path it cannot join to a repo attributes nothing.
 
+        A `NotebookEdit` names its target `notebook_path`, not `file_path` —
+        the alias is the real schema's, and a fixture that smoothed it over
+        would let a reader that knows only one key look correct.
+
         `mid_turn=True` leaves the call in flight (`stop_reason: "tool_use"`,
         no result line follows) — the shape the Watch's Activity State reads a
         tool verb from, and so the tail a mid-turn session ends on.
         """
+        path_key = "notebook_path" if tool == "NotebookEdit" else "file_path"
         block = {
             "type": "tool_use",
             "id": f"toolu_{len(self.lines):024d}",
             "name": tool,
-            "input": {"file_path": file_path, **tool_input},
+            "input": {path_key: file_path, **tool_input},
             "caller": {"type": "direct"},
         }
         return self._assistant([block], model, usage,

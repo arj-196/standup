@@ -14,19 +14,23 @@ dependency.
 
 Every pass's `usage` is recorded and itemised in the Audit's frontmatter as
 Audit Overhead; each `standup audit` run prints the overhead it just incurred.
+
+The Audit's location, frontmatter and atomic write are the Artifact store's
+(`artifacts.py`), reached through `audit.save` — this module owns the panel,
+never the file format.
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
-import os
 from datetime import datetime, timezone
 from pathlib import Path
 
+from . import audit as audit_mod
 from . import brief as brief_mod
-from . import gitstate, loops, transcript
-from .audit import AUDITS_DIR, path_for
+from . import loops, transcript, universe
+from .audit import Audit
 from .models import Session
 
 EXPERT_MODEL = "claude-sonnet-5"
@@ -96,10 +100,8 @@ def _loop_table(scan: loops.LoopScan) -> str:
 
 
 def _repo_key(cwd: str | None) -> str | None:
-    if not cwd:
-        return None
-    res = gitstate._resolve(cwd)
-    return res[1] if res else os.path.realpath(cwd)
+    owner = universe.owner_of(cwd)
+    return owner.key if owner else None
 
 
 def _gather_siblings(target: Session, sessions: list[Session], cache) -> list[dict]:
@@ -252,40 +254,17 @@ async def _run_panel(prompts: dict[str, str], progress) -> list[dict]:
     return list(await asyncio.gather(*tasks))
 
 
-# ── write ──────────────────────────────────────────────────────────────────
-
-def _write(session_id: str, title: str, siblings_n: int,
-           body: str, overhead: list[dict], now: datetime) -> Path:
-    fm = [
-        "---",
-        f"session_id: {session_id}",
-        f"target_title: {title}",
-        f"generated: {now.isoformat()}",
-        f"siblings_considered: {siblings_n}",
-        "overhead: " + json.dumps(
-            [{"label": o["label"], "model": o["model"], "usage": o["usage"]}
-             for o in overhead if o.get("usage")],
-            separators=(",", ":")),
-        "---",
-    ]
-    out = path_for(session_id)
-    AUDITS_DIR.mkdir(parents=True, exist_ok=True)
-    tmp = out.with_name(out.name + ".tmp")
-    tmp.write_text("\n".join(fm) + "\n\n" + body.strip() + "\n")
-    tmp.replace(out)  # atomic
-    return out
-
-
 # ── entry point ────────────────────────────────────────────────────────────
 
-def generate(log_path: Path, projects_dir: Path, cache, progress=lambda r: None) -> Path:
+def generate(log_path: Path, u: universe.Universe, progress=lambda r: None) -> Path:
     """Run the full panel for one session and store the Audit. Synchronous
     facade over the async fan-out; raises AuditError on failure (nothing
     partial is ever stored)."""
     from . import claude_logs
 
     sid = log_path.stem
-    sessions = claude_logs.scan_sessions(projects_dir, cache)
+    cache = u.cache
+    sessions = u.sessions()
     target = next((s for s in sessions if s.session_id == sid), None)
     if target is None:  # footprint-less session: parse minimally for cwd/title
         target = Session(session_id=sid, log_path=str(log_path))
@@ -325,5 +304,7 @@ def generate(log_path: Path, projects_dir: Path, cache, progress=lambda r: None)
     except Exception as e:  # SDK/transport errors: surface, never store partials
         raise AuditError(str(e)) from e
 
-    return _write(sid, target.title, len(siblings), concluder["text"],
-                  reports + [concluder], datetime.now(timezone.utc))
+    return audit_mod.save(Audit(
+        session_id=sid, body=concluder["text"],
+        generated=datetime.now(timezone.utc), target_title=target.title,
+        siblings_considered=len(siblings), overhead=reports + [concluder]))

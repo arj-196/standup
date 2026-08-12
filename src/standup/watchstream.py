@@ -23,8 +23,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from . import brief as brief_mod
-from . import cache as cache_mod
-from . import claude_logs, gitstate, handles, toolcalls
+from . import claude_logs, gitstate, handles, toolcalls, universe
 from .models import Session
 
 LIVE_THRESHOLD = timedelta(minutes=30)  # Live Session recency claim (CONTEXT.md)
@@ -779,45 +778,36 @@ class _GitWatcher:
         return events
 
 
-def _resolve_target(repo_arg: str, sessions: list[Session]) -> tuple[str, list[str]]:
+def _resolve_target(repo_arg: str, u: universe.Universe) -> tuple[str, list[str]]:
     """Project Handle / name / filesystem path -> (name, checkout toplevels).
 
     A path is resolved through git directly, so a repo with no sessions yet is
-    still watchable; a bare word goes through the shared Project Handle
-    resolver, so `pm` means here exactly what it means in the inbox.
+    still watchable — the Watch is the one view that does not need the Scan
+    Universe to have heard of a repo. A bare word goes through the Universe's
+    resolver, so `pm` means here exactly what it means in the inbox — over its
+    *git* Repo Entries only: this view's ground truth is git, so a Session's
+    non-repo directory is a name it could never narrate.
     """
     if handles.looks_like_path(repo_arg):
         path = os.path.abspath(os.path.expanduser(repo_arg))
         if not os.path.isdir(path):
             raise WatchError(f"standup watch: no such directory: {repo_arg}")
-        res = gitstate._resolve(path)
-        if not res:
+        owner = universe.owner_of(path)
+        if owner is None or not owner.is_repo:
             raise WatchError(f"standup watch: {repo_arg!r} is not inside a git repo")
-        toplevel, _ = res
-        checkouts = gitstate.checkout_paths(toplevel)
-        return os.path.basename(checkouts[0]), checkouts
-
-    # a name: resolve against the Scan Universe, same matching as the drill-down
-    by_key: dict[str, str] = {}
-    order: list[str] = []
-    for cwd in dict.fromkeys(s.cwd for s in sessions if s.cwd):
-        res = gitstate._resolve(cwd)
-        if not res:
-            continue
-        toplevel, key = res
-        if key not in by_key:
-            by_key[key] = toplevel
-            order.append(key)
-    # map each key to its main checkout (first worktree)
-    candidates: list[handles.Target] = []
-    for key in order:
-        main = gitstate.checkout_paths(by_key[key])[0]
-        candidates.append(handles.Target(os.path.basename(main), main))
-    try:
-        hit = handles.resolve(repo_arg, candidates, "standup watch")
-    except handles.HandleError as e:
-        raise WatchError(str(e)) from None
-    return hit.name, gitstate.checkout_paths(hit.path)
+        main = owner.path
+    else:
+        try:
+            main = u.resolve_repo(repo_arg, u.targets(repos_only=True),
+                                  prog="standup watch").path
+        except handles.HandleError as e:
+            raise WatchError(str(e)) from None
+    checkouts = [w for w in (gitstate.worktrees(main) or []) if os.path.isdir(w)]
+    if not checkouts:
+        # a Repo Entry the Scan Universe still remembers, whose checkout is gone
+        raise WatchError(
+            f"standup watch: {handles.shorten_home(main)} is not on disk any more")
+    return os.path.basename(checkouts[0].rstrip("/")), checkouts
 
 
 class WatchStream:
@@ -827,19 +817,21 @@ class WatchStream:
     limiting keeps git subprocesses and discovery scans on their own cadence.
     """
 
-    def __init__(self, repo_arg: str, projects_dir: Path, quiet: bool = False,
+    def __init__(self, u: universe.Universe, repo_arg: str, quiet: bool = False,
                  live_window: timedelta | None = None):
-        self.projects_dir = projects_dir
+        # The Universe is read here and not kept: a Watch runs for minutes and
+        # has no business holding the Derived Cache open for them. Everything it
+        # needs afterwards is the log directory, which it globs directly for
+        # sessions and subagent transcripts that appear mid-run.
+        self.projects_dir = u.projects_dir
         self.quiet = quiet
         # The recency claim, widenable per run (`--since`): it decides both which
         # Sessions this Watch picks up and which ones the header still calls
         # live. One window for both, because a lane in the feed that has no row
         # in the header is a Session you can filter to but cannot see.
         self.live_window = live_window or LIVE_THRESHOLD
-        cache = cache_mod.open_cache()
-        sessions = claude_logs.scan_sessions(projects_dir, cache)
-        cache.flush()
-        self.name, self.checkouts = _resolve_target(repo_arg, sessions)
+        sessions = u.sessions()
+        self.name, self.checkouts = _resolve_target(repo_arg, u)
         # longest-first, so a path inside a worktree nested under the main
         # checkout (`.claude/worktrees/…`) resolves to the worktree's root, not
         # to a `.claude/…`-relative path under main. Shared by reference with

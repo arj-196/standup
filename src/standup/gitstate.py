@@ -282,8 +282,14 @@ def _done(path: str, since: datetime, user_email: str | None,
     return commits[:UNPUSHED_CAP]
 
 
-def _resolve(cwd: str) -> tuple[str, str] | None:
-    """Map a cwd to (main-ish toplevel, repo key = realpath of git-common-dir)."""
+def resolve_checkout(cwd: str) -> tuple[str, str] | None:
+    """Map a cwd to (its checkout's toplevel, realpath of git-common-dir).
+
+    The raw git question. The *domain* question — which Repo Entry owns this
+    directory — is `universe.owner_of`, which is what callers outside this
+    module want: it promotes a worktree to its main checkout and answers for a
+    directory that is not in a repo at all.
+    """
     if not os.path.isdir(cwd):
         return None
     toplevel = _git(cwd, "rev-parse", "--show-toplevel")
@@ -335,7 +341,7 @@ def discover_repos(cwds: list[str], since: datetime) -> list[RepoEntry]:
             return list(ex.map(fn, items))
 
     # Phase 1: resolve cwds -> repo keys in parallel, then dedup keeping first-seen order.
-    resolved = _pool(unique_cwds, _resolve)
+    resolved = _pool(unique_cwds, resolve_checkout)
     order: list[str] = []
     top_of_key: dict[str, str] = {}
     for res in resolved:

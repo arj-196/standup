@@ -22,13 +22,11 @@ user's data, not just polluting a temp dir.
 from __future__ import annotations
 
 import os
-import sys
 from pathlib import Path
 
 import pytest
 
-from standup import audit as audit_mod
-from standup import brief as brief_mod
+from standup import artifacts as artifacts_mod
 from standup import cache as cache_mod
 from standup import install as install_mod
 
@@ -36,20 +34,14 @@ from tests.support.repos import ScratchRepo, make_repo
 from tests.support.sessions import SessionLog, fixture_session
 
 # (module, attribute) pairs holding a path under the durable `~/.standup` root
-# or under `~/.claude`, captured at import. `briefgen`/`auditgen` re-export
-# `BRIEFS_DIR`/`AUDITS_DIR` by value, so they need patching in their own right —
-# but only if a test has imported them, which is why the list is filtered
-# against `sys.modules` rather than importing them here (auditgen reaches for
-# the Claude Agent SDK, and this suite has no business loading it).
+# or under `~/.claude`, captured at import. Every Session Brief and Audit hangs
+# off `artifacts.ROOT` — one rebinding covers both kinds, and any kind added
+# later — because an Artifact store resolves its directory from that root at
+# call time (ADR 0003 § the Artifact store).
 _DURABLE_ROOTS = [
+    (artifacts_mod, "ROOT", ()),
     (cache_mod, "CACHE_PATH", ("cache", "cache.db")),
-    (brief_mod, "BRIEFS_DIR", ("briefs",)),
-    (audit_mod, "AUDITS_DIR", ("audits",)),
     (install_mod, "SETTINGS", None),   # ~/.claude/settings.json — see below
-]
-_REEXPORTS = [
-    ("standup.briefgen", "BRIEFS_DIR", ("briefs",)),
-    ("standup.auditgen", "AUDITS_DIR", ("audits",)),
 ]
 
 
@@ -74,10 +66,6 @@ def fake_home(tmp_path_factory, monkeypatch) -> Path:
         target = (home / ".claude" / "settings.json" if parts is None
                   else standup_root.joinpath(*parts))
         monkeypatch.setattr(module, attr, target)
-    for name, attr, parts in _REEXPORTS:
-        module = sys.modules.get(name)
-        if module is not None:
-            monkeypatch.setattr(module, attr, standup_root.joinpath(*parts))
 
     # open_cache's default argument captured the old CACHE_PATH at import time,
     # so rebinding the constant alone would leave `open_cache()` writing to the

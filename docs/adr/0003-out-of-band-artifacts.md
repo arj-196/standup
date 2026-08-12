@@ -47,6 +47,47 @@ the keychain/OAuth read that makes keyless auth work.
 A missing artifact is never an error; the view degrades to what it showed before
 the artifact existed.
 
+## The Artifact store
+
+The shared model above is **one implementation**, not a shape two modules
+re-derive: `artifacts.py` owns the durable-root location, the frontmatter
+round-trip, the atomic write, orphan pruning, the generation lock, and the
+staleness comparison. `brief.py` and `audit.py` are adapters — each owns only
+the fields its kind carries and the object they become; neither reaches into
+the other. A third kind of artifact is a `Store(dirname, suffix)` plus a mapping
+function.
+
+- **One tolerance, by identity.** The generation debounce and the staleness
+  threshold are the same constant (`artifacts.TOLERANCE`), because they are the
+  same statement: an artifact is allowed to lag its session by that much, so
+  hedging earlier would hedge every artifact written on time. They were
+  previously two constants in two modules kept equal by a comment, which is a
+  drift waiting to happen — a debounce raised without the tolerance would mark
+  correct artifacts stale. The two measure different quantities on purpose —
+  the debounce compares the *artifact's mtime* to now (it must decide before
+  parsing the file), the hedge compares its `generated` to the *log's* mtime —
+  so they are not each other's inverse at the boundary. The invariant the
+  shared constant buys is one-directional and is what the tests pin: the window
+  in which the generator declines to rewrite sits wholly inside the window in
+  which a reader trusts the claim.
+- **The clock is chosen inside the seam.** `log_advanced_past(generated,
+  log_path)` stats the log itself; callers pass a *path*, never a timestamp, so
+  no view can substitute its own notion of activity. Exactly *at* the tolerance
+  is not yet stale.
+- **A naive `generated` is read as UTC.** Every writer stamps UTC, so a naive
+  timestamp is a hand edit that dropped the offset. Accepted cost: a hand-edited
+  artifact from a non-UTC author can be misjudged by the local offset. Rejected:
+  refusing the comparison (the shipped behaviour before this) — it left every
+  hand-edited artifact permanently unhedged, which is the failure mode the
+  hedge exists to prevent, and made "naive vs aware" untestable behaviour.
+- **The lock creates the directory.** A generation's lockfile is the first thing
+  written on a machine that has produced no artifact yet; with the directory
+  created only at write time, every generation failed before the first write
+  could ever create it.
+- **`ROOT` is read at call time**, never captured in a default argument, so the
+  durable root is rebindable in one place (which is also what keeps a test run
+  out of the real `~/.standup`).
+
 ## The Session Brief
 
 Native titles are terse, sometimes wrong, and one session may span several
@@ -144,6 +185,15 @@ Overhead**, printed after each run. No confirmation prompt — typing the comman
 is the consent — but the price is always shown. The panel roster is versioned
 code: adding an Expert is a code change with an itemised cost trail, not a
 prompt tweak.
+
+## Tried and retracted
+
+- **The Transcript computing its own staleness** — `standup session` compared
+  the Brief against the newest `timestamp` *inside* the JSONL, because it holds
+  a log path and no Session. That is a view-local clock by another name: a log
+  can grow lines that carry no timestamp the view reads, and the two surfaces
+  could then disagree about the same Brief. Retracted in favour of the one
+  comparison above; the Transcript now passes its log path to the store.
 
 ## Alternatives considered
 
