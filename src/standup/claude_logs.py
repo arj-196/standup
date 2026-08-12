@@ -16,6 +16,14 @@ Both are cached in the Derived Cache (ADR 0001 § the Derived Cache) keyed on
 (size, mtime_ns): unchanged files are served without being opened. Parsing is
 not gated by a lookback horizon — the cache makes full-history parsing cheap,
 and attribution is ageless (ADR 0001 § ageless attribution).
+
+The **line readings** those two are built from are public in their own right —
+`tool_calls_in`, `edits_of`/`edits_in`, `prompt_in`/`prompt_text`,
+`turn_usage`, `apply_title_fields` — because a whole-file reading is the wrong
+shape for a consumer that never holds the whole file: the Watch tails a log as
+it grows, and the Loop detector prefilters lines it will not count. They read a
+line the same way `parse_log` does, so a streaming consumer is a projection of
+the same reading rather than a rival one (ADR 0001 § the one log reader).
 """
 
 from __future__ import annotations
@@ -106,6 +114,47 @@ def apply_title_fields(session: Session, obj: dict) -> None:
 
 
 @dataclass(frozen=True)
+class ToolCall:
+    """One `tool_use` block: what the Session called, and with what.
+
+    The typed reading of a tool call *before* anything is made of it — the Loop
+    detector reads its shape, the Watch renders it as a **Call** or projects it
+    into file events, and `edits_of` turns the file-touching ones into
+    `EditBlock`s. `input` is the block's own input dict, unclipped: a consumer
+    that needs a digest makes one (`toolcalls`), and one that needs the request
+    itself still has it.
+    """
+    name: str
+    input: dict
+    tool_id: str = ""
+    turn_uuid: str = ""
+    when: datetime | None = None
+
+
+def tool_calls_in(obj: dict, ts: datetime | None = None) -> list[ToolCall]:
+    """Every tool call one assistant line recorded, in log order.
+
+    Where the `message.content` walk lives — the one place that knows a tool
+    call is a `type: "tool_use"` block inside an assistant message, rather than
+    each consumer re-deriving it and disagreeing about malformed content.
+    """
+    message = obj.get("message") or {}
+    content = message.get("content")
+    if not isinstance(content, list):
+        return []
+    uuid = obj.get("uuid") or ""
+    out: list[ToolCall] = []
+    for item in content:
+        if not isinstance(item, dict) or item.get("type") != "tool_use":
+            continue
+        inp = item.get("input")
+        out.append(ToolCall(name=item.get("name") or "", tool_id=item.get("id") or "",
+                            input=inp if isinstance(inp, dict) else {},
+                            turn_uuid=uuid, when=ts))
+    return out
+
+
+@dataclass(frozen=True)
 class EditBlock:
     """One recorded edit: the text a Session put in, and the text it took out.
 
@@ -125,45 +174,39 @@ class EditBlock:
     tool_id: str = ""
 
 
-def _edit_blocks(obj: dict, ts: datetime | None) -> list[EditBlock]:
-    """Every edit one assistant line recorded.
+def edits_of(call: ToolCall) -> list[EditBlock]:
+    """The edits one tool call recorded — empty for a call that edits no file.
 
     The path aliases (`file_path`, `notebook_path`) and the new-text fallbacks
     (`new_string`, `new_source`, `content`) live here and nowhere else: the
     schema is Claude Code's, and reading it in three modules is how two of them
     end up disagreeing about what a NotebookEdit wrote.
     """
-    message = obj.get("message") or {}
-    content = message.get("content")
-    if not isinstance(content, list):
+    name = call.name
+    if name not in EDIT_TOOLS:
         return []
-    out: list[EditBlock] = []
-    for item in content:
-        if not isinstance(item, dict) or item.get("type") != "tool_use":
-            continue
-        name = item.get("name")
-        if name not in EDIT_TOOLS:
-            continue
-        inp = item.get("input") or {}
-        fp = inp.get("file_path") or inp.get("notebook_path")
-        if not fp or not os.path.isabs(fp):
-            continue
-        tid = item.get("id") or ""
-        if name == "MultiEdit":
-            hunks = [e for e in inp.get("edits") or [] if isinstance(e, dict)]
-            # a MultiEdit whose hunks are missing or malformed still says the
-            # Session touched this file, and path overlap is the attribution
-            # that rests on that alone (CONTEXT.md → Attribution Tier). Dropping
-            # the call would silently cost the file its Session Rollup.
-            for e in hunks or [{}]:
-                out.append(EditBlock(name, fp, e.get("new_string") or "",
-                                     e.get("old_string") or "", ts, tid))
-        else:
-            new = (inp.get("new_string") or inp.get("new_source")
-                   or inp.get("content") or "")
-            out.append(EditBlock(name, fp, new, inp.get("old_string") or "",
-                                 ts, tid))
-    return out
+    inp = call.input
+    fp = inp.get("file_path") or inp.get("notebook_path")
+    if not fp or not os.path.isabs(fp):
+        return []
+    if name == "MultiEdit":
+        hunks = [e for e in inp.get("edits") or [] if isinstance(e, dict)]
+        # a MultiEdit whose hunks are missing or malformed still says the
+        # Session touched this file, and path overlap is the attribution
+        # that rests on that alone (CONTEXT.md → Attribution Tier). Dropping
+        # the call would silently cost the file its Session Rollup.
+        return [EditBlock(name, fp, e.get("new_string") or "",
+                          e.get("old_string") or "", call.when, call.tool_id)
+                for e in hunks or [{}]]
+    new = (inp.get("new_string") or inp.get("new_source")
+           or inp.get("content") or "")
+    return [EditBlock(name, fp, new, inp.get("old_string") or "",
+                      call.when, call.tool_id)]
+
+
+def edits_in(obj: dict, ts: datetime | None = None) -> list[EditBlock]:
+    """Every edit one assistant line recorded, in log order."""
+    return [e for call in tool_calls_in(obj, ts) for e in edits_of(call)]
 
 
 def _note_edits(session: Session, blocks: list[EditBlock]) -> None:
@@ -202,10 +245,12 @@ class Prompt:
     (`isMeta`), and turns that carry nothing but a tool result are all dropped
     here, so a consumer never has to know which of them exist.
 
-    One divergence to settle when the consumers migrate: this reading is the
-    Transcript's (a user line is a prompt if it holds prose), while the Watch
-    additionally drops any user line carrying a `toolUseResult`. The two agree
-    on every shape but a tool result that also carries prose.
+    The rule is **prose makes a prompt**, whatever else rides the line. The
+    Watch used to additionally drop any user line carrying a `toolUseResult`,
+    which parts from this reading on exactly one shape: a tool result with
+    prose beside it — what you typed while a call was in flight. That is a real
+    prompt, so this reading is the one that stands and the Watch adopted it
+    (ADR 0001 § the one log reader).
     """
     text: str
     when: datetime | None = None
@@ -217,7 +262,7 @@ def _tagged(pattern: re.Pattern, text: str) -> str:
     return m.group(1).strip() if m else ""
 
 
-def _prompt_text(content) -> str | None:
+def prompt_text(content) -> str | None:
     """A user turn's typed text, or None when the turn carried none.
 
     A slash command arrives as `<command-name>`/`<command-args>` around a body
@@ -236,6 +281,20 @@ def _prompt_text(content) -> str | None:
         text = f"{_tagged(_CMD_NAME_RE, text)} {_tagged(_CMD_ARGS_RE, text)}".strip()
     text = _CMD_TAG_RE.sub("", _REMINDER_RE.sub("", text)).strip()
     return text or None
+
+
+def prompt_in(obj: dict, ts: datetime | None = None) -> Prompt | None:
+    """One log line as a Prompt, or None when it is not one.
+
+    The whole rule in one call — the line must be a user turn, must not be
+    `isMeta`, and must hold prose — so a consumer reading a log line by line
+    (the Watch's tailer, the Brief and Audit digests) asks the same question
+    `parse_log` asks, rather than half of it.
+    """
+    if obj.get("type") != "user" or obj.get("isMeta"):
+        return None
+    text = prompt_text((obj.get("message") or {}).get("content"))
+    return Prompt(text, ts) if text else None
 
 
 @dataclass(frozen=True)
@@ -292,7 +351,7 @@ class TurnUsage:
         return rates.turn_tokens(self.as_usage())
 
 
-def _turn_usage(obj: dict, ts: datetime | None) -> TurnUsage | None:
+def turn_usage(obj: dict, ts: datetime | None = None) -> TurnUsage | None:
     """One assistant line's per-turn usage, None when the line carried none."""
     msg = obj.get("message") or {}
     u = msg.get("usage")
@@ -424,18 +483,17 @@ def parse_log(path: Path | str) -> ParsedLog:
                 session.branches.add(obj["gitBranch"])
             apply_title_fields(session, obj)
             if etype == "assistant":
-                blocks = _edit_blocks(obj, ts)
+                blocks = edits_in(obj, ts)
                 _note_edits(session, blocks)
                 parsed.edits.extend(blocks)
-                turn = _turn_usage(obj, ts)
+                turn = turn_usage(obj, ts)
                 if turn is not None:
                     parsed.turns.append(turn)
             elif etype == "user":
                 _extract_commits(session, obj, ts)
-                if not obj.get("isMeta"):
-                    text = _prompt_text((obj.get("message") or {}).get("content"))
-                    if text:
-                        parsed.prompts.append(Prompt(text, ts))
+                prompt = prompt_in(obj, ts)
+                if prompt is not None:
+                    parsed.prompts.append(prompt)
     return parsed
 
 
@@ -505,7 +563,7 @@ def _full_scan(session: Session, path: Path) -> None:
             if obj.get("gitBranch"):
                 session.branches.add(obj["gitBranch"])
             if etype == "assistant":
-                _note_edits(session, _edit_blocks(obj, ts))
+                _note_edits(session, edits_in(obj, ts))
             elif etype == "user":
                 _extract_commits(session, obj, ts)
 

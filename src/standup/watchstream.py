@@ -16,7 +16,6 @@ from __future__ import annotations
 import difflib
 import json
 import os
-import re
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -36,7 +35,6 @@ DISCOVERY_INTERVAL = 10.0      # seconds between scans for new session logs
 # `*/*.jsonl` glob can never find one (ADR 0004 § the worktree lane).
 SUBAGENT_GLOB = "*/*/subagents/*.jsonl"
 BACKFILL_CAP = 400             # newest events replayed at launch, all sessions
-EDIT_TOOLS = claude_logs.EDIT_TOOLS
 
 # Activity State verbs (CONTEXT.md): the pending tool call read as one word.
 # An unmapped tool falls to "acting" — true of anything, so a new or MCP tool
@@ -60,10 +58,6 @@ ACT_THINKING = "thinking"
 ACT_FLOOR = timedelta(seconds=1.0)
 
 _COMMIT_RE = claude_logs.COMMIT_LINE_RE
-_REMINDER_RE = re.compile(r"<system-reminder>.*?</system-reminder>", re.DOTALL)
-_CMD_NAME_RE = re.compile(r"<command-name>(.*?)</command-name>", re.DOTALL)
-_CMD_ARGS_RE = re.compile(r"<command-args>(.*?)</command-args>", re.DOTALL)
-_CMD_TAG_RE = re.compile(r"</?command-[^>]*>", re.DOTALL)
 
 
 class WatchError(Exception):
@@ -193,24 +187,6 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _prompt_text(content) -> str | None:
-    """A user turn's typed text, stripped of injected noise (the show idiom)."""
-    if isinstance(content, str):
-        text = content
-    elif isinstance(content, list):
-        parts = [b.get("text", "") for b in content
-                 if isinstance(b, dict) and b.get("type") == "text"]
-        text = "\n".join(p for p in parts if p)
-    else:
-        return None
-    if "<command-name>" in text:
-        name = (_CMD_NAME_RE.search(text) or [None, ""])[1].strip()
-        args = (_CMD_ARGS_RE.search(text) or [None, ""])[1].strip()
-        text = f"{name} {args}".strip()
-    text = _CMD_TAG_RE.sub("", _REMINDER_RE.sub("", text)).strip()
-    return text or None
-
-
 class _Tailer:
     """Incremental reader of one Session's JSONL: new complete lines -> Feed Events."""
 
@@ -332,7 +308,7 @@ class _Tailer:
             isinstance(content, list)
             and any(isinstance(b, dict) and b.get("type") == "tool_result"
                     for b in content))
-        if returned or _prompt_text(content):
+        if returned or claude_logs.prompt_text(content):
             self.act_verb, self.act_since = ACT_THINKING, ts
 
     def _events_from_obj(self, obj: dict) -> list[FeedEvent]:
@@ -361,35 +337,28 @@ class _Tailer:
                 text = tr if isinstance(tr, str) else (tr.get("stdout") or "") if isinstance(tr, dict) else ""
                 for m in _COMMIT_RE.finditer(text):
                     self.claimed_shas.add(m.group(1))
-            if not obj.get("isMeta") and tr is None:
-                text = _prompt_text((obj.get("message") or {}).get("content"))
-                if text:
-                    events.append(FeedEvent(kind="prompt", when=ts, session_id=sid,
-                                            title=title, message=text))
+            prompt = claude_logs.prompt_in(obj, ts)
+            if prompt is not None:
+                events.append(FeedEvent(kind="prompt", when=ts, session_id=sid,
+                                        title=title, message=prompt.text))
             return events
 
         if etype != "assistant":
             return events
-        content = (obj.get("message") or {}).get("content")
-        if not isinstance(content, list):
-            return events
-        for b in content:
-            if not isinstance(b, dict) or b.get("type") != "tool_use":
-                continue
-            name, inp = b.get("name"), b.get("input") or {}
+        for call in claude_logs.tool_calls_in(obj, ts):
+            name, inp = call.name, call.input
             if not name or name in toolcalls.SILENT_TOOLS:
                 continue      # a local read narrates nothing the feed can show
-            if name not in EDIT_TOOLS:
+            if name not in claude_logs.EDIT_TOOLS:
                 # a Call (ADR 0004 § Calls): every tool call that changes no
                 # file, Bash included — it is the one whose argument is a shell
                 # command, so it carries `command` and the rest carry `args`
-                tid = b.get("id") or ""
-                self.pending_calls[tid] = ts
+                self.pending_calls[call.tool_id] = ts
                 cmd = inp.get("command") if name == "Bash" else None
                 cmd = cmd if isinstance(cmd, str) and cmd.strip() else None
                 events.append(FeedEvent(
                     kind="call", when=ts, session_id=sid, title=title,
-                    tool_id=tid, tool=toolcalls.display_name(name),
+                    tool_id=call.tool_id, tool=toolcalls.display_name(name),
                     command=cmd,
                     # generous: the header clips at its own width and the
                     # expanded body folds, so the event carries more than one
@@ -398,41 +367,44 @@ class _Tailer:
                     # unclipped and unflattened — the body is the request, not a
                     # summary of it. Median 173 bytes across this machine's logs,
                     # p99 4KB, so a full BACKFILL_CAP of Calls costs ~200KB.
-                    tool_input=inp if isinstance(inp, dict) else None))
-            else:
-                fp = inp.get("file_path") or inp.get("notebook_path")
-                if not fp or not os.path.isabs(fp):
-                    continue
-                loc = self._rel(fp)
-                if loc is None:
-                    continue  # the session touched a file outside this Repo Entry
-                root, rel = loc
-                self.edited_paths.add(os.path.realpath(fp))
-                # every file event carries its tool call's id: a MultiEdit emits
-                # one event per hunk, and only the id tells the Watch those hunks
-                # were a single action by the agent
-                tid = b.get("id") or None
-                if name == "Write":
-                    # during backfill the tree has long moved on — don't ask git
-                    change = "modify" if self._backfilling else self._write_change(root, rel)
-                    events.append(FeedEvent(kind="file", when=ts, session_id=sid,
-                                            title=title, path=rel, change=change,
-                                            tool_id=tid,
-                                            added=inp.get("content") or ""))
-                elif name == "MultiEdit":
-                    for e in inp.get("edits") or []:
-                        if isinstance(e, dict):
-                            events.append(FeedEvent(
-                                kind="file", when=ts, session_id=sid, title=title,
-                                path=rel, change="modify", tool_id=tid,
-                                added=e.get("new_string") or "",
-                                removed=e.get("old_string") or ""))
-                else:  # Edit / NotebookEdit
-                    events.append(FeedEvent(
-                        kind="file", when=ts, session_id=sid, title=title,
-                        path=rel, change="modify", tool_id=tid,
-                        added=inp.get("new_string") or inp.get("new_source") or "",
-                        removed=inp.get("old_string") or ""))
+                    tool_input=inp))
+                continue
+            events.extend(self._file_events(call, ts))
+        return events
+
+    def _file_events(self, call: claude_logs.ToolCall,
+                     ts: datetime) -> list[FeedEvent]:
+        """One file-touching call as Feed Events — a projection of the reader's
+        edit blocks (ADR 0001 § the one log reader), never a second reading of
+        the `tool_use` block.
+
+        One block per hunk, so a MultiEdit lands as several events; they carry
+        the same `tool_id`, which is the only thing that remembers they were a
+        single action by the agent.
+        """
+        sid, title = self.session.session_id, self.session.title
+        events: list[FeedEvent] = []
+        for e in claude_logs.edits_of(call):
+            loc = self._rel(e.path)
+            if loc is None:
+                continue  # the session touched a file outside this Repo Entry
+            root, rel = loc
+            self.edited_paths.add(os.path.realpath(e.path))
+            if e.tool == "MultiEdit" and not e.new and not e.old:
+                # the reader's path-only block: a MultiEdit whose hunks it could
+                # not read still attributes the file, but there is no text for
+                # the feed to narrate and an empty diff body would state a
+                # change nobody made
+                continue
+            change = "modify"
+            if e.tool == "Write":
+                # during backfill the tree has long moved on — don't ask git
+                change = ("modify" if self._backfilling
+                          else self._write_change(root, rel))
+            events.append(FeedEvent(kind="file", when=ts, session_id=sid,
+                                    title=title, path=rel, change=change,
+                                    tool_id=call.tool_id or None,
+                                    added=e.new, removed=e.old))
         return events
 
     def read_new(self) -> list[FeedEvent]:

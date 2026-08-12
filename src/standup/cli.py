@@ -712,8 +712,8 @@ def _cmd_diff(argv: list[str]) -> int:
     now = datetime.now(timezone.utc)
     since = now - timedelta(days=RECENT_WINDOW_DAYS)
 
-    # the cache holds the buffered fragment index this view writes, and is
-    # flushed on the way out of the block whichever way this goes
+    # the cache holds the typed readings this view's attribution asks for, and
+    # is flushed on the way out of the block whichever way this goes
     with universe.open_universe(args.projects_dir) as u:
         entries = u.entries(since)
         sessions = u.sessions()

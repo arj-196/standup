@@ -25,7 +25,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import rates, toolcalls
+from . import claude_logs, toolcalls
 
 DETECTOR_VERSION = 3  # bump when detection logic changes (invalidates cache rows)
 
@@ -35,7 +35,10 @@ GAP_TOLERANCE = 2  # non-matching calls tolerated between iterations
 FLOOR_DOLLARS = 1.0
 FLOOR_FRACTION = 0.10
 
-FILE_TOOLS = {"Read", "Edit", "Write", "MultiEdit", "NotebookEdit", "Glob", "Grep"}
+# Tools whose argument shape is a path, so two calls are "the same" when they
+# name the same directory. The file-touching ones are the reader's set, never a
+# second list of them (ADR 0001 § the one log reader).
+FILE_TOOLS = claude_logs.EDIT_TOOLS | {"Read", "Glob", "Grep"}
 _PATH_KEYS = ("file_path", "notebook_path", "path")
 
 
@@ -188,7 +191,14 @@ def _find_loops(elements: list[_Elem], turn_cost: dict[str, float | None]) -> li
 
 
 def detect(path: Path) -> LoopScan:
-    """Parse one session JSONL and detect its Loops. Pure derivation."""
+    """Read one session JSONL and detect its Loops. Pure derivation.
+
+    Both readings are the log reader's — the tool calls on a line and the
+    line's per-turn usage (ADR 0001 § the one log reader). What stays here is
+    the prefilter: a line carrying neither a `tool_use` block nor a `usage`
+    field can hold nothing this detector counts, and skipping `json.loads` on
+    it is the whole reason detection is free.
+    """
     elements: list[_Elem] = []
     turn_cost: dict[str, float | None] = {}
     session_cost = 0.0
@@ -202,24 +212,18 @@ def detect(path: Path) -> LoopScan:
                 continue
             if obj.get("type") != "assistant":
                 continue
-            uuid = obj.get("uuid") or ""
-            msg = obj.get("message") or {}
-            u = msg.get("usage")
-            if isinstance(u, dict) and uuid not in turn_cost:
-                c = rates.turn_cost(msg.get("model"), u)
-                turn_cost[uuid] = c
+            turn = claude_logs.turn_usage(obj)
+            if turn is not None and turn.turn_uuid not in turn_cost:
+                c = turn.cost
+                turn_cost[turn.turn_uuid] = c
                 if c is not None:
                     session_cost += c
-            content = msg.get("content")
-            if not isinstance(content, list):
-                continue
-            for item in content:
-                if isinstance(item, dict) and item.get("type") == "tool_use":
-                    elements.append(_Elem(
-                        shape=_shape(item.get("name") or "tool", item.get("input") or {}),
-                        tool_id=item.get("id") or "",
-                        turn_uuid=uuid,
-                    ))
+            for call in claude_logs.tool_calls_in(obj):
+                elements.append(_Elem(
+                    shape=_shape(call.name or "tool", call.input),
+                    tool_id=call.tool_id,
+                    turn_uuid=call.turn_uuid,
+                ))
     return LoopScan(loops=_find_loops(elements, turn_cost), session_cost=session_cost)
 
 

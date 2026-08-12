@@ -19,14 +19,11 @@ from pathlib import Path
 
 from . import artifacts
 from . import brief as brief_mod
+from . import claude_logs
 from . import loops as loops_mod
 from . import rates, toolcalls
 from .render import _session_ref, _style, _term_width
 
-_REMINDER_RE = re.compile(r"<system-reminder>.*?</system-reminder>", re.DOTALL)
-_CMD_NAME_RE = re.compile(r"<command-name>(.*?)</command-name>", re.DOTALL)
-_CMD_ARGS_RE = re.compile(r"<command-args>(.*?)</command-args>", re.DOTALL)
-_CMD_TAG_RE = re.compile(r"</?command-[^>]*>", re.DOTALL)
 _HEXISH = re.compile(r"[0-9a-f]{4,40}\Z")
 
 
@@ -52,24 +49,6 @@ def resolve_handle(projects_dir: Path, handle: str) -> Path:
         listing = "\n".join(f"  {p.stem[:8]}  {p.parent.name}" for p in sorted(matches))
         raise HandleError(f"standup: {handle!r} is ambiguous:\n{listing}")
     return matches[0]
-
-
-def _user_text(content) -> str | None:
-    if isinstance(content, str):
-        text = content
-    elif isinstance(content, list):
-        # tool_result-only turns carry no user prose — skip them
-        parts = [b.get("text", "") for b in content
-                 if isinstance(b, dict) and b.get("type") == "text"]
-        text = "\n".join(p for p in parts if p)
-    else:
-        return None
-    if "<command-name>" in text:  # a slash-command invocation: show the command + args
-        name = (_CMD_NAME_RE.search(text) or [None, ""])[1].strip()
-        args = (_CMD_ARGS_RE.search(text) or [None, ""])[1].strip()
-        text = f"{name} {args}".strip()
-    text = _CMD_TAG_RE.sub("", _REMINDER_RE.sub("", text)).strip()
-    return text or None
 
 
 def _tool_line(block: dict) -> str:
@@ -209,13 +188,14 @@ def render_transcript(path: Path, show_thinking: bool = False, raw: bool = False
                 brief_insert_idx = len(out)
 
             if etype == "user":
-                if obj.get("isMeta"):  # injected skill/command bodies, not typed
-                    continue
-                text = _user_text(msg.get("content"))
-                if text:
+                # what you typed, through the one reading the Watch also shows
+                # (ADR 0001 § the one log reader): injected bodies, system
+                # reminders and bare tool results are none of them prompts
+                prompt = claude_logs.prompt_in(obj)
+                if prompt is not None:
                     flush()
                     out.append(st.cyan(f"── you {body[7:]}"))
-                    out.append(wrap(text))
+                    out.append(wrap(prompt.text))
                     out.append("")
             elif etype == "assistant":
                 texts, tools = _assistant_parts(msg.get("content"), show_thinking,

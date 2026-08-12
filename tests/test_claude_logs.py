@@ -8,6 +8,7 @@ that drifted when three modules each parsed a `tool_use` block their own way.
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from datetime import datetime, timezone
 
@@ -93,6 +94,49 @@ def test_a_prompt_is_what_you_typed_stripped_of_injected_noise(projects_dir):
 
     assert [p.text for p in parsed.prompts] == ["fix the parser"]
     assert parsed.prompts[0].when is not None
+
+
+def test_prose_beside_a_tool_result_is_a_prompt(projects_dir):
+    """The one shape the Watch's old reading and the Transcript's parted on,
+    settled here (ADR 0001 § the one log reader): prose makes a prompt whatever
+    else rides the line, because what you typed while a call was in flight is
+    something you typed. A result with no prose is still not a prompt."""
+    log = (SessionLog(cwd="/tmp/tt")
+           .prompt("run the suite")
+           .call("Bash", command="pytest")
+           .tool_result("all green")
+           .tool_result("2 failed", prose="stop — try the other suite")
+           .save(projects_dir))
+
+    parsed = claude_logs.parse_log(log)
+
+    assert [p.text for p in parsed.prompts] == ["run the suite",
+                                                "stop — try the other suite"]
+
+
+def test_every_tool_call_on_a_line_is_read_once_in_order(projects_dir):
+    """The reading the Loop detector shapes and the Watch renders: every
+    `tool_use` block, silent and file-touching ones included, carrying the id
+    that joins it to its result and the uuid of the turn it lives in."""
+    log = (SessionLog(cwd="/tmp/tt")
+           .call("Read", file_path="/tmp/tt/alpha.py")
+           .edit("/tmp/tt/alpha.py", old_string="x = 1", new_string="x = 2")
+           .save(projects_dir))
+    lines = [json.loads(ln) for ln in log.read_text().splitlines()]
+    assistant = [obj for obj in lines if obj.get("type") == "assistant"]
+
+    calls = [c for obj in assistant for c in claude_logs.tool_calls_in(obj)]
+
+    assert [c.name for c in calls] == ["Read", "Edit"]
+    assert calls[0].input == {"file_path": "/tmp/tt/alpha.py"}
+    assert all(c.tool_id and c.turn_uuid for c in calls)
+    # the file-touching one is the only one that reads as an edit, and it reads
+    # as the block `parse_log` collected (which stamps it with the line's time)
+    def _shape(e):
+        return (e.tool, e.path, e.new, e.old, e.tool_id)
+
+    assert [_shape(e) for c in calls for e in claude_logs.edits_of(c)] == \
+        [_shape(e) for e in claude_logs.parse_log(log).edits]
 
 
 def test_a_slash_command_reads_back_as_the_line_you_typed(projects_dir):

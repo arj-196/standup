@@ -97,6 +97,9 @@ class SessionLog:
 
     def __post_init__(self) -> None:
         self._clock = self.start or (datetime.now(timezone.utc) - DEFAULT_AGE)
+        # the id of the most recent `tool_use` block, so a result line can name
+        # the call it answers — the join the Watch pairs a Call with its verdict on
+        self._last_tool_id: str | None = None
 
     # -- lines ----------------------------------------------------------
 
@@ -154,8 +157,47 @@ class SessionLog:
             "input": {path_key: file_path, **tool_input},
             "caller": {"type": "direct"},
         }
+        self._last_tool_id = block["id"]
         return self._assistant([block], model, usage,
                                stop_reason="tool_use" if mid_turn else "end_turn")
+
+    def call(self, tool: str = "Bash", *, model: str = MODEL,
+             usage: dict | None = None, mid_turn: bool = False,
+             **tool_input) -> "SessionLog":
+        """An assistant turn whose `tool_use` block calls a tool that edits no
+        file — a **Call** in the Watch's feed, a shape key in a **Loop**, and
+        (for a silent tool like `Read`) the shape both are expected to pass
+        over. `edit()` is the file-touching counterpart."""
+        block = {
+            "type": "tool_use",
+            "id": f"toolu_{len(self.lines):024d}",
+            "name": tool,
+            "input": dict(tool_input),
+            "caller": {"type": "direct"},
+        }
+        self._last_tool_id = block["id"]
+        return self._assistant([block], model, usage,
+                               stop_reason="tool_use" if mid_turn else "end_turn")
+
+    def tool_result(self, output: str = "ok", *, prose: str = "") -> "SessionLog":
+        """The user line a tool's result rides back on: a `tool_result` block
+        plus the `toolUseResult` field, and no prose — never a prompt.
+
+        `prose=` adds a typed text block beside the result, the one shape the
+        Transcript's prompt reading and the Watch's used to part on
+        (ADR 0001 § the one log reader).
+        """
+        content = [{"type": "tool_result", "content": output,
+                    "tool_use_id": self._last_tool_id
+                    or f"toolu_{len(self.lines):024d}"}]
+        if prose:
+            content.append({"type": "text", "text": prose})
+        self._conversation(
+            "user", {"role": "user", "content": content},
+            toolUseResult={"stdout": output, "stderr": "", "interrupted": False,
+                           "isImage": False, "noOutputExpected": False},
+        )
+        return self
 
     def commit(self, sha: str, subject: str = "A commit", *,
                branch: str | None = None, files: int = 1) -> "SessionLog":
@@ -165,15 +207,7 @@ class SessionLog:
         stdout = (f"[{branch or self.branch} {sha}] {subject}\n"
                   f" {files} file{'s' if files != 1 else ''} changed, "
                   f"{files} insertion(+)\n")
-        self._conversation(
-            "user",
-            {"role": "user", "content": [{"type": "tool_result",
-                                          "content": stdout,
-                                          "tool_use_id": f"toolu_{len(self.lines):024d}"}]},
-            toolUseResult={"stdout": stdout, "stderr": "", "interrupted": False,
-                           "isImage": False, "noOutputExpected": False},
-        )
-        return self
+        return self.tool_result(stdout)
 
     # -- output ---------------------------------------------------------
 
