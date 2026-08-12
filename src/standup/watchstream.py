@@ -264,8 +264,7 @@ class _Tailer:
     def _write_change(root: str, rel: str) -> str:
         """create vs modify for a Write, from git (the file itself already exists
         by the time the tail is parsed, so os.path.exists can't tell)."""
-        out = gitstate.git(root, "status", "--porcelain", "--", rel)
-        return "create" if (out or "").startswith("??") else "modify"
+        return "create" if gitstate.is_untracked(root, rel) else "modify"
 
     def _track_activity(self, obj: dict, ts: datetime) -> None:
         """Advance the Activity State from one log line (CONTEXT.md).
@@ -550,10 +549,10 @@ class _GitWatcher:
         adoption is old news, no events. A worktree adopted mid-watch (ADR 0004
         § the worktree lane) is at most one discovery interval old, so what the
         seed swallows is bounded — and its Session's claims narrate it anyway."""
-        self.status[co] = self._status(co)
-        self.head[co] = self._head(co)
-        self.branch[co] = gitstate._branch(co)
-        self.unpushed[co] = self._unpushed_count(co)
+        self.status[co] = gitstate.status(co, untracked_all=True)
+        self.head[co] = gitstate.head_sha(co)
+        self.branch[co] = gitstate.branch(co)
+        self.unpushed[co] = gitstate.unpushed_count(co)
         for p in self.status[co]:
             key = (co, p)
             self._fp[key] = self._stat(co, p)
@@ -569,19 +568,6 @@ class _GitWatcher:
             del self._fp[key]
             self._content.pop(key, None)
             self._base.pop(key, None)
-
-    @staticmethod
-    def _status(co: str) -> dict[str, str]:
-        # -uall lists files inside untracked directories individually
-        out = gitstate.git(co, "status", "--porcelain", "-uall") or ""
-        st = {}
-        for line in out.splitlines():
-            if len(line) >= 4:
-                p = line[3:]
-                if " -> " in p:
-                    p = p.split(" -> ", 1)[1]
-                st[p.strip('"')] = line[:2]
-        return st
 
     @staticmethod
     def _stat(co: str, p: str) -> tuple[int, int] | None:
@@ -612,7 +598,7 @@ class _GitWatcher:
         tracked files, empty for untracked (brand-new) ones."""
         if code.startswith("?"):
             return ""
-        out = gitstate.git(co, "show", f"HEAD:{p}")
+        out = gitstate.file_at_head(co, p)
         if out is None:
             return ""
         return None if "\x00" in out or len(out) > MAX_SNAPSHOT_BYTES else out
@@ -630,10 +616,6 @@ class _GitWatcher:
         return "\n".join(added), "\n".join(removed)
 
     @staticmethod
-    def _head(co: str) -> str:
-        return (gitstate.git(co, "rev-parse", "HEAD") or "").strip()
-
-    @staticmethod
     def _commit_files(co: str, sha: str) -> list[CommitFile]:
         """One commit's per-file added/removed blocks, parsed from a `-U0` diff
         — the same context-free shape `_line_diff` produces for dirty files, so
@@ -643,8 +625,7 @@ class _GitWatcher:
         commit (git's default `show` prints no combined diff), a diff past
         MAX_COMMIT_DIFF_BYTES, or an unreadable object. The Watch then renders
         the commit as a bare header line, which is honest — no diff was read."""
-        out = gitstate.git(co, "show", "--format=", "-U0", "--no-color",
-                           "--no-ext-diff", "--find-renames", sha)
+        out = gitstate.commit_diff(co, sha, context=0)
         if not out or len(out) > MAX_COMMIT_DIFF_BYTES:
             return []
         files: list[CommitFile] = []
@@ -691,14 +672,6 @@ class _GitWatcher:
         # and a truncated list would make the header's "N files" a lie
         return files
 
-    @staticmethod
-    def _unpushed_count(co: str) -> int:
-        out = gitstate.git(co, "rev-list", "--count", "HEAD", "--not", "--remotes")
-        try:
-            return int((out or "").strip())
-        except ValueError:
-            return 0
-
     def dirty_count(self) -> int:
         return sum(len(s) for s in self.status.values())
 
@@ -714,7 +687,7 @@ class _GitWatcher:
         for co in self.checkouts:
             if not os.path.isdir(co):
                 continue   # a just-removed worktree; the next refresh forgets it
-            new_status = self._status(co)
+            new_status = gitstate.status(co, untracked_all=True)
             plain: list[str] = []    # changed but undiffable -> one-line event
             for p, code in new_status.items():
                 key = (co, p)
@@ -770,33 +743,30 @@ class _GitWatcher:
                             (f" +{len(plain) - 5} more" if len(plain) > 5 else "")))
             self.status[co] = new_status
 
-            new_branch = gitstate._branch(co)
+            new_branch = gitstate.branch(co)
             if new_branch != self.branch[co]:
                 events.append(FeedEvent(kind="branch", when=now,
                                         message=f"{self.branch[co]} → {new_branch}"))
                 self.branch[co] = new_branch
 
-            new_head = self._head(co)
+            new_head = gitstate.head_sha(co)
             if new_head and new_head != self.head[co]:
-                out = gitstate.git(co, "log", "--format=%H\x1f%h\x1f%s",
-                                   f"{self.head[co]}..{new_head}") if self.head[co] else None
-                lines = (out or "").splitlines()
-                if not lines:   # rebase/amend/reset: old..new is empty or failed
-                    out1 = gitstate.git(co, "log", "-1", "--format=%H\x1f%h\x1f%s", new_head)
-                    lines = (out1 or "").splitlines()
-                for line in lines:
-                    parts = line.split("\x1f")
-                    if len(parts) != 3:
-                        continue
-                    sha, short, subject = parts
-                    sid = attribute(sha)
+                commits = (gitstate.commits_between(co, self.head[co], new_head)
+                           if self.head[co] else [])
+                if not commits:
+                    # rebase/amend/reset: old..new is empty or unwalkable, so
+                    # the new HEAD is all there is to report
+                    one = gitstate.commit_meta(co, new_head)
+                    commits = [one] if one else []
+                for c in commits:
+                    sid = attribute(c.sha)
                     events.append(FeedEvent(kind="commit", when=now, session_id=sid,
-                                            sha=short, message=subject,
-                                            files=self._commit_files(co, sha)))
+                                            sha=c.short, message=c.subject,
+                                            files=self._commit_files(co, c.sha)))
                 self.head[co] = new_head
 
             if self._polls % PUSH_POLL_EVERY == 0:
-                n = self._unpushed_count(co)
+                n = gitstate.unpushed_count(co)
                 if n < self.unpushed[co] and self.head[co] == new_head:
                     pushed = self.unpushed[co] - n
                     # the branch, never "origin/…": the count comes from
@@ -824,8 +794,9 @@ def _resolve_target(repo_arg: str, sessions: list[Session]) -> tuple[str, list[s
         if not res:
             raise WatchError(f"standup watch: {repo_arg!r} is not inside a git repo")
         toplevel, _ = res
-        worktrees = [w for w in gitstate._worktrees(toplevel) if os.path.isdir(w)]
-        return os.path.basename(worktrees[0]), worktrees
+        checkouts = [w for w in (gitstate.worktrees(toplevel) or [toplevel])
+                     if os.path.isdir(w)]
+        return os.path.basename(checkouts[0]), checkouts
 
     # a name: resolve against the Scan Universe, same matching as the drill-down
     by_key: dict[str, str] = {}
@@ -841,15 +812,16 @@ def _resolve_target(repo_arg: str, sessions: list[Session]) -> tuple[str, list[s
     # map each key to its main checkout (first worktree)
     candidates: list[handles.Target] = []
     for key in order:
-        worktrees = gitstate._worktrees(by_key[key])
-        main = worktrees[0] if worktrees else by_key[key]
+        listed = gitstate.worktrees(by_key[key])
+        main = listed[0] if listed else by_key[key]
         candidates.append(handles.Target(os.path.basename(main), main))
     try:
         hit = handles.resolve(repo_arg, candidates, "standup watch")
     except handles.HandleError as e:
         raise WatchError(str(e)) from None
-    worktrees = [w for w in gitstate._worktrees(hit.path) if os.path.isdir(w)]
-    return hit.name, worktrees
+    checkouts = [w for w in (gitstate.worktrees(hit.path) or [hit.path])
+                 if os.path.isdir(w)]
+    return hit.name, checkouts
 
 
 class WatchStream:
@@ -1020,12 +992,10 @@ class WatchStream:
         stale exactly when an agent starts working. The shared root list is
         mutated in place — every live tailer resolves against the current set —
         and adoption seeds silently, so only what happens *after* counts."""
-        out = gitstate.git(self.checkouts[0], "worktree", "list", "--porcelain")
-        if out is None:
+        answer = gitstate.worktrees(self.checkouts[0])
+        if answer is None:
             return []      # a transient git failure must not read as removals
-        listed = {os.path.realpath(line[len("worktree "):])
-                  for line in out.splitlines() if line.startswith("worktree ")}
-        listed = {w for w in listed if os.path.isdir(w)}
+        listed = {w for w in map(os.path.realpath, answer) if os.path.isdir(w)}
         events: list[FeedEvent] = []
         for w in sorted(listed - {os.path.realpath(c) for c in self.checkouts}):
             self.checkouts.append(w)
@@ -1034,7 +1004,7 @@ class WatchStream:
             self.git.adopt(w)
             events.append(FeedEvent(
                 kind="worktree", when=_now(),
-                message=f"{os.path.basename(w)} appeared — {gitstate._branch(w)}"))
+                message=f"{os.path.basename(w)} appeared — {gitstate.branch(w)}"))
         for c in list(self.checkouts[1:]):            # main never leaves
             if os.path.realpath(c) in listed:
                 continue

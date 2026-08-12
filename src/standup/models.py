@@ -94,7 +94,8 @@ class Commit:
     short: str
     subject: str
     when: datetime
-    author_email: str = ""
+    author_email: str = ""    # the Done filter's key: "my recent work"
+    author_name: str = ""     # display only — what the commit header prints
     attributions: list[Attribution] = field(default_factory=list)
 
 
