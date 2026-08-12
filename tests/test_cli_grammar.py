@@ -36,9 +36,16 @@ REWRITTEN = [
     ("repo then view", ["st", "diff"], ["diff", "st"]),
     ("repo then alias", ["st", "d"], ["d", "st"]),
     ("repo then watch", ["st", "watch"], ["watch", "st"]),
+    ("repo then watch alias", ["st", "w"], ["w", "st"]),
     ("repo then cost", ["st", "cost"], ["cost", "st"]),
-    # the view's own argument rides along after the repo
+    # a path is a repo too, recognised by shape (ADR 0005 § Project Handles)
+    ("path-shaped repo", [".", "diff"], ["diff", "."]),
+    ("relative path repo", ["../tt", "watch"], ["watch", "../tt"]),
+    # the view's own argument rides along after the repo. A bare hex is a
+    # Session Handle; only the `@` sigil makes it a commit
+    # (ADR 0005 § a commit hash)
     ("commit hash argument", ["st", "diff", "@abc1234"], ["diff", "st", "@abc1234"]),
+    ("session handle argument", ["st", "diff", "45e5247"], ["diff", "st", "45e5247"]),
     ("trailing option", ["st", "watch", "-s", "30m"], ["watch", "st", "-s", "30m"]),
     # `session`'s positional is a Session Handle, so the repo goes onto `--in`
     ("repo then session", ["st", "session"], ["session", "--in", "st"]),
@@ -53,6 +60,12 @@ REWRITTEN = [
      ["watch", "st", "--since", "2h"]),
     ("boolean option splice", ["-j", "st", "cost"], ["cost", "st", "-j"]),
     ("options both sides", ["-j", "st", "diff", "-n"], ["diff", "st", "-j", "-n"]),
+    # the spellings that made the scan positional: the rewrite used to bail on
+    # a leading `-`, so these errored with `unrecognized arguments: diff`. The
+    # rewrite succeeds and `diff` — which never had `-a` — is left to complain
+    # about the flag rather than the view (ADR 0005 § the reserved-letter rule)
+    ("flag the view refuses", ["-a", "st", "diff"], ["diff", "st", "-a"]),
+    ("long flag the view refuses", ["--all", "st", "diff"], ["diff", "st", "--all"]),
 ]
 
 
@@ -87,10 +100,20 @@ def test_audit_is_absent_from_the_object_first_table():
 
 
 def test_no_repo_named_reads_the_option_value_as_one():
-    """The accepted cost of the positional scan: `standup -s 3d diff` names no
-    repo, so `3d` is read as one and the complaint comes from the handle
-    resolver rather than from argparse (ADR 0005 § the reserved-letter rule)."""
+    """The accepted cost of the positional scan (ADR 0005 § the reserved-letter
+    rule): `standup -s 3d diff` names no repo, so `3d` is read as one and `-s`
+    is left stranded without its value. Input that was already an error."""
     assert cli._normalize(["-s", "3d", "diff"]) == ["diff", "3d", "-s"]
+
+
+def test_a_stranded_option_is_refused_by_the_view_that_runs(capsys):
+    """And the complaint names the flag, not the view: leading options belong
+    to the parser that runs, so `diff` refuses the `-s` it never had."""
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["-s", "3d", "diff"])
+
+    assert exc.value.code == 2
+    assert "unrecognized arguments: -s" in capsys.readouterr().err
 
 
 def test_normalize_does_not_mutate_its_argument():

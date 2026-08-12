@@ -66,8 +66,8 @@ def test_titles_follow_their_precedence(projects_dir, null_cache):
     assert s.last_prompt == "do the thing"
 
 
-def test_the_cost_scanner_prices_the_fixture_turns(projects_dir):
-    session = fixture_session(cwd="/tmp/tt")
+def test_the_cost_scanner_prices_the_fixture_turns(projects_dir, session_log):
+    session = session_log(cwd="/tmp/tt")
     session.save(projects_dir)
     window_start = datetime.now(timezone.utc) - timedelta(days=1)
 
@@ -82,12 +82,18 @@ def test_the_cost_scanner_prices_the_fixture_turns(projects_dir):
     assert sc.title == "Teach the inbox to read"
 
 
-def test_a_session_can_be_pointed_at_a_scratch_repo(tmp_path, projects_dir, null_cache):
-    repo = make_repo(tmp_path / "tt")
-    fixture_session(cwd=str(repo.path)).save(projects_dir)
+def test_a_session_can_be_pointed_at_a_scratch_repo(
+        scratch_repo, projects_dir, session_log, null_cache):
+    """The join the whole domain rests on: a Session's `cwd` is a real repo, and
+    the two halves of the harness meet there. Written through the conftest
+    fixtures, which is how most tests will reach the builders."""
+    repo = scratch_repo("tt")
+    session_log(cwd=str(repo.path)).save(projects_dir)
 
     (s,) = claude_logs.scan_sessions(projects_dir, null_cache)
     assert s.cwd == str(repo.path)
+    # the fixture Session's edits name files this repo could hold
+    assert set(s.edited_files) == {f"{repo.path}/alpha.py", f"{repo.path}/beta.py"}
 
 
 # --- the scratch repo ---------------------------------------------------
@@ -128,8 +134,8 @@ def test_a_repo_with_a_remote_reports_unpushed_commits(tmp_path):
     assert [c.subject for c in entry.done] == ["Add alpha", "Initial commit"]
 
 
-def test_pending_files_show_up_as_pending(tmp_path):
-    repo = make_repo(tmp_path / "tt")
+def test_pending_files_show_up_as_pending(scratch_repo):
+    repo = scratch_repo("tt")
     repo.write("alpha.py", "print('dirty')\n")
 
     (entry,) = gitstate.discover_repos([str(repo.path)], _yesterday())

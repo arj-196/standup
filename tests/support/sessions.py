@@ -44,11 +44,12 @@ DEFAULT_USAGE = {
     "speed": "standard",
 }
 
-# Every fixture Session starts here unless told otherwise: a fixed wall clock,
-# so a test that asserts on ordering never races the one it runs beside. Recent
-# enough that the default Recent Window (7 days) and the `cost` window (the
-# current calendar month) both contain it is *not* something a constant can
-# promise, so timestamps are anchored on `now` and step backwards.
+# Timestamps are relative, never absolute: a Session an hour old by default,
+# with one step per line. A fixed date would fall out of the Recent Window
+# (7 days) and out of `cost`'s window (the current calendar month) the moment
+# the calendar moved past it, and a fixture that expires is a test that fails
+# on a Tuesday. Pass `start=` when a test needs a specific instant.
+DEFAULT_AGE = timedelta(hours=1)
 STEP = timedelta(minutes=1)
 
 
@@ -74,12 +75,14 @@ class SessionLog:
     version: str = "2.0.0"
     start: datetime | None = None
     lines: list[dict] = field(default_factory=list)
-    # (model, usage) per priced assistant turn, in order — what a cost test
-    # compares against without re-deriving the Rate Card.
+    # (model, usage) per assistant turn, in the order they were added — what a
+    # cost test compares against without re-deriving the Rate Card. Unpriced
+    # models land here too: `cost` counts those as unpriced turns, and a test
+    # about that needs to know which ones they were.
     usages: list[tuple[str, dict]] = field(default_factory=list)
 
     def __post_init__(self) -> None:
-        self._clock = self.start or (datetime.now(timezone.utc) - timedelta(hours=1))
+        self._clock = self.start or (datetime.now(timezone.utc) - DEFAULT_AGE)
 
     # -- lines ----------------------------------------------------------
 

@@ -374,19 +374,23 @@ pending git work) and, like the inbox, is stateless.
 uv run pytest
 ```
 
-The suite runs offline: no network, no `claude` binary, and no real `~/.claude`
-or `~/.standup` — `tests/conftest.py` repoints `$HOME` and rebinds every durable
-path Standup froze at import, autouse, for every test. `git` is the one external
-binary it needs.
+It runs offline and needs no `claude` binary, and it cannot reach the real
+`~/.claude` or `~/.standup`: `tests/conftest.py` repoints `$HOME` and rebinds
+every durable path Standup froze at import — autouse, so no test opts in. `git`
+is the one external binary it shells out to.
 
-Two builders under `tests/support/` stand in for the outside world, and the
-conftest wraps each in a fixture:
+Two builders under `tests/support/` stand in for the outside world:
 
 - `sessions.py` writes a **Session** log in Claude Code's own layout
   (`~/.claude/projects/<cwd-slug>/<sessionId>.jsonl`). `fixture_session()` is the
   canonical small one — a title, two edits, one captured commit hash, and priced
   per-turn usage, so both scanners (the inbox's and `cost`'s) have something to
-  read. Fixtures: `projects_dir`, `session_log`.
-- `repos.py` builds real scratch git repos — with a remote, without one (a
-  **Remoteless Repo**), or with a worktree folded into the same **Repo Entry**.
-  Fixture: `scratch_repo`.
+  read; `SessionLog` builds any other shape line by line.
+- `repos.py` builds real scratch git repos — `make_repo()` with a remote,
+  without one (a **Remoteless Repo**), or with a worktree folded into the same
+  **Repo Entry**.
+
+Both are importable directly. The conftest also offers them as fixtures —
+`projects_dir` (an empty Scan Universe root), `session_log` and `scratch_repo`
+(factories over the two builders), `null_cache` (the **Derived Cache** switched
+off) — and `fake_home`, which is autouse and needs no asking for.

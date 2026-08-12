@@ -93,8 +93,8 @@ def _normalize(argv: list[str]) -> list[str]:
     point — the alternative is a table of every value-taking flag in six
     parsers, kept in sync forever, and a silent misparse the day someone
     forgets. The cost is paid only by input that was already an error:
-    `standup -s 3d diff` names no repo, so `3d` is read as one and the complaint
-    comes from the handle resolver rather than from argparse.
+    `standup -s 3d diff` names no repo, so `3d` is read as one, `-s` is left
+    stranded without its value, and `diff` refuses the flag it never had.
 
     Leading options are handed to the view's own parser, because that is the
     parser that runs — `standup -j st cost` works, and `standup -a st diff`
