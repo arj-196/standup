@@ -12,6 +12,12 @@ conversation lines, tool calls as `tool_use` blocks inside an assistant
 `message`, and a `git commit` announcement in a user line's `toolUseResult`.
 Titles ride their own line types (`ai-title`, `custom-title`, `last-prompt`).
 
+`.subagent()` builds a subagent transcript for the Session — sidechain-marked
+lines that `save()` lands under
+`<cwd-slug>/<sessionId>/subagents/agent-<id>.jsonl`, where Claude Code writes
+them and where the cost scanner folds them into the parent Session
+(ADR 0002 § subagent usage).
+
 `fixture_session()` is the canonical small Session the issue asks for — titles,
 two edits, one commit hash, priced per-turn usage — and is what most tests
 should reach for. Reach for `SessionLog` directly when a test needs a shape
@@ -74,6 +80,10 @@ class SessionLog:
     branch: str = "main"
     version: str = "2.0.0"
     start: datetime | None = None
+    # set by `.subagent()`, never by hand: marks this log as a subagent
+    # transcript, which changes where `save()` puts it and stamps every
+    # conversation line `isSidechain: true` with an `agentId`.
+    agent_id: str | None = None
     lines: list[dict] = field(default_factory=list)
     # (model, usage) per assistant turn, in the order they were added — what a
     # cost test compares against without re-deriving the Rate Card. Unpriced
@@ -143,6 +153,21 @@ class SessionLog:
         )
         return self
 
+    def subagent(self, agent_id: str | None = None, *,
+                 start: datetime | None = None) -> "SessionLog":
+        """A subagent transcript for this Session, as its own builder.
+
+        Its clock starts at the parent's current line (pass `start=` for a
+        window-straddling shape), and its `save()` lands beside the parent at
+        `<cwd-slug>/<sessionId>/subagents/agent-<id>.jsonl` — the layout the
+        cost scanner folds into the parent (ADR 0002 § subagent usage). Real
+        subagent logs carry no title lines, so a fixture should not add any.
+        """
+        aid = agent_id or f"a{len(self.lines):016d}"
+        return SessionLog(session_id=self.session_id, cwd=self.cwd,
+                          branch=self.branch, version=self.version,
+                          start=start or self._clock, agent_id=aid)
+
     # -- output ---------------------------------------------------------
 
     def to_jsonl(self) -> str:
@@ -150,10 +175,25 @@ class SessionLog:
 
     def save(self, projects_dir: Path) -> Path:
         """Write the log under `projects_dir` in Claude Code's own layout, and
-        return its path."""
+        return its path. A subagent transcript (`.subagent()`) lands under the
+        parent's `<sessionId>/subagents/` directory, with the `.meta.json`
+        Claude Code writes beside it — nothing in Standup reads that file, but
+        a fixture tree that does not look like the real one invites a future
+        reader to assume the wrong thing."""
         d = Path(projects_dir) / project_dir_name(self.cwd)
-        d.mkdir(parents=True, exist_ok=True)
-        log = d / f"{self.session_id}.jsonl"
+        if self.agent_id:
+            d = d / self.session_id / "subagents"
+            d.mkdir(parents=True, exist_ok=True)
+            (d / f"agent-{self.agent_id}.meta.json").write_text(json.dumps({
+                "agentType": "general-purpose",
+                "description": "A fixture subagent",
+                "toolUseId": f"toolu_{self.agent_id}",
+                "spawnDepth": 1,
+            }))
+            log = d / f"agent-{self.agent_id}.jsonl"
+        else:
+            d.mkdir(parents=True, exist_ok=True)
+            log = d / f"{self.session_id}.jsonl"
         log.write_text(self.to_jsonl())
         return log
 
@@ -172,7 +212,7 @@ class SessionLog:
 
     def _conversation(self, etype: str, message: dict, **extra) -> None:
         self._clock += STEP
-        self.lines.append({
+        line = {
             "type": etype,
             "message": message,
             "cwd": self.cwd,
@@ -180,12 +220,15 @@ class SessionLog:
             "sessionId": self.session_id,
             "uuid": self._uuid(),
             "parentUuid": None,
-            "isSidechain": False,
+            "isSidechain": self.agent_id is not None,
             "userType": "external",
             "timestamp": self._clock.isoformat().replace("+00:00", "Z"),
             "version": self.version,
             **extra,
-        })
+        }
+        if self.agent_id:
+            line["agentId"] = self.agent_id
+        self.lines.append(line)
 
     def _uuid(self) -> str:
         return f"{self.session_id[:24]}{len(self.lines):012d}"

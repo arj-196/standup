@@ -71,7 +71,7 @@ An LLM-authored, best-effort account of a **Session**'s *objective(s)* — what 
 _Avoid_: metadata (overloaded — titles/`cwd`/branches are *derived* metadata), summary, description, log
 
 **Notional Cost**:
-The API-equivalent dollar *weight* of a Session or project: its logged token usage (input / output / cache-write / cache-read) priced at the published pay-as-you-go **Rate Card**. A comparison unit for load — explicitly not money paid.
+The API-equivalent dollar *weight* of a Session or project: its logged token usage (input / output / cache-write / cache-read) priced at the published pay-as-you-go **Rate Card**. A **Session**'s usage includes its subagent transcripts (`<project>/<sessionId>/subagents/agent-*.jsonl`) — their per-turn `usage` is never echoed into the parent log, so the parent alone under-counts subagent-heavy work. Folded into the Session's own figure, because a subagent's tokens are the Session's work, delegated — never a separate row (a subagent has no title and no **Session Handle**, so a row for it could not be drilled into) and never an overhead (that idiom marks Standup's *own* spend — contrast **Brief Overhead**). The fold is marked, not silent: `incl N subagents` on the drill-down's token line (ADR 0002 § subagent usage). A comparison unit for load — explicitly not money paid.
 _Avoid_: spend, bill, "what it cost" (those imply real money — see Real Spend)
 
 **Real Spend**:
@@ -179,7 +179,7 @@ Work), running session (a process claim), progress (implies a known end)
 
 - A **Session** belongs to exactly one working directory (`cwd`), which may be a repo checkout or a worktree
 - The `cost` drill-down prints each Session's **Session Handle**; `standup session <handle>` renders its **Transcript**
-- A **Session**'s **Notional Cost** is the sum of its turns' token usage priced by the **Rate Card**; a project's Notional Cost is the sum of its Sessions'
+- A **Session**'s **Notional Cost** is the sum of its turns' token usage — the parent transcript's *and* its subagent transcripts' (ADR 0002 § subagent usage) — priced by the **Rate Card**; a project's Notional Cost is the sum of its Sessions'
 - The `cost` view spans **all** Sessions (any git footprint or none) and groups them by **Repo Entry** — worktrees fold into their parent checkout — falling back to the raw `cwd` for Sessions whose directory is not a git repo
 - The `cost` view defaults to the **current calendar month** — chosen to sit alongside the per-cycle **Real Spend** — and stays stateless: recomputed from logs each run, never cached (ADR 0001 § the Recent Window)
 - **Notional Cost** is the *only* cost figure Standup reports; **Real Spend** is deliberately excluded — there is no local source of truth for it

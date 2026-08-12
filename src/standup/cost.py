@@ -4,6 +4,12 @@ Spans *all* sessions (any git footprint or none) — a wider population than the
 Triage Inbox. Groups by Repo Entry identity (worktrees fold into their parent
 checkout), falling back to the raw cwd for sessions whose dir is not a git repo.
 
+A Session's usage includes its subagent transcripts
+(`<project>/<sessionId>/subagents/agent-*.jsonl`): their per-turn `usage` is
+never echoed into the parent log, so the parent alone under-counts
+subagent-heavy work. Folded into the parent Session's own figures, never a
+separate row (ADR 0002 § subagent usage).
+
 Stateless: recomputed from the logs each run. The window (default: the current
 calendar month) bounds which files are read by mtime; individual turns are then
 filtered by their own timestamp so sessions straddling the edge count exactly.
@@ -32,6 +38,10 @@ class SessionCost:
     tokens: dict[str, int] = field(default_factory=lambda: {b: 0 for b in BUCKETS})
     turns: int = 0
     unpriced_turns: int = 0
+    # subagent transcripts that contributed at least one in-window turn to the
+    # figures above (ADR 0002 § subagent usage). The fold's visible mark: a
+    # session line whose tokens include delegated work says so.
+    subagents: int = 0
     # above-floor Loops (ADR 0003 § the Audit): free, derived, attached by
     # attach_loops. Loop Cost is a carve-out of this session's Notional Cost,
     # never a saving.
@@ -106,6 +116,71 @@ class ProjectCost:
         return max(times) if times else None
 
 
+def _fold_usage(sc: SessionCost, obj: dict, window_start: datetime) -> datetime | None:
+    """Fold one assistant line's per-turn usage into `sc`.
+
+    Returns the turn's timestamp when the turn counted (priced or unpriced),
+    None when it fell outside the window or carried no usage — the caller's
+    last-activity clock advances exactly when the figures did.
+    """
+    msg = obj.get("message") or {}
+    u = msg.get("usage")
+    if not isinstance(u, dict):
+        return None
+    ts = _parse_ts(obj.get("timestamp"))
+    if ts and ts < window_start:
+        return None
+    model = msg.get("model")
+    c = rates.turn_cost(model, u)
+    if c is None:
+        sc.unpriced_turns += 1
+        return ts
+    sc.turns += 1
+    sc.cost += c
+    sc.by_model[model] = sc.by_model.get(model, 0.0) + c
+    for b, n in rates.turn_tokens(u).items():
+        sc.tokens[b] += n
+    return ts
+
+
+def _scan_subagents(sc: SessionCost, parent_log: Path,
+                    window_start: datetime) -> datetime | None:
+    """Fold the parent Session's subagent transcripts into `sc`
+    (ADR 0002 § subagent usage).
+
+    Usage only: titles and cwd are the parent's business, and a subagent log
+    carries neither. Each file is mtime-gated like the parent — a pure read
+    saver, since turns are timestamp-filtered anyway. Returns the newest
+    counted turn's timestamp.
+    """
+    latest: datetime | None = None
+    agents_dir = parent_log.parent / parent_log.stem / "subagents"
+    for f in sorted(agents_dir.glob("agent-*.jsonl")):
+        try:
+            mtime = datetime.fromtimestamp(f.stat().st_mtime, tz=timezone.utc)
+        except OSError:
+            continue
+        if mtime < window_start:
+            continue
+        counted_before = sc.turns + sc.unpriced_turns
+        with open(f, errors="replace") as fh:
+            for line in fh:
+                if '"usage"' not in line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if obj.get("type") != "assistant":
+                    continue
+                ts = _fold_usage(sc, obj, window_start)
+                if ts and (latest is None or ts > latest):
+                    latest = ts
+        if sc.turns + sc.unpriced_turns > counted_before:
+            sc.subagents += 1
+    return latest
+
+
 def _scan_file(path: Path, window_start: datetime) -> SessionCost | None:
     session = Session(session_id=path.stem, log_path=str(path))
     sc = SessionCost(session=session)
@@ -128,25 +203,14 @@ def _scan_file(path: Path, window_start: datetime) -> SessionCost | None:
             claude_logs.apply_title_fields(session, obj)
             if not has_usage or obj.get("type") != "assistant":
                 continue
-            msg = obj.get("message") or {}
-            u = msg.get("usage")
-            if not isinstance(u, dict):
-                continue
-            ts = _parse_ts(obj.get("timestamp"))
-            if ts and ts < window_start:
-                continue
+            ts = _fold_usage(sc, obj, window_start)
             if ts and (latest is None or ts > latest):
                 latest = ts
-            model = msg.get("model")
-            c = rates.turn_cost(model, u)
-            if c is None:
-                sc.unpriced_turns += 1
-                continue
-            sc.turns += 1
-            sc.cost += c
-            sc.by_model[model] = sc.by_model.get(model, 0.0) + c
-            for b, n in rates.turn_tokens(u).items():
-                sc.tokens[b] += n
+    # before the emptiness check, so a session whose only in-window work was
+    # delegated still gets its row
+    sub_latest = _scan_subagents(sc, path, window_start)
+    if sub_latest and (latest is None or sub_latest > latest):
+        latest = sub_latest
     session.last_activity = latest
     if sc.turns == 0 and sc.unpriced_turns == 0:
         return None
@@ -178,8 +242,15 @@ def scan_session_costs(projects_dir: Path, window_start: datetime) -> list[Sessi
     return out
 
 
-def group_by_project(session_costs: list[SessionCost]) -> list[ProjectCost]:
-    """Bucket sessions by Repo Entry identity, cwd-slug fallback for non-repos."""
+def group_by_project(session_costs: list[SessionCost],
+                     order: str = "cost") -> list[ProjectCost]:
+    """Bucket sessions by Repo Entry identity, cwd-slug fallback for non-repos.
+
+    `order` ranks both levels the same way: "cost" (the default — where the
+    load concentrates) or "recent" (newest last activity first — what the
+    last few sessions cost, however cheap). A session that counted no dated
+    turn sorts last under "recent" rather than borrowing a rank.
+    """
     cwds = list(dict.fromkeys(sc.session.cwd for sc in session_costs if sc.session.cwd))
     resolved = {cwd: gitstate._resolve(cwd) for cwd in cwds}
 
@@ -198,9 +269,15 @@ def group_by_project(session_costs: list[SessionCost]) -> list[ProjectCost]:
             proj = projects[key] = ProjectCost(key=key, name=name, path=path)
         proj.sessions.append(sc)
 
+    if order == "recent":
+        session_key = lambda s: s.session.last_activity or _EPOCH
+        project_key = lambda p: p.last_activity or _EPOCH
+    else:
+        session_key = lambda s: s.cost
+        project_key = lambda p: p.cost
     for proj in projects.values():
-        proj.sessions.sort(key=lambda s: s.cost, reverse=True)
-    return sorted(projects.values(), key=lambda p: p.cost, reverse=True)
+        proj.sessions.sort(key=session_key, reverse=True)
+    return sorted(projects.values(), key=project_key, reverse=True)
 
 
 def attach_loops(session_costs: list[SessionCost], cache) -> None:
