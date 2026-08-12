@@ -1,35 +1,38 @@
-"""Audit reader (ADR 0003 § the Audit).
+"""Audit adapter (ADR 0003 § the Audit).
 
 An Audit is the on-demand, LLM-authored judgment of one Session: which turns
 are LLM-as-CPU work, whether the pattern recurs in sibling Sessions, and a
-Handoff Prompt for scripting it away. Produced by the Expert Panel in
-auditgen.py; this module only *reads* — rendering stays deterministic given
-the files on disk, exactly like Session Briefs (ADR 0003 § the Session Brief).
+Handoff Prompt for scripting it away. The Expert Panel in `auditgen` produces
+it; the read path only ever *reads*, exactly like a Session Brief.
 
-Audits live in the durable root (never the disposable cache/):
+Location, frontmatter, atomic write, pruning and staleness are the Artifact
+store's (`artifacts.py`) — a Brief and an Audit differ only in their fields:
 
-    ~/.standup/audits/<sessionId>.audit.md
+    ---
+    session_id: <the Session this judges>
+    target_title: <its derived title at generation time>
+    generated: 2026-07-30T09:12:00Z
+    siblings_considered: 12
+    overhead: [{"label": …, "model": …, "usage": {…}}]   # one per panel pass
+    ---
+    <the concluder's markdown — the Audit proper>
 
-Format: markdown with a small frontmatter contract. `overhead` is a one-line
-JSON array of {label, model, usage} — one entry per Expert Panel pass — priced
-by the Rate Card as Audit Overhead, itemised per Expert.
-
+`overhead` is priced by the Rate Card as Audit Overhead, itemised per Expert.
+An Audit is staled by its *target* Session continuing past generation, never by
+sibling drift: the siblings are evidence the panel weighed, not the claim.
 A missing or unreadable Audit is never an error: `standup audit` simply offers
 to generate one.
 """
 
 from __future__ import annotations
 
-import json
-import os
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-from . import rates
-from .brief import STALE_TOLERANCE, _parse_ts, _split_frontmatter
+from . import artifacts, rates
 
-AUDITS_DIR = Path(os.path.expanduser("~/.standup")) / "audits"
+STORE = artifacts.Store("audits", ".audit.md")
 
 
 @dataclass
@@ -62,59 +65,30 @@ class Audit:
         return out
 
 
-def path_for(session_id: str) -> Path:
-    return AUDITS_DIR / f"{session_id}.audit.md"
-
-
 def load_one(session_id: str) -> Audit | None:
-    p = path_for(session_id)
-    try:
-        text = p.read_text(errors="replace")
-    except OSError:
+    doc = STORE.read(session_id)
+    if doc is None:
         return None
-    fm, body = _split_frontmatter(text)
-    overhead: list[dict] = []
-    if fm.get("overhead"):
-        try:
-            parsed = json.loads(fm["overhead"])
-            if isinstance(parsed, list):
-                overhead = [o for o in parsed if isinstance(o, dict)]
-        except (ValueError, TypeError):
-            pass
-    try:
-        siblings = int(fm.get("siblings_considered", "0"))
-    except ValueError:
-        siblings = 0
     return Audit(
         session_id=session_id,
-        body=body.strip(),
-        generated=_parse_ts(fm.get("generated")),
-        target_title=(fm.get("target_title") or "").strip() or None,
-        siblings_considered=siblings,
-        overhead=overhead,
+        body=doc.body.strip(),
+        generated=doc.frontmatter.timestamp("generated"),
+        target_title=doc.frontmatter.text("target_title"),
+        siblings_considered=doc.frontmatter.count("siblings_considered"),
+        overhead=doc.frontmatter.records("overhead"),
     )
 
 
-def stamp_staleness(audit: Audit, last_activity: datetime | None) -> None:
-    """An Audit of a session that continued past generation is stale (same
-    tolerance as Briefs). Sibling drift deliberately does NOT stale it."""
-    try:
-        if audit.generated and last_activity and last_activity > audit.generated + STALE_TOLERANCE:
-            audit.stale = True
-    except TypeError:  # naive vs aware in a hand-edited file — never crash a reader
-        pass
-
-
-def prune_orphans(live_ids: set[str]) -> None:
-    """Delete Audits whose Session log no longer exists (mirrors Briefs)."""
-    try:
-        entries = list(AUDITS_DIR.glob("*.audit.md"))
-    except OSError:
-        return
-    for p in entries:
-        sid = p.name[: -len(".audit.md")]
-        if sid not in live_ids:
-            try:
-                p.unlink()
-            except OSError:
-                pass
+def save(session_id: str, target_title: str, siblings_considered: int,
+         body: str, overhead: list[dict], generated: datetime) -> Path:
+    """Write one Audit. The panel's only door into the store — `auditgen`
+    decides what the panel concluded, this decides what an Audit looks like
+    on disk."""
+    return STORE.write(session_id, {
+        "session_id": session_id,
+        "target_title": target_title,
+        "generated": generated,
+        "siblings_considered": siblings_considered,
+        "overhead": [{"label": o["label"], "model": o["model"], "usage": o["usage"]}
+                     for o in overhead if o.get("usage")],
+    }, body)
