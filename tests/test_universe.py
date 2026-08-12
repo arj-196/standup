@@ -143,6 +143,24 @@ def test_a_project_handle_resolves_without_touching_git(projects_dir, session_lo
             u.resolve_repo("nope")
 
 
+def test_a_non_repo_directory_is_addressable_but_not_watchable(
+        scratch_repo, tmp_path, projects_dir, session_log):
+    """A Session that ran outside git is still a name you can resolve — `cost`
+    and `session --in` answer for it — but not one the Watch can accept: its
+    ground truth is git, so it could never narrate a single event there."""
+    repo = scratch_repo("tt")
+    plain = tmp_path / "notarepo"
+    plain.mkdir()
+    session_log(cwd=str(repo.path),
+                session_id="11111111-0000-4000-8000-000000000001").save(projects_dir)
+    session_log(cwd=str(plain),
+                session_id="22222222-0000-4000-8000-000000000002").save(projects_dir)
+
+    with universe.open_universe(projects_dir) as u:
+        assert {t.name for t in u.targets()} == {"tt", "notarepo"}
+        assert {t.name for t in u.targets(repos_only=True)} == {"tt"}
+
+
 def test_a_session_handle_resolves_without_touching_git(projects_dir, session_log):
     session_log(cwd="/tmp/tt",
                 session_id="3b0a693b-0000-4000-8000-000000000001").save(projects_dir)

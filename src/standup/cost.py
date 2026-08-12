@@ -262,7 +262,7 @@ def group_by_project(session_costs: list[SessionCost],
     for sc in session_costs:
         owner = owners.get(sc.session.cwd)
         if owner is None:
-            continue
+            continue    # unreachable: scan_session_costs drops a cwd-less session
         proj = projects.get(owner.key)
         if proj is None:
             proj = projects[owner.key] = ProjectCost(key=owner.key, name=owner.name,

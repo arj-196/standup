@@ -43,7 +43,8 @@ class UniverseError(Exception):
 
 @dataclass(frozen=True)
 class Owner:
-    """The Repo Entry a directory belongs to.
+    """The Repo Entry a directory belongs to — the answer to "which Repo Entry
+    owns this cwd", not a domain term of its own (CONTEXT.md names no *owner*).
 
     `key` is the identity a Repo Entry is folded on — the realpath of
     `git rev-parse --git-common-dir`, which worktrees share with their main
@@ -156,17 +157,24 @@ class Universe:
             self._owners[cwd] = owner_of(cwd)
         return self._owners[cwd]
 
-    def targets(self) -> list[handles.Target]:
+    def targets(self, repos_only: bool = False) -> list[handles.Target]:
         """The Scan Universe as resolvable Project Handles, one per Repo Entry.
 
         Built from the Session scan, not from git discovery: resolving a handle
         needs names and paths, and must not pay for a status walk of every repo.
+
+        A Session can have run in a directory that is no repo at all, and it is
+        still addressable — `standup session --in <it>` and the completion
+        candidates both name it. `repos_only` drops those, for the caller whose
+        answer comes from git: a name the Watch cannot produce a single git
+        event for is not something it can watch.
         """
         seen: dict[str, handles.Target] = {}
         for cwd in dict.fromkeys(s.cwd for s in self.sessions() if s.cwd):
             owner = self.owner(cwd)
-            if owner is not None:
-                seen.setdefault(owner.key, owner.as_target())
+            if owner is None or (repos_only and not owner.is_repo):
+                continue
+            seen.setdefault(owner.key, owner.as_target())
         return list(seen.values())
 
     def sessions_in(self, key: str) -> list[Session]:
@@ -272,9 +280,6 @@ class Universe:
             raise UniverseError(f"{prog}: no sessions recorded for {where}")
         return max(mine, key=lambda s: s.last_activity), where
 
-    def flush(self) -> None:
-        self.cache.flush()
-
 
 @contextmanager
 def open_universe(projects_dir: str | Path | None = None):
@@ -289,8 +294,7 @@ def open_universe(projects_dir: str | Path | None = None):
     if not path.is_dir():
         raise UniverseError(f"standup: no Claude Code logs found at {path}")
     cache = cache_mod.open_cache()
-    u = Universe(path, cache)
     try:
-        yield u
+        yield Universe(path, cache)
     finally:
-        u.flush()
+        cache.flush()

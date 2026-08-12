@@ -808,13 +808,15 @@ class _GitWatcher:
         return events
 
 
-def _resolve_target(repo_arg: str, u: "universe.Universe") -> tuple[str, list[str]]:
+def _resolve_target(repo_arg: str, u: universe.Universe) -> tuple[str, list[str]]:
     """Project Handle / name / filesystem path -> (name, checkout toplevels).
 
     A path is resolved through git directly, so a repo with no sessions yet is
     still watchable — the Watch is the one view that does not need the Scan
     Universe to have heard of a repo. A bare word goes through the Universe's
-    resolver, so `pm` means here exactly what it means in the inbox.
+    resolver, so `pm` means here exactly what it means in the inbox — over its
+    *git* Repo Entries only: this view's ground truth is git, so a Session's
+    non-repo directory is a name it could never narrate.
     """
     if handles.looks_like_path(repo_arg):
         path = os.path.abspath(os.path.expanduser(repo_arg))
@@ -826,10 +828,15 @@ def _resolve_target(repo_arg: str, u: "universe.Universe") -> tuple[str, list[st
         main = owner.path
     else:
         try:
-            main = u.resolve_repo(repo_arg, prog="standup watch").path
+            main = u.resolve_repo(repo_arg, u.targets(repos_only=True),
+                                  prog="standup watch").path
         except handles.HandleError as e:
             raise WatchError(str(e)) from None
     worktrees = [w for w in gitstate._worktrees(main) if os.path.isdir(w)]
+    if not worktrees:
+        # a Repo Entry the Scan Universe still remembers, whose checkout is gone
+        raise WatchError(
+            f"standup watch: {handles.shorten_home(main)} is not on disk any more")
     return os.path.basename(worktrees[0].rstrip("/")), worktrees
 
 
@@ -840,7 +847,7 @@ class WatchStream:
     limiting keeps git subprocesses and discovery scans on their own cadence.
     """
 
-    def __init__(self, u: "universe.Universe", repo_arg: str, quiet: bool = False,
+    def __init__(self, u: universe.Universe, repo_arg: str, quiet: bool = False,
                  live_window: timedelta | None = None):
         # The Universe is read here and not kept: a Watch runs for minutes and
         # has no business holding the Derived Cache open for them. Everything it

@@ -275,7 +275,7 @@ def _write(session_id: str, title: str, siblings_n: int,
 
 # ── entry point ────────────────────────────────────────────────────────────
 
-def generate(log_path: Path, u: "universe.Universe", progress=lambda r: None) -> Path:
+def generate(log_path: Path, u: universe.Universe, progress=lambda r: None) -> Path:
     """Run the full panel for one session and store the Audit. Synchronous
     facade over the async fan-out; raises AuditError on failure (nothing
     partial is ever stored)."""

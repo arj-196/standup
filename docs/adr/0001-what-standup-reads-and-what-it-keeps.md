@@ -99,44 +99,40 @@ never a resurrected user knob.
 
 ## One module owns the scan
 
-**`universe.py` answers "what does Standup see"**, and every view is a consumer
-of it. The pipeline — open the Derived Cache → scan Sessions → discover repos →
-attribute → flush — exists in exactly one place, `open_universe()`, a context
-manager. Views are thin: a subcommand parses flags, asks the Universe, renders.
+**`universe.py` answers "what does Standup see"**; every view is a consumer.
+The pipeline (open cache → scan Sessions → discover repos → attribute → flush)
+exists once, in `open_universe()`. A view parses flags, asks, renders.
 
-Four things it hides, each of which had been copied per view:
+Why these particular things are hidden there, and not left to the views:
 
-- **the cache's lifecycle.** Flushed on *every* path out, exceptions included.
-  A skipped flush costs no correctness (the cache is a pure accelerator) and is
-  therefore invisible — it just silently reparses next run, which is exactly why
-  it cannot be left to each view to remember.
-- **where the logs live and how looking for them fails.** The hidden
-  `--projects-dir` and the "no Claude Code logs found" message are declared once
-  (`add_projects_dir_argument`, `UniverseError`). A view *raises*; `main`
-  prints it once, so no view carries its own print-and-return-1.
-- **Repo Entry identity.** `owner_of(cwd)` — realpath of `git-common-dir` —
-  replaces four hand-rolled copies. A cwd outside git **owns itself**
-  (`is_repo=False`, key = its realpath) rather than each caller re-inventing the
-  fallback that `cost` needs for a Session with no repo.
-- **the main checkout.** An Owner reports the Repo Entry's *main* checkout, so a
-  Session that ran in a worktree names the entry the same way discovery does.
-  Derived from the common dir (`<main>/.git` → its parent), not from
-  `git worktree list`: free, where the list is a subprocess per repo on the
-  shell-completion path that was tuned to avoid exactly that. A separate git dir
-  or a bare repo fails the shape test and keeps git's reported toplevel.
+- **the cache's lifecycle** — a missed flush breaks no output (pure
+  accelerator), so it is *invisible*: it silently reparses next run. Invisible
+  duties do not survive being copied per view. Hence a context manager, flushing
+  on exception paths too.
+- **the "no logs found" failure** — a view *raises* (`UniverseError`) and `main`
+  prints it, because six copies of one print-and-return-1 drift in wording.
+- **Repo Entry identity** — was four hand-rolled copies, and they had already
+  drifted: the CLI's Session-target list named an entry after whichever cwd it
+  saw first, so a worktree could name it while discovery named the main
+  checkout. `owner_of` promotes to the main checkout, so one answer stands.
 
-`handles.py` consequently knows **no git**: a Project Handle is name matching
-over Targets, and turning a *path* into a Target is a Universe question. Handle
-resolution is therefore testable without a checkout.
+Two consequences worth stating:
+
+- **a non-repo cwd owns itself** (`is_repo=False`). `cost` spans Sessions with
+  no git at all, and it needed that fallback; expressing it in the one rule
+  keeps the callers from re-inventing it four ways.
+- **`handles.py` knows no git**, so Project Handle resolution is testable
+  without a checkout. Name matching is handles'; turning a *path* into a Target
+  is the Universe's.
 
 Rejected:
-- **a scan per view** (the status quo it replaced) — the identity rule drifted
-  between its copies: the Session-target list named a Repo Entry after whichever
-  cwd it saw first, so a worktree could name the entry while discovery named the
-  main checkout.
-- **a process-wide Owner cache** — identity is per-command state; a Watch
+- **`git worktree list` to find the main checkout** — a subprocess per repo, on
+  the shell-completion path that was tuned to avoid exactly that. The common dir
+  already names it (`<main>/.git` → its parent); layouts that break the shape
+  test (separate git dir, bare repo) fall back to git's reported toplevel.
+- **a process-wide identity cache** — identity is per-command state; a Watch
   running for an hour would pin an answer git had moved on from.
 
-Cost: a Universe memoizes, so it is a *command's* view of the world, not a live
-one. The Watch reads one at launch and lets it go rather than holding the cache
-open for the minutes it stays on screen.
+Cost: a Universe is a *command's* view of the world, not a live one — it
+memoizes. The Watch therefore reads one at launch and lets it go rather than
+holding the cache open for the minutes it stays on screen.
