@@ -39,22 +39,21 @@ One further strictness, not a softening: when the change being attributed is a
 as evidence. A session that writes the same lines a day later cannot have
 authored that commit, and without the bound it is reported as a co-author of one.
 
-The fragment index is derived deterministically from the session logs, so it
-belongs in the Derived Cache. The *match* never does: it runs against the live
-working tree, which ADR 0001 § the Derived Cache keeps out of the cache entirely.
+The index is a **projection** of the one log reader's edit blocks
+(ADR 0001 § the one log reader), not a second reading of the log: `norm()` and
+`realpath` are all this module adds. The reading itself is what the Derived
+Cache holds, so there is no fragment index to keep in step with it. The *match*
+is never cached: it runs against the live working tree, which ADR 0001 § the
+Derived Cache keeps out of the cache entirely.
 """
 
 from __future__ import annotations
 
-import json
 import os
 from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
 
-INDEX_VERSION = 2   # bumped: fragments now carry their timestamp
-
-EDIT_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit"}
+from . import claude_logs
 
 # Verdicts (CONTEXT.md -> Attribution Tier).
 LIKELY, SHARED, UNACCOUNTED, UNATTRIBUTED = (
@@ -89,110 +88,27 @@ class Fragment:
     when: float | None = None
 
 
-def _ts(obj: dict) -> float | None:
-    raw = obj.get("timestamp")
-    if not raw:
-        return None
-    try:
-        return datetime.fromisoformat(raw).timestamp()
-    except (ValueError, TypeError):
-        return None
-
-
-def _fragments_from_obj(obj: dict) -> list[Fragment]:
-    message = obj.get("message") or {}
-    content = message.get("content")
-    if not isinstance(content, list):
-        return []
-    out: list[Fragment] = []
-    for item in content:
-        if not isinstance(item, dict) or item.get("type") != "tool_use":
-            continue
-        name = item.get("name")
-        if name not in EDIT_TOOLS:
-            continue
-        inp = item.get("input") or {}
-        fp = inp.get("file_path") or inp.get("notebook_path")
-        if not fp or not os.path.isabs(fp):
-            continue
-        real, when = os.path.realpath(fp), _ts(obj)
-        if name == "Write":
-            out.append(Fragment(real, norm(inp.get("content") or ""), (), when))
-        elif name == "MultiEdit":
-            for e in inp.get("edits") or []:
-                if isinstance(e, dict):
-                    out.append(Fragment(real, norm(e.get("new_string") or ""),
-                                        norm(e.get("old_string") or ""), when))
-        else:   # Edit / NotebookEdit
-            out.append(Fragment(
-                real,
-                norm(inp.get("new_string") or inp.get("new_source") or ""),
-                norm(inp.get("old_string") or ""), when))
-    return out
-
-
-def _scan(log_path: Path) -> list[Fragment]:
-    out: list[Fragment] = []
-    try:
-        with open(log_path, errors="replace") as f:
-            for line in f:
-                if '"tool_use"' not in line:
-                    continue
-                if not any(f'"{t}"' in line for t in EDIT_TOOLS):
-                    continue
-                try:
-                    obj = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if obj.get("type") == "assistant":
-                    out.extend(_fragments_from_obj(obj))
-    except OSError:
-        return []
-    return out
-
-
-def _to_cache(frags: list[Fragment]) -> list:
-    return [[f.path, list(f.new), list(f.old), f.when] for f in frags]
-
-
-def _from_cache(data) -> list[Fragment]:
-    out = []
-    for row in data or []:
-        try:
-            path, new, old, when = row
-            out.append(Fragment(path, tuple(new), tuple(old), when))
-        except (ValueError, TypeError):
-            continue
-    return out
-
-
 def for_session(log_path: Path, cache=None) -> dict[str, list[Fragment]]:
-    """A session's edit fragments, grouped by realpath. Served from the Derived
-    Cache when the log is unchanged; a cache miss, a cache failure, or an index
-    too large for the cache to accept (`cache.MAX_BLOB_BYTES`) costs a reparse
-    and nothing else."""
-    sid = log_path.stem
-    st = None
-    if cache is not None:
-        try:
-            st = log_path.stat()
-        except OSError:
-            st = None
-        if st is not None:
-            hit = cache.get_fragments(sid, st.st_size, st.st_mtime_ns)
-            if hit is not None:
-                return _group(_from_cache(hit))
+    """A session's edit fragments, grouped by realpath.
 
-    frags = _scan(log_path)
-    if cache is not None and st is not None:
-        cache.put_fragments(sid, st.st_size, st.st_mtime_ns, _to_cache(frags))
-    return _group(frags)
-
-
-def _group(frags: list[Fragment]) -> dict[str, list[Fragment]]:
+    The reader's `EditBlock`s, projected: comparable lines (`norm`) under a
+    resolved path. Reading through `read_log` means the log is parsed once per
+    change however many views ask for it, and that a shape the reader knows
+    about cannot be missing here — a MultiEdit whose hunks it could not read
+    still contributes its path, so a file the inbox attributes is a file this
+    index has heard of.
+    """
+    parsed = (claude_logs.read_log(log_path, cache) if cache is not None
+              else claude_logs.parse_log(log_path))
+    real: dict[str, str] = {}         # one realpath call per distinct path
     out: dict[str, list[Fragment]] = {}
-    for f in frags:
-        out.setdefault(f.path, []).append(f)
+    for e in parsed.edits:
+        if e.path not in real:
+            real[e.path] = os.path.realpath(e.path)
+        path = real[e.path]
+        out.setdefault(path, []).append(Fragment(
+            path, norm(e.new), norm(e.old),
+            e.when.timestamp() if e.when else None))
     return out
 
 

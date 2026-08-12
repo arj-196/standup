@@ -83,13 +83,23 @@ Working-tree change has no such bound.
 the group header says". A note on every hunk would read as decoration and get
 skipped, costing the marks that matter their force.
 
-**Cache boundary.** The per-session fragment index is derived deterministically
-from logs, so it lives in the **Derived Cache**. The **match** never does: it runs
-against the live working tree, which the cache excludes. An index too large even
-compressed is simply not stored — skipping a write costs a reparse and changes no
-output, which is what a pure accelerator may do.
+**Cache boundary.** The fragment index is a **projection** of the one log
+reader's edit blocks (ADR 0001 § the one log reader) — `norm()` and `realpath`
+over `ParsedLog.edits`, nothing more — so what the **Derived Cache** holds is
+the reading, and the index is rebuilt from it per command. It used to be a
+cached index of its own beside that row, which stored the text of every edit
+twice and gave the same logs two parsers to disagree through. The **match**
+is never cached either way: it runs against the live working tree, which the
+cache excludes.
 
 ## Consequences
+
+- **A call whose hunks the reader cannot make out still names its file.** A
+  `MultiEdit` with no readable `edits[]` yields a path-only block, so the index
+  has heard of the path even with no text to match. The hunk then reads
+  `unaccounted` — a change in a file a Session *did* touch — rather than
+  `unattributed`, which would claim no Session ever touched a path the inbox is
+  showing under that Session's Rollup.
 
 - `--stat` cannot carry a hunk verdict, having no hunks. Its file line carries
   the *shape* of what the bodies would say (`~ 2 shared · 1 unaccounted`, plus

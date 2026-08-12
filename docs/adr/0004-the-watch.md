@@ -616,7 +616,7 @@ keyboard.
 
 ## Tried and retracted
 
-Five shipped rules were reversed. The code still carries their shape, so a reader
+Six shipped rules were reversed. The code still carries their shape, so a reader
 diffing against an older spec would otherwise read current behaviour as a bug.
 
 - **"The argument is a preferred key's value" — the key that wins excludes the
@@ -650,6 +650,14 @@ diffing against an older spec would otherwise read current behaviour as a bug.
 - **The whole-widget selection band.** Replaced by the one-cell rail. Under
   `NO_COLOR` it degraded to reverse video across the whole widget — the same
   substrate problem, louder.
+- **"A user line carrying a `toolUseResult` is not a prompt."** The Watch's own
+  prompt rule, one condition stricter than the Transcript's. Retracted when both
+  moved onto the one log reader (ADR 0001 § the one log reader): the two rules
+  part on a single shape — prose typed *while a call was in flight*, which the
+  log records on the same line as that call's result — and dropping it lost a
+  real instruction from the feed. The reader's rule (prose makes a prompt)
+  stands for both surfaces. Consequence to know: such a line is a full prompt,
+  so it is a chapter break, and the backfill's replay starts there.
 
 One Activity State reading was also retracted after meeting real logs *(2026-08-04)*:
 `stop_reason` is the *message's*, not the line's. Claude Code flushes a message's

@@ -12,8 +12,9 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
+from standup import cache as cache_mod
 from standup import claude_logs, diffview, gitstate, join
-from standup.fragments import LIKELY, Matcher
+from standup.fragments import LIKELY, UNACCOUNTED, Matcher
 
 from tests.support.sessions import SessionLog
 
@@ -68,6 +69,51 @@ def test_uncommitted_work_is_grouped_and_attributed(scratch_repo, projects_dir,
     (hb,) = fb.blocks
     assert hb.hunk.added == ["print('two')"]
     assert (hb.verdict.tier, hb.verdict.session_ids) == (LIKELY, (SID,))
+
+
+def test_a_call_whose_hunks_are_unreadable_still_names_a_file_a_session_touched(
+        scratch_repo, projects_dir, null_cache):
+    """A MultiEdit whose `edits[]` the reader cannot make out still says the
+    Session touched the file (ADR 0001 § the one log reader), and hunk
+    attribution reads the same blocks: the honest verdict is `unaccounted` —
+    a change in a file a Session *did* touch, matched by nothing — not
+    `unattributed`, which claims no Session ever touched the path."""
+    repo = scratch_repo("tt")
+    repo.write("alpha.py", "print('one')\n")
+    repo.commit("Add alpha")
+    repo.write("alpha.py", "print('one')\nprint('two')\n")
+    (SessionLog(session_id=SID, cwd=str(repo.path))
+     .prompt("teach alpha to count")
+     .edit(str(repo.path / "alpha.py"), tool="MultiEdit")
+     ).save(projects_dir)
+    entry, by_id = _scan(projects_dir, null_cache)
+
+    groups = diffview.build_active(entry, by_id, Matcher(null_cache))
+
+    (hb,) = groups[0].files[0].blocks
+    assert hb.verdict.tier == UNACCOUNTED
+    assert hb.verdict.partial is False
+
+
+def test_attribution_reads_the_same_hunks_warm_and_cold(scratch_repo, projects_dir):
+    """The Derived Cache is a pure accelerator (ADR 0001 § the Derived Cache):
+    the fragments a hunk is matched against are a projection of the cached
+    reading, so a warm run must produce the same verdicts as a cold one."""
+    repo = scratch_repo("tt")
+    _seed(repo, projects_dir)
+
+    def _verdicts():
+        cache = cache_mod.open_cache()
+        entry, by_id = _scan(projects_dir, cache)
+        groups = diffview.build_active(entry, by_id, Matcher(cache))
+        out = [(b.verdict.tier, b.verdict.session_ids)
+               for g in groups for fb in g.files for b in fb.blocks]
+        cache.flush()
+        return out
+
+    cold = _verdicts()
+    assert cold == [(LIKELY, (SID,))]
+    assert _verdicts() == cold
 
 
 def test_staged_work_still_shows_up(scratch_repo, projects_dir, null_cache):

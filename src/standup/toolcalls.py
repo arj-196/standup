@@ -14,16 +14,13 @@ from __future__ import annotations
 import json
 import re
 
-# Tools that change a file are **not** Calls — they are file events carrying a
-# diff body, and in a Transcript they read by their path. Imported from
-# claude_logs so the two lists cannot disagree.
-from .claude_logs import EDIT_TOOLS
-
 # The only tools the Watch stays silent about (ADR 0004 § Calls): a local
 # read changes nothing and answers nothing that the Activity State's `reading`
 # does not already answer. Everything *not* named here earns a row — including
 # a tool that ships next month — which is the same call ACT_VERBS makes when it
-# falls an unmapped tool to `acting`.
+# falls an unmapped tool to `acting`. A tool that changes a file is not silent
+# either: it is a file event carrying a diff body, and the one list of those is
+# `claude_logs.EDIT_TOOLS`.
 SILENT_TOOLS = frozenset({
     "Read", "Grep", "Glob", "NotebookRead", "BashOutput", "KillShell",
 })
@@ -47,11 +44,6 @@ _UUIDISH = re.compile(r"\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-"
 # `command` outranks `page_id`.
 _ARG_KEYS = ("file_path", "notebook_path", "command", "path", "pattern",
              "query", "url", "uri", "prompt", "id", "page_id", "expression")
-
-
-def is_silent(name: str) -> bool:
-    """Does this tool pass without a Call row? (Edit tools are file events.)"""
-    return name in SILENT_TOOLS or name in EDIT_TOOLS
 
 
 def display_name(raw: str) -> str:

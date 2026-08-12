@@ -103,10 +103,21 @@ Cached rows therefore hold token counts, never dollars — a Rate Card edit
 (ADR 0002) re-prices old logs without a cache bump.
 
 **Cached as one row** in `logs` — one row per `session_id`, served only when
-`(size, mtime_ns, READER_VERSION)` all match — zlib-compressed and capped like
-the fragment index, because the reading carries the text of every edit and
-every prompt. A row too large, malformed, or written by another reader version
-costs a reparse and changes no output.
+`(size, mtime_ns, READER_VERSION)` all match — zlib-compressed and capped,
+because the reading carries the text of every edit and every prompt. A row too
+large, malformed, or written by another reader version costs a reparse and
+changes no output. It is the *only* cached reading of a log's contents: what
+hunk attribution matches against is a projection of this row (ADR 0007
+§ Decision), not a second index of the same text.
+
+**The line readings are public too** — `tool_calls_in`, `edits_of`/`edits_in`,
+`prompt_in`/`prompt_text`, `turn_usage`, `apply_title_fields` — because a
+whole-file reading is the wrong shape for a consumer that never holds the whole
+file. The Watch tails a log as it grows and the Loop detector prefilters lines
+it will not count; both read a line exactly as `parse_log` reads it, so they
+are projections of the one reading rather than rivals to it. A consumer that
+reached instead for the module's privates would be a rival again, which is why
+there are none left to reach for.
 
 A `ParsedLog` is **one file**, so its totals are one log's. A Session's usage
 also includes its subagent transcripts (ADR 0002 § subagent usage), which are
@@ -135,15 +146,24 @@ mtime agree, and one Session is priced with another's turns.
 
 Expand first, then contract: the typed reading landed beside the existing
 scanners rather than under them, so no view changed behaviour on the day the
-seam appeared. Two differences are therefore *known and pinned by test*, to be
-decided when each consumer migrates rather than discovered then:
+seam appeared. The contraction followed — the Loop detector, hunk attribution,
+the Watch's tailer and the Transcript all read through it now — and the two
+differences it had left open were decided rather than discovered:
 
-- **branches** — the full reading takes them off every line, the inbox's
-  prefiltered sweep only off the lines it admits. The full reading's set is a
-  superset, and the more correct one.
-- **prompts** — the reading is the Transcript's (prose makes a prompt); the
-  Watch additionally drops any user line carrying a `toolUseResult`. They part
-  only on a tool result that also carries prose.
+- **prompts** — settled on the reader's rule: **prose makes a prompt**,
+  whatever else rides the line. The Watch's extra condition (drop any user line
+  carrying a `toolUseResult`) parted from it on one shape — what you typed
+  while a call was in flight — and dropping that lost a real prompt from the
+  feed. The Watch adopted the reader's rule; the Transcript already had it, so
+  the two now agree by construction rather than by review.
+- **branches** — still a superset in the full reading, because the inbox
+  **keeps its prefiltered sweep** (`_full_scan`). That is the call this
+  contraction had to make: the sweep is not a rival reading — it lives inside
+  this module and shares every line reading with `parse_log` — it is the same
+  reading with a prefilter in front, and folding it away would cost
+  `json.loads` on every line of ~300 MB of logs to gain a branch name the inbox
+  does not print. A consumer that switches to the full reading gains the
+  superset, which is the more correct answer.
 
 Rejected:
 - **A reading per consumer, kept in sync by review** — the status quo, and the

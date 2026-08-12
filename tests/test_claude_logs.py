@@ -8,6 +8,7 @@ that drifted when three modules each parsed a `tool_use` block their own way.
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from datetime import datetime, timezone
 
@@ -63,6 +64,10 @@ def test_a_multiedit_with_no_readable_hunks_still_records_the_path(projects_dir)
     assert [(e.path, e.new, e.old) for e in parsed.edits] == [
         ("/tmp/tt/alpha.py", "", "")]
     assert set(parsed.session.edited_files) == {"/tmp/tt/alpha.py"}
+    # said in the block, not left to be recognised by its emptiness: a consumer
+    # that shows change has nothing to show here, and an edit that genuinely
+    # wrote nothing is a different thing
+    assert parsed.edits[0].path_only is True
 
 
 def test_the_path_alias_and_the_new_text_fallback_read_as_one_shape(projects_dir):
@@ -93,6 +98,49 @@ def test_a_prompt_is_what_you_typed_stripped_of_injected_noise(projects_dir):
 
     assert [p.text for p in parsed.prompts] == ["fix the parser"]
     assert parsed.prompts[0].when is not None
+
+
+def test_prose_beside_a_tool_result_is_a_prompt(projects_dir):
+    """The one shape the Watch's old reading and the Transcript's parted on,
+    settled here (ADR 0001 § the one log reader): prose makes a prompt whatever
+    else rides the line, because what you typed while a call was in flight is
+    something you typed. A result with no prose is still not a prompt."""
+    log = (SessionLog(cwd="/tmp/tt")
+           .prompt("run the suite")
+           .call("Bash", command="pytest")
+           .tool_result("all green")
+           .tool_result("2 failed", prose="stop — try the other suite")
+           .save(projects_dir))
+
+    parsed = claude_logs.parse_log(log)
+
+    assert [p.text for p in parsed.prompts] == ["run the suite",
+                                                "stop — try the other suite"]
+
+
+def test_every_tool_call_on_a_line_is_read_once_in_order(projects_dir):
+    """The reading the Loop detector shapes and the Watch renders: every
+    `tool_use` block, silent and file-touching ones included, carrying the id
+    that joins it to its result and the uuid of the turn it lives in."""
+    log = (SessionLog(cwd="/tmp/tt")
+           .call("Read", file_path="/tmp/tt/alpha.py")
+           .edit("/tmp/tt/alpha.py", old_string="x = 1", new_string="x = 2")
+           .save(projects_dir))
+    lines = [json.loads(ln) for ln in log.read_text().splitlines()]
+    assistant = [obj for obj in lines if obj.get("type") == "assistant"]
+
+    calls = [c for obj in assistant for c in claude_logs.tool_calls_in(obj)]
+
+    assert [c.name for c in calls] == ["Read", "Edit"]
+    assert calls[0].input == {"file_path": "/tmp/tt/alpha.py"}
+    assert all(c.tool_id and c.turn_uuid for c in calls)
+    # the file-touching one is the only one that reads as an edit, and it reads
+    # as the block `parse_log` collected (which stamps it with the line's time)
+    def _shape(e):
+        return (e.tool, e.path, e.new, e.old, e.tool_id)
+
+    assert [_shape(e) for c in calls for e in claude_logs.edits_of(c)] == \
+        [_shape(e) for e in claude_logs.parse_log(log).edits]
 
 
 def test_a_slash_command_reads_back_as_the_line_you_typed(projects_dir):
@@ -298,12 +346,17 @@ def test_a_reading_too_large_to_store_is_declined_not_truncated(
 
 def test_an_older_cache_db_gains_the_new_table_and_keeps_its_rows(fake_home):
     """The Derived Cache is disposable, but it is not thrown away for a new
-    slot: a DB written before the reader had one is upgraded in place."""
+    slot: a DB written before the reader had one is upgraded in place — and a
+    slot the reader stopped using goes with the upgrade, rather than sitting
+    there holding the text of every edit a second time — the fragment index is
+    a projection of this row now (ADR 0007 § Decision)."""
     old = cache_mod.open_cache()
     old.put_session("sid", 1, 1, {"cwd": "/tmp/tt"})
     old.flush()
     conn = sqlite3.connect(str(cache_mod.CACHE_PATH))
     conn.execute("DROP TABLE logs")
+    conn.execute("CREATE TABLE fragments (session_id TEXT PRIMARY KEY, data BLOB)")
+    conn.execute("INSERT INTO fragments VALUES('sid', x'00')")
     conn.execute("PRAGMA user_version = 3")
     conn.commit()
     conn.close()
@@ -313,3 +366,6 @@ def test_an_older_cache_db_gains_the_new_table_and_keeps_its_rows(fake_home):
     assert not isinstance(upgraded, cache_mod.NullCache)
     assert upgraded.get_session("sid", 1, 1) == {"cwd": "/tmp/tt"}
     assert upgraded.get_log("sid", 1, 1) is None      # the new table is there
+    tables = {r[0] for r in sqlite3.connect(str(cache_mod.CACHE_PATH))
+              .execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    assert "logs" in tables and "fragments" not in tables

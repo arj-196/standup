@@ -29,7 +29,7 @@ from pathlib import Path
 
 from . import audit as audit_mod
 from . import brief as brief_mod
-from . import loops, transcript, universe
+from . import claude_logs, loops, transcript, universe
 from .audit import Audit
 from .models import Session
 
@@ -63,10 +63,10 @@ def _digest(path: Path, looped_ids: set[str]) -> str:
                     continue
                 etype = obj.get("type")
                 msg = obj.get("message") or {}
-                if etype == "user" and not obj.get("isMeta"):
-                    text = transcript._user_text(msg.get("content"))
-                    if text:
-                        parts.append("USER: " + text)
+                if etype == "user":
+                    prompt = claude_logs.prompt_in(obj)
+                    if prompt is not None:
+                        parts.append("USER: " + prompt.text)
                 elif etype == "assistant":
                     texts, tools = transcript._assistant_parts(
                         msg.get("content"), show_thinking=False, looped_ids=looped_ids)

@@ -32,7 +32,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import brief, transcript
+from . import brief, claude_logs, transcript
 from .claude_logs import EDIT_TOOLS
 from .models import Brief
 
@@ -87,10 +87,10 @@ def _digest(path: Path) -> str:
                     continue
                 etype = obj.get("type")
                 msg = obj.get("message") or {}
-                if etype == "user" and not obj.get("isMeta"):
-                    text = transcript._user_text(msg.get("content"))
-                    if text:
-                        parts.append("USER: " + text)
+                if etype == "user":
+                    prompt = claude_logs.prompt_in(obj)
+                    if prompt is not None:
+                        parts.append("USER: " + prompt.text)
                 elif etype == "assistant":
                     texts, tools = transcript._assistant_parts(msg.get("content"), show_thinking=False)
                     for t in texts:
