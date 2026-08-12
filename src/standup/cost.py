@@ -18,12 +18,11 @@ filtered by their own timestamp so sessions straddling the edge count exactly.
 from __future__ import annotations
 
 import json
-import os
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import claude_logs, gitstate, rates
+from . import claude_logs, rates
 from .models import Session
 
 _EPOCH = datetime.min.replace(tzinfo=timezone.utc)
@@ -244,29 +243,30 @@ def scan_session_costs(projects_dir: Path, window_start: datetime) -> list[Sessi
 
 def group_by_project(session_costs: list[SessionCost],
                      order: str = "cost") -> list[ProjectCost]:
-    """Bucket sessions by Repo Entry identity, cwd-slug fallback for non-repos.
+    """Bucket sessions by Repo Entry identity (`universe.owner_of` — worktrees
+    fold into their main checkout), the directory itself for a non-repo cwd.
 
     `order` ranks both levels the same way: "cost" (the default — where the
     load concentrates) or "recent" (newest last activity first — what the
     last few sessions cost, however cheap). A session that counted no dated
     turn sorts last under "recent" rather than borrowing a rank.
     """
+    # imported here, not at module scope: `universe` reaches `render`, which
+    # reads this module's ProjectCost — a top-level import would close the loop.
+    from . import universe
+
     cwds = list(dict.fromkeys(sc.session.cwd for sc in session_costs if sc.session.cwd))
-    resolved = {cwd: gitstate._resolve(cwd) for cwd in cwds}
+    owners = {cwd: universe.owner_of(cwd) for cwd in cwds}
 
     projects: dict[str, ProjectCost] = {}
     for sc in session_costs:
-        cwd = sc.session.cwd
-        res = resolved.get(cwd)
-        if res:
-            toplevel, key = res
-            name, path = os.path.basename(toplevel), toplevel
-        else:
-            key = os.path.realpath(cwd)
-            name, path = os.path.basename(cwd.rstrip("/")) or cwd, cwd
-        proj = projects.get(key)
+        owner = owners.get(sc.session.cwd)
+        if owner is None:
+            continue
+        proj = projects.get(owner.key)
         if proj is None:
-            proj = projects[key] = ProjectCost(key=key, name=name, path=path)
+            proj = projects[owner.key] = ProjectCost(key=owner.key, name=owner.name,
+                                                     path=owner.path)
         proj.sessions.append(sc)
 
     if order == "recent":

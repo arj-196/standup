@@ -4,7 +4,8 @@ Date: 2026-07-23
 
 Four decisions in sequence: the second retires the only state the tool had, the
 third reintroduces a store and must justify itself against the second, the
-fourth deletes a knob the third made pointless.
+fourth deletes a knob the third made pointless. A fifth says where all four are
+implemented.
 
 ## The Scan Universe
 
@@ -95,3 +96,47 @@ Cost: pending-change matching has no window, so an old session that once touched
 a path can tag it with a `likely ~` claim. Attributions sort recent-first so it
 ranks last. If stale tags surface, the fix is an *internal* horizon (~60–90d),
 never a resurrected user knob.
+
+## One module owns the scan
+
+**`universe.py` answers "what does Standup see"**, and every view is a consumer
+of it. The pipeline — open the Derived Cache → scan Sessions → discover repos →
+attribute → flush — exists in exactly one place, `open_universe()`, a context
+manager. Views are thin: a subcommand parses flags, asks the Universe, renders.
+
+Four things it hides, each of which had been copied per view:
+
+- **the cache's lifecycle.** Flushed on *every* path out, exceptions included.
+  A skipped flush costs no correctness (the cache is a pure accelerator) and is
+  therefore invisible — it just silently reparses next run, which is exactly why
+  it cannot be left to each view to remember.
+- **where the logs live and how looking for them fails.** The hidden
+  `--projects-dir` and the "no Claude Code logs found" message are declared once
+  (`add_projects_dir_argument`, `UniverseError`). A view *raises*; `main`
+  prints it once, so no view carries its own print-and-return-1.
+- **Repo Entry identity.** `owner_of(cwd)` — realpath of `git-common-dir` —
+  replaces four hand-rolled copies. A cwd outside git **owns itself**
+  (`is_repo=False`, key = its realpath) rather than each caller re-inventing the
+  fallback that `cost` needs for a Session with no repo.
+- **the main checkout.** An Owner reports the Repo Entry's *main* checkout, so a
+  Session that ran in a worktree names the entry the same way discovery does.
+  Derived from the common dir (`<main>/.git` → its parent), not from
+  `git worktree list`: free, where the list is a subprocess per repo on the
+  shell-completion path that was tuned to avoid exactly that. A separate git dir
+  or a bare repo fails the shape test and keeps git's reported toplevel.
+
+`handles.py` consequently knows **no git**: a Project Handle is name matching
+over Targets, and turning a *path* into a Target is a Universe question. Handle
+resolution is therefore testable without a checkout.
+
+Rejected:
+- **a scan per view** (the status quo it replaced) — the identity rule drifted
+  between its copies: the Session-target list named a Repo Entry after whichever
+  cwd it saw first, so a worktree could name the entry while discovery named the
+  main checkout.
+- **a process-wide Owner cache** — identity is per-command state; a Watch
+  running for an hour would pin an answer git had moved on from.
+
+Cost: a Universe memoizes, so it is a *command's* view of the world, not a live
+one. The Watch reads one at launch and lets it go rather than holding the cache
+open for the minutes it stays on screen.
