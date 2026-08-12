@@ -26,7 +26,7 @@ from . import claude_logs, rates
 from .models import Session
 
 _EPOCH = datetime.min.replace(tzinfo=timezone.utc)
-BUCKETS = ("input", "output", "cache_write", "cache_read")
+BUCKETS = rates.BUCKETS   # the display buckets are the Rate Card's, not this view's
 
 
 @dataclass
