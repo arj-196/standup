@@ -18,6 +18,16 @@ dependencies = [
 [project.scripts]
 standup = "standup.cli:main"
 
+# The suite runs offline: no network, no `claude` binary, no real `~/.claude` or
+# `~/.standup` (tests/conftest.py redirects both). `git` is the one external
+# binary it shells out to, via the scratch-repo helper.
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"

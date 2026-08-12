@@ -367,3 +367,26 @@ session; Standup deliberately reports no real-spend figure (there is no
 trustworthy local source — see ADR 0002). For your actual bill, use
 claude.ai → Settings → Usage. Cost spans all sessions (not just those with
 pending git work) and, like the inbox, is stateless.
+
+## Tests
+
+```sh
+uv run pytest
+```
+
+The suite runs offline: no network, no `claude` binary, and no real `~/.claude`
+or `~/.standup` — `tests/conftest.py` repoints `$HOME` and rebinds every durable
+path Standup froze at import, autouse, for every test. `git` is the one external
+binary it needs.
+
+Two builders under `tests/support/` stand in for the outside world, and the
+conftest wraps each in a fixture:
+
+- `sessions.py` writes a **Session** log in Claude Code's own layout
+  (`~/.claude/projects/<cwd-slug>/<sessionId>.jsonl`). `fixture_session()` is the
+  canonical small one — a title, two edits, one captured commit hash, and priced
+  per-turn usage, so both scanners (the inbox's and `cost`'s) have something to
+  read. Fixtures: `projects_dir`, `session_log`.
+- `repos.py` builds real scratch git repos — with a remote, without one (a
+  **Remoteless Repo**), or with a worktree folded into the same **Repo Entry**.
+  Fixture: `scratch_repo`.

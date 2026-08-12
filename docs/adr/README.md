@@ -42,7 +42,7 @@ a citation pointing at a number that moved; the check is that the set of numbers
 referenced anywhere equals the set of files present. Empty diff is a pass:
 
 ```bash
-diff <(grep -rhozE --exclude-dir=__pycache__ "ADR[[:space:]#]*[0-9]{4}" src/ *.md docs/ \
+diff <(grep -rhozE --exclude-dir=__pycache__ "ADR[[:space:]#]*[0-9]{4}" src/ tests/ *.md docs/ \
         | grep -aoE "[0-9]{4}" | sort -u) \
      <(ls docs/adr/ | grep -oE "^[0-9]{4}" | sort -u)
 ```
@@ -52,7 +52,9 @@ Each flag closes a hole a stale citation has escaped through, or could:
 line-anchored grep is blind to those, which is exactly how four wrapped
 citations once survived a renumbering pass; `[[:space:]#]*` also absorbs a
 comment prefix on the continuation line. `docs/` is recursive, because
-`docs/*.md` misses `docs/adr/` itself. `--exclude-dir=__pycache__` keeps stale
+`docs/*.md` misses `docs/adr/` itself. `tests/` is in scope because a test that
+pins a decision cites the section it pins, and a citation the check cannot see
+is exactly how a stale number survives. `--exclude-dir=__pycache__` keeps stale
 compiled docstrings from resurrecting fixed numbers (`-I` does not help:
 binary detection is off under `-z`).
 
