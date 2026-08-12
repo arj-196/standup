@@ -13,9 +13,10 @@ decision changes it. Three rules, all of them recoverable from
 
 - **numbering is contiguous, `0001..N`, no gaps.** Merging or deleting an ADR
   renumbers the set, and renumbering is safe *only* when every citation is
-  rewritten in the same change — one mechanical pass over `src/`, `README.md`,
-  `CONTEXT.md`, `TODO.md` and `docs/`. The check: the set of numbers referenced
-  anywhere must equal the set of files present — run the pinned command in
+  rewritten in the same change — one mechanical pass over `src/`, `tests/`,
+  `README.md`, `CONTEXT.md`, `TODO.md` and `docs/`. The check: the set of
+  numbers referenced anywhere must equal the set of files present — run the
+  pinned command in
   `docs/adr/README.md` § Numbering, which tolerates a citation wrapped across
   a line break. A line-anchored grep misses wrapped citations, and that is
   exactly how stale numbers survive a renumbering pass.
@@ -31,6 +32,27 @@ decision changes it. Three rules, all of them recoverable from
   reversed, move it to that ADR's *Tried and retracted* section instead of
   deleting it. The code still carries a retracted rule's shape, and a reader
   diffing against an older spec would otherwise read current behaviour as a bug.
+
+## The test suite
+
+`uv run pytest`. It runs offline and needs no `claude` binary; `git` is the one
+external binary it shells out to. What `tests/conftest.py` *enforces*, autouse,
+is the filesystem half: `$HOME` is repointed and every durable path Standup
+froze at import is rebound, so no test can reach the real `~/.claude` or the
+real `~/.standup`. Staying off the network and away from the `claude` binary is
+a rule the tests keep, not a wall the conftest builds — break it and nothing
+will stop you.
+
+Two builders under `tests/support/` stand in for the outside world, wrapped as
+fixtures in the conftest: `sessions.py` writes a Session log in Claude Code's
+own layout (`fixture_session()` is the canonical small one — titles, edits, a
+captured commit hash, per-turn usage), and `repos.py` builds real scratch git
+repos, with a remote, without one, or with a worktree. Prefer extending a
+builder to hand-rolling a second one in a test file; a fixture only one test
+can read is how two dialects of "a Session" start.
+
+A test that pins a decision cites the ADR section it pins, exactly as `src/`
+does — `tests/` is inside the citation check.
 
 ## CLI help must stay complete
 
