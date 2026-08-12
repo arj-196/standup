@@ -26,6 +26,54 @@ The figures track the rate card, not your invoice; they will not reconcile to
 Real Spend and are not meant to. The Rate Card is a maintained constant — on a
 price change or a new model, update `rates.py` and its date.
 
+## Subagent usage folds into the parent Session
+
+*(2026-08-12)* A subagent transcript
+(`<project>/<sessionId>/subagents/agent-<id>.jsonl`) carries its own per-turn
+`usage`, and **none of it is echoed into the parent log** — verified against a
+real worktree agent whose ~55k output tokens appear nowhere in the parent's
+JSONL. A scan of top-level logs alone therefore systematically under-counts
+exactly the sessions that delegate most.
+
+**The cost scanner also reads each Session's `subagents/` transcripts and folds
+their usage into the parent Session's line** — same window (turns filtered by
+their own timestamps), same Rate Card, same unpriced rule. The fold is marked,
+never silent: the drill-down's token line appends `incl N subagents`, and the
+JSON carries a `subagents` count per session. A session whose only in-window
+work was delegated still earns its row.
+
+Folded rather than surfaced as rows or as an overhead, because a subagent is
+neither:
+
+- **Not a Session.** It has no title lines, no `cwd` discovery role, and
+  `standup session` cannot address it (a Watch lane's agent-id address is not a
+  Session Handle). A row that cannot be drilled into would be a dead end in the
+  one view built for drilling.
+- **Not an overhead.** Brief Overhead and Audit Overhead are *Standup's own*
+  spend, kept separate so the tool's tax is never hidden. A subagent's tokens
+  are the Session's work, delegated — folding them in is what makes the
+  Session's weight true.
+
+Accepted costs:
+
+- **The parent log's mtime gates the whole Session, subagents included.** A
+  subagent still appending after its parent's last write can slip a window
+  edge; each subagent file is additionally mtime-gated, but only as a read
+  saver. Turn timestamps still filter exactly once a file is read.
+- **`standup session <handle>` renders the parent conversation only**, so its
+  per-turn cost annotations no longer sum to the cost view's session figure
+  when subagents ran. The `incl N subagents` mark is what accounts for the
+  difference.
+- **Loops are detected in the parent log only.** Loop Cost never includes
+  subagent turns, so a Loop-heavy subagent is invisible to the Audit's
+  fingerprints.
+
+*Rejected: one row per subagent* — not addressable, and multiplies rows the
+reader can act on nowhere. *Rejected: an "agent overhead" figure* — the
+overhead idiom marks Standup's own spend, not the session's delegated work.
+*Rejected: reading the parent's task notifications instead* — they carry the
+subagent's text result, never its usage.
+
 ## Alternatives considered
 
 - **Live pricing API** — adds a network dependency and non-determinism to a

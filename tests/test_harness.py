@@ -9,6 +9,7 @@ pin the isolation that keeps a test run away from the real `~/.claude`.
 
 from __future__ import annotations
 
+import json
 import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -94,6 +95,26 @@ def test_a_session_can_be_pointed_at_a_scratch_repo(
     assert s.cwd == str(repo.path)
     # the fixture Session's edits name files this repo could hold
     assert set(s.edited_files) == {f"{repo.path}/alpha.py", f"{repo.path}/beta.py"}
+
+
+def test_a_subagent_transcript_lands_beside_its_parent(projects_dir, session_log):
+    """`save_subagent()` writes where Claude Code does — under the *parent's*
+    `<sessionId>/subagents/` directory — so the cost scanner folds it into the
+    parent (ADR 0002 § subagent usage) and no top-level glob mistakes it for a
+    Session of its own."""
+    parent = session_log(cwd="/tmp/tt")
+    agent = (SessionLog(session_id="abc123", cwd="/tmp/tt", sidechain=True)
+             .turn("delegated work"))
+    parent_log = parent.save(projects_dir)
+    agent_log = agent.save_subagent(projects_dir, parent)
+
+    assert agent_log == (parent_log.parent / parent_log.stem
+                         / "subagents" / "agent-abc123.jsonl")
+    # both scanners glob */*.jsonl for Sessions; the transcript is out of reach
+    assert set(projects_dir.glob("*/*.jsonl")) == {parent_log}
+    # every line sidechain-marked, like the real ones
+    line = json.loads(agent_log.read_text().splitlines()[0])
+    assert line["isSidechain"] is True
 
 
 # --- the scratch repo ---------------------------------------------------

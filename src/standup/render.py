@@ -396,10 +396,13 @@ def _cost_disclaimer(st: Style, width: int) -> str:
     return st.dim(_clamp(full if len(full) <= width else short, width))
 
 
-def render_cost_overview(projects: list[ProjectCost], window: str, now: datetime) -> str:
+def render_cost_overview(projects: list[ProjectCost], window: str, now: datetime,
+                         order: str = "cost") -> str:
     st = _style()
     width = _term_width()
-    out = [_clamp(st.bold(f"COST · {window}"), width), _cost_disclaimer(st, width), ""]
+    # a re-ordered list must say so, or the money column reads as mis-sorted
+    head = f"COST · {window}" + (" · by recency" if order == "recent" else "")
+    out = [_clamp(st.bold(head), width), _cost_disclaimer(st, width), ""]
     if not projects:
         out.append(_clamp(st.dim("no priced sessions in the window"), width))
         return "\n".join(out)
@@ -411,6 +414,9 @@ def render_cost_overview(projects: list[ProjectCost], window: str, now: datetime
         line = (f"  {_money(p.cost):>{w}}  {st.bold(named(p))}"
                 f"   {_plural(len(p.sessions), 'session')}"
                 f"   {st.dim(_model_split(p.by_model))}")
+        # the sort key is shown when it is what ranked the row
+        if order == "recent" and p.last_activity:
+            line += f"   {st.dim(humanize(p.last_activity, now))}"
         out.append(_clamp(line, width))
 
     merged: dict[str, float] = {}
@@ -437,10 +443,15 @@ def render_cost_overview(projects: list[ProjectCost], window: str, now: datetime
     return "\n".join(out)
 
 
-def render_cost_detail(project: ProjectCost, window: str, now: datetime) -> str:
+def render_cost_detail(project: ProjectCost, window: str, now: datetime,
+                       order: str = "cost") -> str:
     st = _style()
     width = _term_width()
-    head = st.bold(project.name) + st.dim(f" — {_money(project.cost)} notional · {window}")
+    # each session line already shows its own recency, so the header mark is
+    # the only extra ink a re-ordered drill-down needs
+    order_tag = " · by recency" if order == "recent" else ""
+    head = st.bold(project.name) + st.dim(
+        f" — {_money(project.cost)} notional · {window}{order_tag}")
     # the overheads are appended segments, so the header grows vertically rather
     # than off the edge when they do not fit beside the total
     extra = []
@@ -475,6 +486,10 @@ def render_cost_detail(project: ProjectCost, window: str, now: datetime) -> str:
         t = s.tokens
         meta = (f"in {_tok(t['input'])} · out {_tok(t['output'])} · "
                 f"cache-w {_tok(t['cache_write'])} · cache-r {_tok(t['cache_read'])}")
+        # subagent transcripts folded into the figures above are marked, never
+        # silent (ADR 0002 § subagent usage)
+        if s.subagents:
+            meta += f" · incl {_plural(s.subagents, 'subagent')}"
         if s.session.last_activity:
             meta += f" · {humanize(s.session.last_activity, now)}"
         out.append(_clamp(indent + st.dim(meta), width))

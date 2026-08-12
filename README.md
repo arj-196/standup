@@ -32,6 +32,7 @@ standup <repo> diff --no-wrap  # clip long body lines instead of folding them
 
 standup cost             # notional cost by project (this calendar month)
 standup cost <repo>      # drill-down: that project's sessions, priced and ranked
+standup cost --recent    # newest first instead of priciest first (-l)
 standup cost --since all # widen the window (3d, 2w, ISO date, or 'all')
 standup cost --json      # structured cost output
 standup session          # the newest session in the repo you're standing in
@@ -361,10 +362,23 @@ summarised, so the price of the feature is never hidden (ADR 0003 § the Session
 `standup cost` prices your session logs against the published API rate card to
 show where consumption concentrates — ranked by project, then by session, with
 a token-bucket breakdown and a one-word "why" tag (`cache-heavy`, `out-heavy`,
-`fable`) so the expensive shape is visible. Each session in the drill-down is
+`fable`) so the expensive shape is visible. The default ranking is by cost;
+`--recent` (`-l`, *latest first*) re-orders both levels by last activity,
+newest first — for reviewing
+what your latest sessions cost, however cheap. A re-ordered view says so: the
+header gains `by recency`, and each overview line shows the recency that ranked
+it, so the money column never reads as mis-sorted. Each session in the drill-down is
 named by its title, with its **Session Brief** objective on the line beneath —
 `~`-marked as a claim and hedged `(stale)` exactly as in the inbox, so an
 expensive row says what it was *for* and not merely what it cost.
+
+A session's figure includes the subagents it spawned: their transcripts
+(`…/<sessionId>/subagents/agent-*.jsonl`) carry per-turn usage the parent log
+never echoes, so they are priced into the parent session's line — never shown
+as rows of their own — and the fold is marked `incl N subagents` on the
+drill-down's token line (ADR 0002 § subagent usage). Note that
+`standup session <handle>` reads the parent conversation only, so its per-turn
+annotations sum to less than the cost line when subagents ran.
 Drill into a session with
 `standup session <handle>` to read the actual prompts and responses, each
 assistant turn annotated with its cost. Tool calls collapse to one-liners
@@ -397,7 +411,9 @@ Two builders under `tests/support/` stand in for the outside world:
   (`~/.claude/projects/<cwd-slug>/<sessionId>.jsonl`). `fixture_session()` is the
   canonical small one — a title, two edits, one captured commit hash, and priced
   per-turn usage, so both scanners (the inbox's and `cost`'s) have something to
-  read; `SessionLog` builds any other shape line by line.
+  read; `SessionLog` builds any other shape line by line, and its `.subagent()`
+  builds a subagent transcript that saves under the parent's
+  `<sessionId>/subagents/` directory, where the cost scanner folds it in.
 - `repos.py` builds real scratch git repos — `make_repo()` with a remote,
   without one (a **Remoteless Repo**), or with a worktree folded into the same
   **Repo Entry**.

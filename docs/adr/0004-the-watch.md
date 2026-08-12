@@ -61,13 +61,13 @@ rules close the gap:
 
 *Rejected: subagent transcripts in the Scan Universe* — widening the global
 scan would make every Agent call an inbox entry and force decisions this
-change has no business taking: whether an agent's cost folds into its parent's
-`cost` line or stands alone, and what a lane means in views where a subagent
-is not addressable (`standup session <handle>` cannot open one). The Watch
-alone reads them, at discovery time. **Accepted cost**: a subagent's usage is
-recorded only in its own transcript (nothing is echoed into the parent's
-turns), so `cost` under-counts subagent-heavy work today — recorded here as a
-known gap, not silently changed.
+change has no business taking, like what a lane means in views where a
+subagent is not addressable (`standup session <handle>` cannot open one).
+Readers opt in one by one: the Watch at discovery time, and the cost scanner,
+which folds a subagent's usage into the parent Session's line — the cost-side
+decision this section once declined, since taken (and the under-count this
+section once carried as an accepted cost, since closed) by
+ADR 0002 § subagent usage.
 
 *Rejected: folding subagent events into the parent's lane* — several agents run
 at once, and one lane interleaving N workers cannot be filtered or read; the

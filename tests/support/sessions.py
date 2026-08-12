@@ -17,10 +17,12 @@ two edits, one commit hash, priced per-turn usage — and is what most tests
 should reach for. Reach for `SessionLog` directly when a test needs a shape
 `fixture_session` does not have.
 
-A third consumer, the Watch, additionally reads **subagent transcripts**
+Two consumers additionally read **subagent transcripts**
 (`<proj>/<parent-session-id>/subagents/agent-<id>.jsonl`, all-sidechain lines,
-a `.meta.json` beside each) — build those with `sidechain=True` and
-`save_subagent()` (ADR 0004 § the worktree lane).
+a `.meta.json` beside each): the Watch gives each its own lane
+(ADR 0004 § the worktree lane), and the cost scanner folds their usage into
+the parent Session (ADR 0002 § subagent usage). Build those with
+`sidechain=True` and `save_subagent()`.
 """
 
 from __future__ import annotations

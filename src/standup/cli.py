@@ -33,7 +33,7 @@ SUBCOMMANDS = {"cost", "watch", "session", "audit", "diff", "completion",
 # `--stat` in `diff`:
 #
 #   -a --all       -s --since     -j --json      -q --quiet     -i --in
-#   -t --thinking  -r --raw       -n --stat      -U --context
+#   -t --thinking  -r --raw       -n --stat      -l --recent    -U --context
 #   -P --no-pager  -W --no-wrap
 #
 # Letterless by the same table: `--refresh` and `--projects-dir`, plus
@@ -224,11 +224,13 @@ def _cost_window(since: str | None, now: datetime) -> tuple[datetime, str]:
     return start, now.astimezone().strftime("%B %Y")
 
 
-def _cost_json(projects, window_start, label, now) -> str:
+def _cost_json(projects, window_start, label, now, order) -> str:
     payload = {
         "window": label,
         "window_start": window_start.isoformat() if window_start != _EPOCH else None,
         "generated_at": now.isoformat(),
+        # how the project and session lists below are ranked: "cost" or "recent"
+        "order": order,
         "disclaimer": "Notional Cost — API-equivalent load, not money paid. Real spend: claude.ai only.",
         "total": round(sum(p.cost for p in projects), 4),
         "projects": [
@@ -258,6 +260,9 @@ def _cost_json(projects, window_start, label, now) -> str:
                         "by_model": {m: round(c, 4) for m, c in s.by_model.items()},
                         "tokens": s.tokens,
                         "turns": s.turns,
+                        # transcripts folded into cost/tokens/turns above
+                        # (ADR 0002 § subagent usage)
+                        "subagents": s.subagents,
                         "why": s.why,
                         "loop_cost": round(s.loop_cost, 4),
                         "loops": [
@@ -284,6 +289,9 @@ def _cost_json(projects, window_start, label, now) -> str:
 def _cmd_cost(argv: list[str]) -> int:
     p = argparse.ArgumentParser(prog="standup cost",
                                 description="Notional Cost by project and session (not real money). "
+                                            "A session's figure includes the subagents it spawned — their "
+                                            "transcripts carry usage the parent log never echoes — marked "
+                                            "'incl N subagents' in the drill-down. "
                                             "The per-session drill-down carries each Session's Brief "
                                             "objective when one exists (~-marked as a claim, hedged when "
                                             "stale), and flags Loops — repeated "
@@ -293,6 +301,11 @@ def _cmd_cost(argv: list[str]) -> int:
                    help="Project Handle (the underlined letters of a name in the "
                         "overview), full name, or a path, for a per-session drill-down")
     p.add_argument("-s", "--since", help="window override (3d, 2w, ISO date, or 'all'); default: this calendar month")
+    # `-l` as in *latest first*: the honest letter `-r` is `--raw` globally,
+    # and `-R` is reserved as its negation (ADR 0005 § short option letters)
+    p.add_argument("-l", "--recent", action="store_true",
+                   help="order by last activity (newest first) instead of cost — "
+                        "sessions in the drill-down, projects in the overview")
     p.add_argument("-j", "--json", action="store_true", help="structured output")
     p.add_argument("-P", "--no-pager", action="store_true", help="print instead of opening a pager")
     p.add_argument("--projects-dir", default=os.path.expanduser("~/.claude/projects"), help=argparse.SUPPRESS)
@@ -300,13 +313,14 @@ def _cmd_cost(argv: list[str]) -> int:
 
     now = datetime.now(timezone.utc)
     window_start, label = _cost_window(args.since, now)
+    order = "recent" if args.recent else "cost"
     projects_dir = Path(args.projects_dir)
     if not projects_dir.is_dir():
         print(f"standup: no Claude Code logs found at {projects_dir}", file=sys.stderr)
         return 1
 
     session_costs = cost.scan_session_costs(projects_dir, window_start)
-    projects = cost.group_by_project(session_costs)
+    projects = cost.group_by_project(session_costs, order)
     cost.attach_briefs(projects)
     cost.attach_audit_overhead(projects)
     cache = cache_mod.open_cache()
@@ -314,7 +328,7 @@ def _cmd_cost(argv: list[str]) -> int:
     cache.flush()
 
     if args.json:
-        print(_cost_json(projects, window_start, label, now))
+        print(_cost_json(projects, window_start, label, now, order))
         return 0
 
     if args.repo:
@@ -324,9 +338,9 @@ def _cmd_cost(argv: list[str]) -> int:
         except handles.HandleError as e:
             print(str(e), file=sys.stderr)
             return 1
-        text = render.render_cost_detail(by_target[hit], label, now)
+        text = render.render_cost_detail(by_target[hit], label, now, order)
     else:
-        text = render.render_cost_overview(projects, label, now)
+        text = render.render_cost_overview(projects, label, now, order)
     if args.no_pager:
         print(text)
     else:
@@ -537,6 +551,7 @@ _standup() {
         cost|c)
           _arguments \
             '(-s --since)'{-s,--since}'[window override]:when (3d, 2w, all, ISO date):' \
+            '(-l --recent)'{-l,--recent}'[order by last activity instead of cost]' \
             '(-j --json)'{-j,--json}'[structured output]' \
             '(-P --no-pager)'{-P,--no-pager}'[print instead of paging]' \
             '1:project:_standup_projects'

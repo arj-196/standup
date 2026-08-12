@@ -139,7 +139,7 @@ a flag that loses gets a different letter or none:
 
 ```
 -a --all       -s --since     -j --json      -q --quiet     -i --in
--t --thinking  -r --raw       -n --stat      -U --context
+-t --thinking  -r --raw       -n --stat      -l --recent    -U --context
 -P --no-pager  -W --no-wrap
 ```
 
@@ -160,7 +160,9 @@ Three rules, each a refusal to spend something:
 
 The two fights resolve: `--stat` takes `-n` (per-file *numbers*, git's own
 `--numstat` spelling, and clear of the `-U` beside it in `diff`), `--refresh`
-takes nothing.
+takes nothing. `cost --recent` is a third mismatch of the same kind: `-r` was
+long spent on `--raw` and `-R` is reserved as its negation, so it takes `-l` —
+read *latest first*.
 
 Consequences:
 - **Leading options belong to the parser that runs**, since there is no other to
