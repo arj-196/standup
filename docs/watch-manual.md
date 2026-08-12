@@ -406,6 +406,12 @@ again. Past six files the list truncates to `… ▸ N more files` — but the
 header's `N files` is always the real count, and the diff level always shows
 every file.
 
+A file with no readable lines is left **out** of the list rather than shown as
+`+0`: a binary blob, a mode-only change, an empty new file. A commit's `N files`
+therefore counts the files whose change the Watch can show you, and a commit of
+nothing but binary blobs carries no file list at all. Name it in the repo —
+`standup <repo> diff @<sha>` — to see those paths marked `binary`.
+
 Two kinds of commit carry **no** diff, and show only the header line — no file
 count, no `+`/`−` totals:
 
@@ -865,7 +871,7 @@ opening with one enormous block of old news.
 | `no live session · last log append …` | nothing appended inside the Live window; git-only narration is working as designed — `--since 2h` widens the window if the work you want is older |
 | `s` does nothing | the selected event has no session (git-only), or its log isn't tailed |
 | everything is `~unattributed` | no session log covers this repo — expected outside the Scan Universe |
-| a commit shows no file list | it's a merge (no combined diff by default) or its diff is over ~400 KB — no diff was read, so none is shown |
+| a commit shows no file list | it's a merge (no combined diff by default) or its diff is over ~400 KB — no diff was read, so none is shown; or every file it touched has no readable lines (binary, mode-only, empty) |
 | a body line runs off the right edge | wrap has been turned off (`no wrap` in the status bar, or `--no-wrap`) — press `w` |
 | `… ▸ N earlier lines` above a body | a **Change Run** showing its tail: the newest hunks are visible and the run's earlier lines are counted above. `enter` shows all of them |
 | a `+N` that looks too big for one edit | it's a **Change Run** — `×N` on the header says how many tool calls it folded, and the counts are their sum |

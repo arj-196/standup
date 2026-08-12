@@ -23,7 +23,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from . import brief as brief_mod
-from . import claude_logs, gitstate, handles, toolcalls, universe
+from . import claude_logs, gitstate, handles, toolcalls, unidiff, universe
 from .models import Session
 
 LIVE_THRESHOLD = timedelta(minutes=30)  # Live Session recency claim (CONTEXT.md)
@@ -494,15 +494,6 @@ MAX_SNAPSHOT_BYTES = 200_000   # dirty files beyond this aren't content-diffed
 MAX_COMMIT_DIFF_BYTES = 400_000  # commits beyond this aren't diffed (header only)
 
 
-def _diff_git_path(line: str) -> str:
-    """`diff --git a/x b/x` -> `x`. A provisional read: the following `+++ b/x`
-    line is authoritative when there is one (it survives spaces in paths)."""
-    rest = line[len("diff --git "):].strip()
-    i = rest.find(" b/")
-    b = rest[i + 3:] if i > 0 else rest.split(" ", 1)[-1].removeprefix("b/")
-    return b.strip().strip('"')
-
-
 class _GitWatcher:
     """Polls git for ground truth: content deltas of dirty files, HEAD moves,
     branch switches, pushes. When no tailed Session explains a change, the
@@ -604,21 +595,41 @@ class _GitWatcher:
 
     @staticmethod
     def _line_diff(old: str, new: str) -> tuple[str, str]:
-        """(added, removed) line blocks between two snapshots."""
-        added, removed = [], []
-        for ln in difflib.unified_diff(old.splitlines(), new.splitlines(),
-                                       n=0, lineterm=""):
-            if ln.startswith("+") and not ln.startswith("+++"):
-                added.append(ln[1:])
-            elif ln.startswith("-") and not ln.startswith("---"):
-                removed.append(ln[1:])
+        """(added, removed) line blocks between two snapshots — the dirty-file
+        counterpart of `_commit_files`, and the same flat shape
+        (ADR 0004 § the stream/UI boundary).
+
+        Read off the matcher's **opcodes**, never off a formatted diff. This
+        used to call `difflib.unified_diff` and strain `---`/`+++` back out of
+        its text, which is the same mistake the Watch's own git-diff parser
+        made: those are file headers before the first hunk and ordinary rows
+        inside one, so a line reading `-- x` vanished — and a change consisting
+        only of such lines produced no Feed Event at all. Formatting a diff in
+        order to parse it back is what created the bug; the ranges were already
+        there. Same opcodes `unified_diff` would have grouped, so the blocks are
+        unchanged for every other input.
+        """
+        a, b = old.splitlines(), new.splitlines()
+        added: list[str] = []
+        removed: list[str] = []
+        for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(None, a, b).get_opcodes():
+            if tag in ("replace", "delete"):
+                removed += a[i1:i2]
+            if tag in ("replace", "insert"):
+                added += b[j1:j2]
         return "\n".join(added), "\n".join(removed)
 
     @staticmethod
     def _commit_files(co: str, sha: str) -> list[CommitFile]:
-        """One commit's per-file added/removed blocks, parsed from a `-U0` diff
-        — the same context-free shape `_line_diff` produces for dirty files, so
-        a committed change reads exactly like an uncommitted one.
+        """One commit's per-file added/removed blocks, **projected** from the
+        shared unified-diff parser rather than re-read here.
+
+        `-U0` is what makes the projection flat: with no context rows, every
+        row of every hunk is an addition or a deletion, which is the same shape
+        `_line_diff` produces for dirty files — so a committed change reads
+        exactly like an uncommitted one. Hunk boundaries and line numbers are
+        dropped on the way through; the Attributed Diff is where those are read
+        (ADR 0005 § two grammars).
 
         Returns `[]` when there is nothing to show rather than guessing: a merge
         commit (git's default `show` prints no combined diff), a diff past
@@ -628,45 +639,16 @@ class _GitWatcher:
         if not out or len(out) > MAX_COMMIT_DIFF_BYTES:
             return []
         files: list[CommitFile] = []
-        path: str | None = None
-        change = "modify"
-        added: list[str] = []
-        removed: list[str] = []
-
-        def flush() -> None:
-            nonlocal path, change, added, removed
-            if path and (added or removed or change == "rename"):
-                files.append(CommitFile(path=path, change=change,
+        for fd in unidiff.parse(out):
+            added, removed = fd.added_lines, fd.removed_lines
+            # A CommitFile *is* its two blocks, with no field to say why it has
+            # neither — so a binary blob, a mode change and an empty new file
+            # stay out of the list rather than render as a `+0` that claims an
+            # empty change. A rename is the exception: the move is the change.
+            if added or removed or fd.change == unidiff.RENAME:
+                files.append(CommitFile(path=fd.path, change=fd.change,
                                         added="\n".join(added),
                                         removed="\n".join(removed)))
-            path, change, added, removed = None, "modify", [], []
-
-        for line in out.splitlines():
-            if line.startswith("diff --git "):
-                flush()
-                path = _diff_git_path(line)
-            elif path is None:
-                continue
-            elif line.startswith("+++"):
-                # unambiguous post-image path (spaces and all); /dev/null on delete
-                p = line[4:].strip()
-                if p != "/dev/null":
-                    path = (p[2:] if p.startswith("b/") else p).strip('"')
-            elif line.startswith("new file mode"):
-                change = "create"
-            elif line.startswith("deleted file mode"):
-                change = "delete"
-            elif line.startswith("rename to "):
-                change = "rename"
-            elif line.startswith(("---", "@@", "index ", "old mode", "new mode",
-                                  "similarity ", "dissimilarity ", "rename from ",
-                                  "copy ", "Binary files ")):
-                continue
-            elif line.startswith("+"):
-                added.append(line[1:])
-            elif line.startswith("-"):
-                removed.append(line[1:])
-        flush()
         # deliberately uncapped: MAX_COMMIT_DIFF_BYTES already bounds the work,
         # and a truncated list would make the header's "N files" a lie
         return files

@@ -1,11 +1,17 @@
-"""Parse git's unified diff into located hunks.
+"""Parse git's unified diff into located hunks. The one such parser.
 
-The **Watch** never needed this: it renders a change as an added block and a
-removed block, which is right for narrating one edit as it lands but loses both
-things a reviewer needs — *where* in the file a change sits, and *what replaced
-what*. The **Attributed Diff** keeps the Watch's typography and takes git's
-structure instead (ADR 0005 § two grammars), so it needs real hunks with real
-line numbers.
+The **Attributed Diff** keeps the Watch's typography and takes git's structure
+instead (ADR 0005 § two grammars), so it needs real hunks with real line
+numbers.
+
+The **Watch** wants less — it renders a change as an added block and a removed
+block, which is right for narrating one edit as it lands — but it wants it from
+here, flattened (`added_lines` / `removed_lines`), rather than from a second
+reader of its own. It kept one until it didn't, and the two disagreed exactly
+where git's format is subtle: `---` and `+++` are file headers *before* the
+first hunk and ordinary rows inside one, so the Watch's reader swallowed a
+deleted `-- comment` and rewrote a file's path from an added `++ bumped`.
+One parser is one place for that rule to be right.
 
 Every row carries the line number of the side it exists on: a context or added
 row carries its **new**-file number, a removed row its **old**-file number.
@@ -89,23 +95,105 @@ class FileDiff:
     binary: bool = False
 
     @property
+    def added_lines(self) -> list[str]:
+        """Every added line of the file, in file order — the flat form the Watch
+        projects into a `CommitFile`, hunk boundaries dropped."""
+        return [ln for h in self.hunks for ln in h.added]
+
+    @property
+    def removed_lines(self) -> list[str]:
+        return [ln for h in self.hunks for ln in h.removed]
+
+    @property
     def added(self) -> int:
-        return sum(len(h.added) for h in self.hunks)
+        return len(self.added_lines)
 
     @property
     def removed(self) -> int:
-        return sum(len(h.removed) for h in self.hunks)
+        return len(self.removed_lines)
+
+
+# `\000`-`\377` is git's whole octal range: one byte, so never wider than 3
+# digits and never above `\377`. Anything else falls to the single-char branch.
+_ESCAPE_RE = re.compile(r"\\([0-3][0-7]{2}|.)")
+_C_ESCAPES = {"n": b"\n", "t": b"\t", "r": b"\r", "b": b"\b",
+              "f": b"\f", "v": b"\v", "a": b"\a"}
+
+
+def _unquote(p: str) -> str:
+    """Undo git's C-quoting of a path holding non-ASCII or control bytes:
+    `"a/caf\\303\\251.txt"` -> `a/café.txt`. Not quoted, not touched.
+
+    This is the codebase's one reading of a path out of a diff header (ADR 0004
+    § the stream/UI boundary). There were two, and they disagreed here: one
+    stripped the quotes but not the `a/` under them, the other stripped
+    neither. The debris is not cosmetic — `diffview` joins the path onto the
+    checkout to attribute the change, so a quoted path matches nothing on disk.
+
+    Octal escapes are *bytes*, decoded as bytes and only then as UTF-8: a
+    two-byte character arrives as two escapes and must not be decoded one at a
+    time.
+    """
+    if len(p) < 2 or not (p.startswith('"') and p.endswith('"')):
+        return p
+    body, out, pos = p[1:-1], bytearray(), 0
+    for m in _ESCAPE_RE.finditer(body):
+        out += body[pos:m.start()].encode()
+        tok = m.group(1)
+        out += (bytes([int(tok, 8)]) if len(tok) == 3
+                else _C_ESCAPES.get(tok, tok.encode()))
+        pos = m.end()
+    out += body[pos:].encode()
+    return out.decode("utf-8", "replace")
+
+
+def _path_field(raw: str, prefix: str = "") -> str:
+    """One path *field* of a diff header — a `+++`/`---` side, or a rename line
+    — as the path it names. Three readings git makes necessary, in one place
+    (ADR 0004 § the stream/UI boundary):
+
+    - a **trailing tab** terminates the field when the name holds a space
+      (`+++ b/my file.txt\\t`). It is git's delimiter, not part of the name, and
+      a name cannot hold a raw tab — git C-quotes instead — so stripping it is
+      exact rather than a guess. This is the reading the Watch had and `unidiff`
+      did not, and it is why merging them had to take the union;
+    - **C-quoting** is undone, which is the reading `unidiff` had and the Watch
+      only half had;
+    - git's `a/`/`b/` side prefix is dropped.
+    """
+    return _unquote(raw.rstrip("\t")).removeprefix(prefix)
+
+
+def _quoted_end(s: str) -> int:
+    """Index just past the closing quote of the C-quoted string at `s[0]`. The
+    closing quote is the first unescaped one, so a quoted name may hold `"` and
+    ` b/` without the a-side/b-side split guessing at them."""
+    i = 1
+    while i < len(s):
+        if s[i] == "\\":
+            i += 2
+        elif s[i] == '"':
+            return i + 1
+        else:
+            i += 1
+    return len(s)
 
 
 def _git_header_path(line: str) -> str:
-    """`diff --git a/x b/x` -> `x`. Provisional: a path containing " b/" splits
-    wrong here, and the following `+++ b/x` corrects it. Same read the Watch
-    makes (`watchstream._diff_git_path`)."""
+    """`diff --git a/x b/x` -> `x`, the **a**-side: it is the only source for a
+    *deleted* file, whose `+++` is `/dev/null`. For every other change the
+    following `+++ b/x` is authoritative and overwrites it.
+
+    Provisional for one shape only — an *unquoted* path containing " b/", which
+    splits wrong here. git quotes nothing for a space, so that ambiguity is
+    git's format rather than this reading; a quoted path is exact, since its
+    closing quote ends the a-side."""
     rest = line[len("diff --git "):].strip()
-    marker = rest.find(" b/")
-    if marker > 0:
-        return rest[:marker].removeprefix("a/")
-    return rest.removeprefix("a/")
+    if rest.startswith('"'):
+        return _unquote(rest[:_quoted_end(rest)]).removeprefix("a/")
+    # an unquoted a-side runs to the b-side, which is bare or quoted in turn
+    markers = [i for i in (rest.find(" b/"), rest.find(' "b/')) if i > 0]
+    return (rest[:min(markers)] if markers else rest).removeprefix("a/")
 
 
 def parse(text: str) -> list[FileDiff]:
@@ -134,11 +222,11 @@ def parse(text: str) -> list[FileDiff]:
             continue
         if line.startswith("rename from "):
             cur.change = RENAME
-            cur.old_path = line[len("rename from "):]
+            cur.old_path = _path_field(line[len("rename from "):])
             continue
         if line.startswith("rename to "):
             cur.change = RENAME
-            cur.path = line[len("rename to "):]
+            cur.path = _path_field(line[len("rename to "):])
             continue
         if line.startswith("Binary files ") or line.startswith("GIT binary patch"):
             cur.binary = True
@@ -152,7 +240,7 @@ def parse(text: str) -> list[FileDiff]:
         if hunk is None and (line.startswith("+++ ") or line == "+++ /dev/null"):
             p = line[4:]
             if p != "/dev/null":          # authoritative path (see _git_header_path)
-                cur.path = p.removeprefix("b/")
+                cur.path = _path_field(p, "b/")
             continue
 
         m = HUNK_RE.match(line)

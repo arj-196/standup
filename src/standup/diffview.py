@@ -364,16 +364,9 @@ def _file_line(t: Theme, fb: FileBlock, multi: bool, pad: int = 0) -> Text:
     line = Text("  ")
     if multi and fb.branch:
         line.append(f"[{fb.branch}] ", style=t.style("address"))
-    line.append_text(diffrows.path_text(t, fb.path))
-    if pad:
-        line.append(" " * max(1, pad - len(fb.path)))
-    else:
-        line.append("  ")
-    line.append(f"{fb.change}  ", style=t.style("muted"))
-    if fb.binary or fb.note:
-        line.append(fb.note or "no diff", style=t.style("faint"))
-        return line
-    line.append_text(diffrows.counts(t, fb.added, fb.removed))
+    note = (fb.note or "no diff") if (fb.binary or fb.note) else None
+    line.append_text(diffrows.file_summary(t, fb.path, fb.change, fb.added,
+                                           fb.removed, pad=pad, note=note))
     return line
 
 

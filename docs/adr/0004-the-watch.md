@@ -89,6 +89,42 @@ Unplanned payoff: the diff row renderer sits on the Textual-free side, so the
 Watch and the Attributed Diff call the same code and the rules below cannot
 drift between the two surfaces.
 
+**Everything between git's bytes and the row is shared, in the same direction.**
+Three things were duplicated across the boundary and are now single:
+
+- **one unified-diff parser** (`unidiff`). The Watch had its own state machine
+  for commit diffs, because it wants less than the Attributed Diff does — two
+  flat blocks, not located hunks. Wanting less is a reason to *project*, not to
+  re-parse: `_commit_files` runs `unidiff.parse` over a `-U0` diff and flattens
+  it (`added_lines` / `removed_lines`), dropping hunk boundaries and line
+  numbers on the way through.
+- **one diff-header path reading**. Two readers disagreed about git's C-quoting
+  of non-ASCII paths — one stripped the quotes but not the `a/` under them, the
+  other stripped neither — and `diffview` joins that path onto the checkout to
+  attribute the change, so debris means a path matching nothing on disk.
+- **one file-summary line** (`diffrows.file_summary`): `path · change · +N −M`,
+  printed by the Watch's expanded commit and the `--stat` view about the same
+  file from the same parser.
+
+The cost of having had two is measurable, not hypothetical. `---` and `+++` are
+file headers *before* the first hunk and ordinary rows inside one; the Watch's
+reader took them for headers everywhere, so a deleted `-- comment` vanished and
+an added `++ bumped` rewrote the file's path from its own content. Replayed over
+this repository's history, 50 of 51 commits parsed identically and one did not:
+an ADR deletion whose body held markdown rules (`----`) and a `---output-format`
+line, all silently dropped. The same bug sat on the dirty-file path, where
+`_line_diff` formatted a `difflib` diff only to strain `---`/`+++` back out of
+the text — there a change consisting *only* of such lines produced no Feed Event
+at all. It reads the matcher's opcodes now and formats nothing, so that reader
+is gone rather than fixed.
+
+*Rejected: keeping the Watch's parser and fixing the dashes rule in both* — the
+rule is subtle enough to have been got wrong once, and two copies of a subtle
+rule is the thing that produced the bug.
+*Rejected: giving `CommitFile` the parser's full hunk shape* — the Watch renders
+a change as it lands, with no line numbers on screen to carry; the projection is
+the boundary that keeps the Watch's model as small as what it draws.
+
 ## Motion never outlives the data
 
 **A moving glyph asserts liveness, so it may only be driven by arriving bytes —
