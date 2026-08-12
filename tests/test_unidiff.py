@@ -18,7 +18,7 @@ from datetime import datetime
 
 from rich.text import Text
 
-from standup import diffrows, diffview, unidiff
+from standup import diffrows, diffview, unidiff, universe
 from standup.theme import Theme
 from standup.watchstream import CommitFile, FeedEvent, WatchStream, _GitWatcher
 from standup.watchui import EventWidget
@@ -60,7 +60,8 @@ def test_a_dirty_files_delta_keeps_its_dashes_too(scratch_repo, projects_dir):
     repo = scratch_repo("dirtydash")
     repo.write("q.sql", "a\n-- sql comment\nb\n")
     repo.commit("add q.sql")
-    ws = WatchStream(str(repo.path), projects_dir)
+    with universe.open_universe(projects_dir) as u:
+        ws = WatchStream(u, str(repo.path))
 
     repo.write("q.sql", "a\n++ bumped\nb\n")
     ws._last_git = float("-inf")
