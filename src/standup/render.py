@@ -410,8 +410,8 @@ def render_cost_overview(projects: list[ProjectCost], window: str, now: datetime
                 f"   {_plural(len(p.sessions), 'session')}"
                 f"   {st.dim(_model_split(p.by_model))}")
         # the sort key is shown when it is what ranked the row
-        if order == "recent" and p.last_activity:
-            line += f"   {st.dim(humanize(p.last_activity, now))}"
+        if order == "recent" and p.last_turn:
+            line += f"   {st.dim(humanize(p.last_turn, now))}"
         out.append(_clamp(line, width))
 
     merged: dict[str, float] = {}
@@ -485,8 +485,10 @@ def render_cost_detail(project: ProjectCost, window: str, now: datetime,
         # silent (ADR 0002 § subagent usage)
         if s.subagents:
             meta += f" · incl {_plural(s.subagents, 'subagent')}"
-        if s.session.last_activity:
-            meta += f" · {humanize(s.session.last_activity, now)}"
+        # the newest turn these figures counted, not the log's mtime: a row
+        # priced over a window states the recency of the work it priced
+        if s.last_turn:
+            meta += f" · {humanize(s.last_turn, now)}"
         out.append(_clamp(indent + st.dim(meta), width))
         for l in s.loops:
             evid = f"⟳ {l.iterations}× {l.label} — {_money(l.cost)} loop cost"

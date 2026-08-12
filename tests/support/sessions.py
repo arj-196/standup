@@ -3,9 +3,9 @@
 Standup reads exactly one thing from the outside world it does not control: the
 JSONL under `~/.claude/projects/<cwd-slug>/<sessionId>.jsonl` (ADR 0001 § the
 Scan Universe). `claude_logs` reads it twice over — the inbox's prefiltered
-sweep, and the typed full reading every other view is moving onto
-(ADR 0001 § the one log reader) — and `cost` still runs a scanner of its own, so
-a fixture that satisfies only one of them is a trap.
+sweep, and the typed full reading the other views are moving onto (`cost` is
+there, ADR 0001 § the one log reader) — so a fixture that satisfies only one
+of them is a trap.
 
 `SessionLog` emits the line shapes those readings look for, in the schema the
 real logs use: a `type` per line, `cwd`/`gitBranch`/`timestamp` on the
@@ -23,7 +23,7 @@ should reach for. Reach for `SessionLog` directly when a test needs a shape
 Two consumers additionally read **subagent transcripts**
 (`<proj>/<parent-session-id>/subagents/agent-<id>.jsonl`, all-sidechain lines,
 a `.meta.json` beside each): the Watch gives each its own lane
-(ADR 0004 § the worktree lane), and the cost scanner folds their usage into
+(ADR 0004 § the worktree lane), and the cost view folds their usage into
 the parent Session (ADR 0002 § subagent usage). Build those with
 `sidechain=True` and `save_subagent()`.
 """
@@ -68,7 +68,7 @@ def project_dir_name(cwd: str) -> str:
     non-alphanumeric character replaced by a dash
     (`/Users/arjun/x` -> `-Users-arjun-x`).
 
-    Nothing in Standup parses this name — both scanners glob `*/*.jsonl` and
+    Nothing in Standup parses this name — both readings glob `*/*.jsonl` and
     read `cwd` from inside the file — but a fixture tree that does not look like
     the real one invites a future reader to assume the wrong thing.
     """

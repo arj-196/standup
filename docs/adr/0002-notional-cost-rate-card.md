@@ -18,6 +18,15 @@ input and output per model, cache rates *derived* by the published multipliers,
 per-turn modifiers read from each turn's own `usage` rather than assumed. Every
 model in current use has an exact public rate, so nothing is estimated.
 
+**The four display buckets read a turn the way pricing does.** A cache write
+has two spellings in the logs — the flat `cache_creation_input_tokens` and the
+`cache_creation` sub-object that splits it by lifetime — and both `turn_cost`
+and `turn_tokens` take it from `cache_write_split`, which prefers the
+sub-object because the two lifetimes are priced apart. Display used to prefer
+the flat field, the opposite way round: harmless on every log seen (they
+agreed), and a printed figure that disagreed with the priced one the day they
+did not.
+
 **An unknown or future model is shown with its tokens but excluded from the
 dollar total and flagged `unpriced`** — never silently counted as $0. That is
 the cost view's analogue of "never hide dirt".
@@ -35,9 +44,12 @@ real worktree agent whose ~55k output tokens appear nowhere in the parent's
 JSONL. A scan of top-level logs alone therefore systematically under-counts
 exactly the sessions that delegate most.
 
-**The cost scanner also reads each Session's `subagents/` transcripts and folds
+**The cost view also reads each Session's `subagents/` transcripts and folds
 their usage into the parent Session's line** — same window (turns filtered by
-their own timestamps), same Rate Card, same unpriced rule. The fold is marked,
+their own timestamps), same Rate Card, same unpriced rule. Each transcript is
+its own `read_log` reading with its own cache row (ADR 0001 § the one log
+reader); only usage crosses over, because a subagent log carries no title and
+no `cwd` of the parent's. The fold is marked,
 never silent: the drill-down's token line appends `incl N subagents`, and the
 JSON carries a `subagents` count per session. A session whose only in-window
 work was delegated still earns its row.

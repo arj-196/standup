@@ -365,8 +365,8 @@ summarised, so the price of the feature is never hidden (ADR 0003 § the Session
 show where consumption concentrates — ranked by project, then by session, with
 a token-bucket breakdown and a one-word "why" tag (`cache-heavy`, `out-heavy`,
 `fable`) so the expensive shape is visible. The default ranking is by cost;
-`--recent` (`-l`, *latest first*) re-orders both levels by last activity,
-newest first — for reviewing
+`--recent` (`-l`, *latest first*) re-orders both levels by their newest counted
+turn — the recency of the priced work itself, not of the log file — for reviewing
 what your latest sessions cost, however cheap. A re-ordered view says so: the
 header gains `by recency`, and each overview line shows the recency that ranked
 it, so the money column never reads as mis-sorted. Each session in the drill-down is
@@ -394,7 +394,10 @@ account-level credit overflow, which Anthropic does not attribute to any
 session; Standup deliberately reports no real-spend figure (there is no
 trustworthy local source — see ADR 0002). For your actual bill, use
 claude.ai → Settings → Usage. Cost spans all sessions (not just those with
-pending git work) and, like the inbox, is stateless.
+pending git work) and, like the inbox, is stateless — and, like the inbox, it
+reads each session log through the shared derived cache, so an unchanged log is
+priced without being re-parsed. The cache holds token counts, never dollars: a
+rate-card update re-prices your history on the next run.
 
 ## Tests
 
@@ -412,10 +415,11 @@ Two builders under `tests/support/` stand in for the outside world:
 - `sessions.py` writes a **Session** log in Claude Code's own layout
   (`~/.claude/projects/<cwd-slug>/<sessionId>.jsonl`). `fixture_session()` is the
   canonical small one — a title, two edits, one captured commit hash, and priced
-  per-turn usage, so both scanners (the inbox's and `cost`'s) have something to
+  per-turn usage, so both readings of a log (the inbox's prefiltered sweep and
+  the typed full one every other view prices from) have something to
   read; `SessionLog` builds any other shape line by line, and its `.subagent()`
   builds a subagent transcript that saves under the parent's
-  `<sessionId>/subagents/` directory, where the cost scanner folds it in.
+  `<sessionId>/subagents/` directory, where the cost view folds it in.
 - `repos.py` builds real scratch git repos — `make_repo()` with a remote,
   without one (a **Remoteless Repo**), or with a worktree folded into the same
   **Repo Entry**.

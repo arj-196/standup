@@ -63,7 +63,7 @@ rules close the gap:
 scan would make every Agent call an inbox entry and force decisions this
 change has no business taking, like what a lane means in views where a
 subagent is not addressable (`standup session <handle>` cannot open one).
-Readers opt in one by one: the Watch at discovery time, and the cost scanner,
+Readers opt in one by one: the Watch at discovery time, and the cost view,
 which folds a subagent's usage into the parent Session's line — the cost-side
 decision this section once declined, since taken (and the under-count this
 section once carried as an accepted cost, since closed) by

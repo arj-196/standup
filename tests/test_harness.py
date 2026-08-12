@@ -67,19 +67,21 @@ def test_titles_follow_their_precedence(projects_dir, null_cache):
     assert s.last_prompt == "do the thing"
 
 
-def test_the_cost_scanner_prices_the_fixture_turns(projects_dir, session_log):
+def test_the_cost_view_prices_the_fixture_turns(projects_dir, session_log,
+                                               null_cache):
     session = session_log(cwd="/tmp/tt")
     session.save(projects_dir)
     window_start = datetime.now(timezone.utc) - timedelta(days=1)
 
-    (sc,) = cost.scan_session_costs(projects_dir, window_start)
+    (sc,) = cost.scan_session_costs(projects_dir, window_start, null_cache)
 
     assert sc.turns == len(session.usages)
     assert sc.unpriced_turns == 0
     assert sc.cost == pytest.approx(
         sum(rates.turn_cost(m, u) for m, u in session.usages))
     assert sc.tokens["output"] == sum(u["output_tokens"] for _, u in session.usages)
-    # the two scanners must agree about what a Session is *called*
+    # the inbox's sweep and the cost view must agree about what a Session
+    # is *called* — one reading of the title schema, not two
     assert sc.title == "Teach the inbox to read"
 
 
@@ -99,7 +101,7 @@ def test_a_session_can_be_pointed_at_a_scratch_repo(
 
 def test_a_subagent_transcript_lands_beside_its_parent(projects_dir, session_log):
     """`save_subagent()` writes where Claude Code does — under the *parent's*
-    `<sessionId>/subagents/` directory — so the cost scanner folds it into the
+    `<sessionId>/subagents/` directory — so the cost view folds it into the
     parent (ADR 0002 § subagent usage) and no top-level glob mistakes it for a
     Session of its own."""
     parent = session_log(cwd="/tmp/tt")
@@ -110,7 +112,7 @@ def test_a_subagent_transcript_lands_beside_its_parent(projects_dir, session_log
 
     assert agent_log == (parent_log.parent / parent_log.stem
                          / "subagents" / "agent-abc123.jsonl")
-    # both scanners glob */*.jsonl for Sessions; the transcript is out of reach
+    # the Session sweep globs */*.jsonl; the transcript is out of its reach
     assert set(projects_dir.glob("*/*.jsonl")) == {parent_log}
     # every line sidechain-marked, like the real ones
     line = json.loads(agent_log.read_text().splitlines()[0])

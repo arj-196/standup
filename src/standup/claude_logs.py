@@ -47,9 +47,14 @@ _CMD_ARGS_RE = re.compile(r"<command-args>(.*?)</command-args>", re.DOTALL)
 _CMD_TAG_RE = re.compile(r"</?command-[^>]*>", re.DOTALL)
 
 
-def _mtime(path: Path) -> datetime | None:
+def log_mtime(path: Path) -> datetime | None:
     """A log's last-append time — the one meaning of a Session's
-    `last_activity` (ADR 0001 § the one log reader)."""
+    `last_activity` (ADR 0001 § the one log reader), and what a windowed view
+    gates a file on before opening it. None when the file cannot be stat'd.
+
+    Public because it is the same question outside this module: the cost view
+    asks it of every log and every subagent transcript.
+    """
     try:
         return datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
     except OSError:
@@ -76,11 +81,11 @@ def _parse_ts(raw: str | None) -> datetime | None:
 def title_hint(line: str) -> bool:
     """Does this raw JSONL line plausibly carry one of a Session's title fields?
 
-    The cheap prefilter that lets a scanner skip `json.loads` on the ~99% of
-    lines that hold no title. Paired with `apply_title_fields`, this is the one
-    place that knows the log's title schema: `cost` runs a second scanner (it
-    reads per-turn `usage`, which the inbox's sweep does not), and when it
-    carried its own copy of the pair the two drifted.
+    The cheap prefilter that lets the inbox's sweep skip `json.loads` on the
+    ~99% of lines that hold no title. Paired with `apply_title_fields`, this is
+    the one place that knows the log's title schema — `cost` used to carry its
+    own copy of the pair, and a mistyped prefilter in it silently demoted every
+    session title to its last prompt (ADR 0001 § the one log reader).
     """
     return '"custom-title"' in line or '"ai-title"' in line or '"last-prompt"' in line
 
@@ -404,7 +409,7 @@ def parse_log(path: Path | str) -> ParsedLog:
     """
     path = Path(path)
     session = Session(session_id=path.stem, log_path=str(path),
-                      last_activity=_mtime(path))
+                      last_activity=log_mtime(path))
     parsed = ParsedLog(session=session)
     try:
         fh = open(path, errors="replace")
@@ -439,6 +444,25 @@ def parse_log(path: Path | str) -> ParsedLog:
     return parsed
 
 
+def cache_id(path: Path) -> str:
+    """The Derived Cache row id for a log — its name in the cache, which is not
+    always the Session id inside it.
+
+    A Session's own log is named by its `sessionId` and that is unique across
+    the Scan Universe. A **subagent transcript** is named `agent-<id>` and is
+    unique only inside its parent's directory, so it is qualified by the
+    parent. Unqualified, two parents' identically-named transcripts share one
+    row the moment their size and mtime agree, and one Session is priced with
+    the other's turns (ADR 0002 § subagent usage).
+
+    Public because liveness is asked elsewhere: `scan_sessions` names these ids
+    to the prune, and it must spell them the same way.
+    """
+    if path.parent.name == "subagents":
+        return f"{path.parent.parent.name}/{path.stem}"
+    return path.stem
+
+
 def read_log(path: Path | str, cache) -> ParsedLog:
     """One Session log, read through the Derived Cache.
 
@@ -447,20 +471,22 @@ def read_log(path: Path | str, cache) -> ParsedLog:
     views ask for it (ADR 0001 § the one log reader).
     """
     path = Path(path)
-    sid = path.stem
+    key = cache_id(path)
     try:
         st = path.stat()
     except OSError:
         return parse_log(path)
-    hit = cache.get_log(sid, st.st_size, st.st_mtime_ns)
+    hit = cache.get_log(key, st.st_size, st.st_mtime_ns)
     if hit is not None:
+        # the Session id is the file's own stem, never the row's key: a
+        # transcript's row is qualified by its parent, its Session is not
         parsed = _log_from_cache(
-            sid, str(path),
+            path.stem, str(path),
             datetime.fromtimestamp(st.st_mtime, tz=timezone.utc), hit)
         if parsed is not None:
             return parsed
     parsed = parse_log(path)
-    cache.put_log(sid, st.st_size, st.st_mtime_ns, _log_to_cache(parsed))
+    cache.put_log(key, st.st_size, st.st_mtime_ns, _log_to_cache(parsed))
     return parsed
 
 
@@ -531,6 +557,14 @@ def scan_sessions(projects_dir: Path, cache) -> list[Session]:
             cache.put_session(sid, st.st_size, st.st_mtime_ns, _to_cache(session))
         if session.cwd:
             sessions.append(session)
+    # A subagent transcript is a log with a cache row of its own — the cost
+    # view reads one per delegating Session (ADR 0002 § subagent usage) — but
+    # it lives a level below this sweep's glob and is no Session, so it never
+    # enters the list above. Name it live anyway, spelled as `cache_id` spells
+    # it: a prune that knew only the ids here would drop those readings on
+    # every inbox run.
+    live_ids.update(cache_id(f)
+                    for f in projects_dir.glob("*/*/subagents/agent-*.jsonl"))
     cache.prune(live_ids)
     return sessions
 

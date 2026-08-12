@@ -41,9 +41,9 @@ class Session:
     # It is the staleness clock for out-of-band artifacts, which ask
     # "did the session move on after this Brief was written" — a question only
     # the file's own clock answers. "When the model last spoke" is a different
-    # question with its own name: `claude_logs.ParsedLog.last_turn`.
-    # `cost` still overwrites this with its own window-bounded reading; that
-    # divergence is what the cost view's migration onto the one reader removes.
+    # question with its own name: `claude_logs.ParsedLog.last_turn`, and its
+    # window-bounded form is `cost.SessionCost.last_turn`. No view overwrites
+    # this field with either of them.
     last_activity: datetime | None = None
     brief: "Brief | None" = None
     branches: set[str] = field(default_factory=set)

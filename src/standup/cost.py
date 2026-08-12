@@ -10,41 +10,71 @@ never echoed into the parent log, so the parent alone under-counts
 subagent-heavy work. Folded into the parent Session's own figures, never a
 separate row (ADR 0002 § subagent usage).
 
-Stateless: recomputed from the logs each run. The window (default: the current
-calendar month) bounds which files are read by mtime; individual turns are then
-filtered by their own timestamp so sessions straddling the edge count exactly.
+Stateless: recomputed from the logs each run — through the one log reader, so
+the parse is the same one the inbox pays for and the Derived Cache serves an
+unchanged log to both (ADR 0001 § the one log reader). The window (default: the
+current calendar month) bounds which files are read by mtime; individual turns
+are then filtered by their own timestamp so sessions straddling the edge count
+exactly.
 """
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import claude_logs, rates
+from . import claude_logs
 from .models import Session
 
 _EPOCH = datetime.min.replace(tzinfo=timezone.utc)
-BUCKETS = rates.BUCKETS   # the display buckets are the Rate Card's, not this view's
 
 
 @dataclass
 class SessionCost:
     session: Session
-    cost: float = 0.0
-    by_model: dict[str, float] = field(default_factory=dict)
-    tokens: dict[str, int] = field(default_factory=lambda: {b: 0 for b in BUCKETS})
-    turns: int = 0
-    unpriced_turns: int = 0
+    # the priced fold of every turn this Session counted in the window — its
+    # own and its subagents'. Held rather than re-derived field by field: the
+    # arithmetic is `claude_logs.usage_totals`', and a second copy of it here
+    # is how the two ways to price a session start to disagree.
+    usage: claude_logs.UsageTotals = field(
+        default_factory=claude_logs.UsageTotals)
     # subagent transcripts that contributed at least one in-window turn to the
     # figures above (ADR 0002 § subagent usage). The fold's visible mark: a
     # session line whose tokens include delegated work says so.
     subagents: int = 0
+    # the newest counted turn — what `--recent` ranks by, and what the views
+    # show as this row's recency. Deliberately *not* `session.last_activity`,
+    # which is the log file's mtime and nothing else
+    # (ADR 0001 § the one log reader): this one is window-bounded and answers
+    # "when did the work these figures price happen".
+    last_turn: datetime | None = None
     # above-floor Loops (ADR 0003 § the Audit): free, derived, attached by
     # attach_loops. Loop Cost is a carve-out of this session's Notional Cost,
     # never a saving.
     loops: list = field(default_factory=list)
+
+    @property
+    def cost(self) -> float:
+        return self.usage.cost
+
+    @property
+    def by_model(self) -> dict[str, float]:
+        return self.usage.by_model
+
+    @property
+    def tokens(self) -> dict[str, int]:
+        return self.usage.tokens
+
+    @property
+    def turns(self) -> int:
+        """Priced turns. An unpriced one is counted apart, never at $0
+        (ADR 0002)."""
+        return self.usage.turns
+
+    @property
+    def unpriced_turns(self) -> int:
+        return self.usage.unpriced_turns
 
     @property
     def loop_cost(self) -> float:
@@ -105,131 +135,79 @@ class ProjectCost:
         return merged
 
     @property
-    def last_activity(self) -> datetime | None:
-        times = [s.session.last_activity for s in self.sessions if s.session.last_activity]
+    def last_turn(self) -> datetime | None:
+        """The newest counted turn across this project's sessions — the
+        project-level reading of `SessionCost.last_turn`, and what `--recent`
+        ranks projects by."""
+        times = [s.last_turn for s in self.sessions if s.last_turn]
         return max(times) if times else None
 
 
-def _fold_usage(sc: SessionCost, obj: dict, window_start: datetime) -> datetime | None:
-    """Fold one assistant line's per-turn usage into `sc`.
+def _in_window(turns, window_start: datetime) -> list:
+    """The turns a windowed figure counts.
 
-    Returns the turn's timestamp when the turn counted (priced or unpriced),
-    None when it fell outside the window or carried no usage — the caller's
-    last-activity clock advances exactly when the figures did.
+    A turn whose line carried no timestamp counts: it is still work the
+    Session did, and the alternative — dropping what cannot be dated — would
+    under-price it silently.
     """
-    msg = obj.get("message") or {}
-    u = msg.get("usage")
-    if not isinstance(u, dict):
-        return None
-    ts = _parse_ts(obj.get("timestamp"))
-    if ts and ts < window_start:
-        return None
-    model = msg.get("model")
-    c = rates.turn_cost(model, u)
-    if c is None:
-        sc.unpriced_turns += 1
-        return ts
-    sc.turns += 1
-    sc.cost += c
-    sc.by_model[model] = sc.by_model.get(model, 0.0) + c
-    for b, n in rates.turn_tokens(u).items():
-        sc.tokens[b] += n
-    return ts
+    return [t for t in turns if t.when is None or t.when >= window_start]
 
 
-def _scan_subagents(sc: SessionCost, parent_log: Path,
-                    window_start: datetime) -> datetime | None:
-    """Fold the parent Session's subagent transcripts into `sc`
-    (ADR 0002 § subagent usage).
+def _subagent_logs(parent_log: Path, window_start: datetime) -> list[Path]:
+    """This Session's subagent transcripts (ADR 0002 § subagent usage).
 
-    Usage only: titles and cwd are the parent's business, and a subagent log
-    carries neither. Each file is mtime-gated like the parent — a pure read
-    saver, since turns are timestamp-filtered anyway. Returns the newest
-    counted turn's timestamp.
+    Separate files, so separate readings — the parent's log carries none of
+    their usage. Each is mtime-gated like the parent, a pure read saver since
+    turns are timestamp-filtered anyway.
     """
-    latest: datetime | None = None
     agents_dir = parent_log.parent / parent_log.stem / "subagents"
-    for f in sorted(agents_dir.glob("agent-*.jsonl")):
-        try:
-            mtime = datetime.fromtimestamp(f.stat().st_mtime, tz=timezone.utc)
-        except OSError:
-            continue
-        if mtime < window_start:
-            continue
-        counted_before = sc.turns + sc.unpriced_turns
-        with open(f, errors="replace") as fh:
-            for line in fh:
-                if '"usage"' not in line:
-                    continue
-                try:
-                    obj = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if obj.get("type") != "assistant":
-                    continue
-                ts = _fold_usage(sc, obj, window_start)
-                if ts and (latest is None or ts > latest):
-                    latest = ts
-        if sc.turns + sc.unpriced_turns > counted_before:
-            sc.subagents += 1
-    return latest
+    live = ((f, claude_logs.log_mtime(f))
+            for f in sorted(agents_dir.glob("agent-*.jsonl")))
+    return [f for f, m in live if m is not None and m >= window_start]
 
 
-def _scan_file(path: Path, window_start: datetime) -> SessionCost | None:
-    session = Session(session_id=path.stem, log_path=str(path))
-    sc = SessionCost(session=session)
-    latest: datetime | None = None
-    with open(path, errors="replace") as fh:
-        for line in fh:
-            has_usage = '"usage"' in line
-            # title handling is claude_logs' (the inbox's scanner): this view
-            # reads per-turn usage, which that one does not, but the two must
-            # agree about what a Session is *called*.
-            has_meta = '"cwd"' in line or claude_logs.title_hint(line)
-            if not (has_usage or has_meta):
-                continue
-            try:
-                obj = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if session.cwd is None and obj.get("cwd"):
-                session.cwd = obj["cwd"]
-            claude_logs.apply_title_fields(session, obj)
-            if not has_usage or obj.get("type") != "assistant":
-                continue
-            ts = _fold_usage(sc, obj, window_start)
-            if ts and (latest is None or ts > latest):
-                latest = ts
-    # before the emptiness check, so a session whose only in-window work was
-    # delegated still gets its row
-    sub_latest = _scan_subagents(sc, path, window_start)
-    if sub_latest and (latest is None or sub_latest > latest):
-        latest = sub_latest
-    session.last_activity = latest
-    if sc.turns == 0 and sc.unpriced_turns == 0:
+def _session_cost(log: Path, window_start: datetime, cache) -> SessionCost | None:
+    """One Session priced: its own in-window turns plus its subagents',
+    folded into one row. None when nothing counted in the window.
+
+    Usage is all a subagent transcript contributes — titles and cwd are the
+    parent's business, and a subagent log carries neither.
+    """
+    parsed = claude_logs.read_log(log, cache)
+    counted = _in_window(parsed.turns, window_start)
+    subagents = 0
+    for f in _subagent_logs(log, window_start):
+        delegated = _in_window(claude_logs.read_log(f, cache).turns, window_start)
+        if delegated:
+            subagents += 1
+            counted += delegated
+    if not counted:
         return None
-    return sc
+    return SessionCost(
+        session=parsed.session,
+        # one fold over the concatenated turns, never a sum of two folds:
+        # pricing is per-turn (ADR 0002), so the turns of one Session are one
+        # list however many files they were read from
+        usage=claude_logs.usage_totals(counted),
+        subagents=subagents,
+        last_turn=max((t.when for t in counted if t.when), default=None),
+    )
 
 
-def _parse_ts(raw: str | None) -> datetime | None:
-    if not raw:
-        return None
-    try:
-        return datetime.fromisoformat(raw)
-    except ValueError:
-        return None
+def scan_session_costs(projects_dir: Path, window_start: datetime,
+                       cache) -> list[SessionCost]:
+    """Price every Session of the Scan Universe over one window.
 
-
-def scan_session_costs(projects_dir: Path, window_start: datetime) -> list[SessionCost]:
+    `cache` is the open Derived Cache — the same rows the inbox's reading
+    fills, so a log unchanged since any earlier view read it is not opened
+    (ADR 0001 § the Derived Cache).
+    """
     out: list[SessionCost] = []
     for log in sorted(projects_dir.glob("*/*.jsonl")):
-        try:
-            mtime = datetime.fromtimestamp(log.stat().st_mtime, tz=timezone.utc)
-        except OSError:
+        mtime = claude_logs.log_mtime(log)
+        if mtime is None or mtime < window_start:
             continue
-        if mtime < window_start:
-            continue
-        sc = _scan_file(log, window_start)
+        sc = _session_cost(log, window_start, cache)
         if sc and sc.session.cwd:
             out.append(sc)
     return out
@@ -241,7 +219,7 @@ def group_by_project(session_costs: list[SessionCost],
     fold into their main checkout), the directory itself for a non-repo cwd.
 
     `order` ranks both levels the same way: "cost" (the default — where the
-    load concentrates) or "recent" (newest last activity first — what the
+    load concentrates) or "recent" (newest counted turn first — what the
     last few sessions cost, however cheap). A session that counted no dated
     turn sorts last under "recent" rather than borrowing a rank.
     """
@@ -264,8 +242,8 @@ def group_by_project(session_costs: list[SessionCost],
         proj.sessions.append(sc)
 
     if order == "recent":
-        session_key = lambda s: s.session.last_activity or _EPOCH
-        project_key = lambda p: p.last_activity or _EPOCH
+        session_key = lambda s: s.last_turn or _EPOCH
+        project_key = lambda p: p.last_turn or _EPOCH
     else:
         session_key = lambda s: s.cost
         project_key = lambda p: p.cost

@@ -80,7 +80,7 @@ def fake_home(tmp_path_factory, monkeypatch) -> Path:
 @pytest.fixture
 def projects_dir(fake_home) -> Path:
     """An empty `~/.claude/projects` — the Scan Universe's root, in the layout
-    both scanners glob (`<cwd-slug>/<sessionId>.jsonl`). Write into it with
+    both readings glob (`<cwd-slug>/<sessionId>.jsonl`). Write into it with
     `SessionLog.save()`."""
     d = fake_home / ".claude" / "projects"
     d.mkdir(parents=True)
