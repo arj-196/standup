@@ -119,8 +119,7 @@ def _file_diff(checkout: str, rel: str, code: str, context: int) -> unidiff.File
             return fd
         return unidiff.untracked_filediff(rel, text)
 
-    out = gitstate.git(checkout, "diff", f"-U{context}", "--no-color", "--no-ext-diff",
-                       "--find-renames", "HEAD", "--", rel)
+    out = gitstate.path_diff(checkout, rel, context=context)
     if out is None:
         return None
     if len(out) > MAX_DIFF_BYTES:
@@ -230,9 +229,9 @@ def resolve_commit(entry: RepoEntry, ref: str) -> tuple[str, str]:
             "  a commit is named as @<hash> (the grey @abc1234 the drill-down prints);\n"
             "  branch names and revision expressions (@main, @HEAD~2) are not accepted")
     for co in entry.checkouts:
-        full = gitstate.git(co.path, "rev-parse", "--verify", "--quiet", f"{sha}^{{commit}}")
-        if full and full.strip():
-            return co.path, full.strip()
+        full = gitstate.resolve_commit_sha(co.path, sha)
+        if full:
+            return co.path, full
     raise DiffError(f"standup diff: no commit @{sha} in {entry.name}")
 
 
@@ -247,15 +246,9 @@ def build_commit(entry: RepoEntry, checkout: str, sha: str, sessions_by_id: dict
     commit can bundle more than one session's work — and where it does, the
     header's single name would be a half-truth.
     """
-    fmt = "%H%x1f%h%x1f%s%x1f%cI%x1f%an"
-    meta = gitstate.git(checkout, "show", "-s", f"--format={fmt}", sha) or ""
-    parts = meta.strip().split("\x1f")
-    full, short, subject, iso, author = (parts + [""] * 5)[:5]
-    when = None
-    try:
-        when = datetime.fromisoformat(iso) if iso else None
-    except ValueError:
-        when = None
+    meta = gitstate.commit_meta(checkout, sha)
+    full = meta.sha if meta else ""
+    when = meta.when if meta else None
 
     exact = [sid for sid, s in sessions_by_id.items()
              if any(sha.startswith(h) or full.startswith(h)
@@ -263,11 +256,11 @@ def build_commit(entry: RepoEntry, checkout: str, sha: str, sessions_by_id: dict
     # evidence recorded after the commit cannot be in it (ADR 0007). The slack
     # absorbs clock skew and an `--amend` that lands just after the edits.
     before = (when.timestamp() + COMMIT_SLACK) if when else None
-    cd = CommitDiff(sha=full or sha, short=short or sha[:8], subject=subject,
-                    when=when, author=author, exact=exact)
+    cd = CommitDiff(sha=full or sha, short=meta.short if meta else sha[:8],
+                    subject=meta.subject if meta else "", when=when,
+                    author=meta.author_name if meta else "", exact=exact)
 
-    out = gitstate.git(checkout, "show", f"-U{context}", "--no-color", "--no-ext-diff",
-                       "--find-renames", "--format=", sha)
+    out = gitstate.commit_diff(checkout, sha, context=context)
     if out is None:
         cd.truncated = True
         return cd

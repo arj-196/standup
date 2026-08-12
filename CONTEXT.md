@@ -57,6 +57,9 @@ _Avoid_: calling an `unaccounted` hunk unattributed (it is a gap in the matcher'
 **Repo Entry**:
 One top-level item in the Triage Inbox, identified by `git rev-parse --git-common-dir` — worktrees roll up under their main checkout as branch sub-lines; independent clones stay separate.
 
+**Checkout**:
+One working tree of a **Repo Entry** — the main checkout, or a linked worktree of it — carrying its own branch, its own pending files and its own **Unpushed** commits. The unit every git question is asked about ("current branch", "diff of this path", "unpushed count"), and every one of them is asked through `gitstate`, which is the only module that runs git. Repo-level facts are *not* per-Checkout: whether a remote exists is a property of the repository (see **Remoteless Repo**), so two Checkouts of one Repo Entry can never disagree about it.
+
 **Session Rollup**:
 One line under a Repo Entry in the overview: a Session plus the scale of its footprint. The Session is the display unit; individual files never appear in the overview. Each file belongs to exactly one Session — its **latest** — so a file touched across several Sessions appears once, not once per Session. Older Sessions that also touched it are not lost: they surface as the `also ~"…"` annotation in the drill-down. Per-Session file counts therefore sum to the Repo Entry header's true git total ("N files uncommitted across M sessions").
 
