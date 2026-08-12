@@ -168,6 +168,18 @@ full strength behind a boundary rule, so filtering to a session that has
 already committed and gone quiet still shows its work, as legibly as if you
 had watched it happen.
 
+The Watch covers the whole Repo Entry, worktrees included — and not just the
+worktrees that existed at launch. Claude Code runs isolated agents in
+worktrees it creates mid-task (`.claude/worktrees/…`); the Watch re-asks git
+for the worktree list as it runs, so a worktree that appears joins the watched
+set within seconds (a `⑂ worktree … appeared` mark in the feed), one that is
+removed or auto-cleaned is let go, and an agent working inside one is tailed
+as its own numbered lane — titled by what it was spawned to do, filterable
+like any session
+([ADR 0004 § the worktree lane](docs/adr/0004-the-watch.md)). Those subagent
+lanes are a Watch-only discovery: the inbox and `cost` keep counting the
+parent session alone.
+
 A **Live Session** is a recency claim — a log appended within the Live window,
 30 minutes by default — and that window is what decides which sessions the
 Watch picks up at all. `--since 2h` (also `45m`, `3d`, `1w`) widens it, so a

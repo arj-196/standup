@@ -7,8 +7,8 @@ snapshot rendered to stdout; the Watch runs in a terminal you leave and return
 to while an agent works, so it is the one surface that must answer *is something
 happening now* rather than *what is the state*.
 
-Nine decisions, recorded together because they are one design — each later one
-reaches into an earlier one's geometry.
+Eleven decisions, recorded together because they are one design — each later
+one reaches into an earlier one's geometry.
 
 ## The event source
 
@@ -21,6 +21,57 @@ same claims-vs-truth split Attribution uses everywhere else.
 
 *Rejected: git-only* — anonymous, poll-latency bound, cannot narrate what the
 agent is doing.
+
+## The worktree lane
+
+**A Repo Entry's worktrees are watched natively — including the ones that do
+not exist yet when the Watch starts.** Claude Code runs isolated agents in
+worktrees it creates *mid-run* (`.claude/worktrees/…`), and both of the Watch's
+witnesses are blind to them by default: a linked worktree is its own working
+tree, so the main checkout's `git status` never reports its files, and the
+agent's transcript is a **subagent transcript** — written one level below the
+top-level Session logs (`<proj>/<parent-session-id>/subagents/agent-<id>.jsonl`,
+every line `isSidechain`), where the `*/*.jsonl` glob cannot find it. Four
+rules close the gap:
+
+- **the checkout list is re-asked, not frozen.** On the discovery cadence
+  (`DISCOVERY_INTERVAL`) the stream re-runs `git worktree list` against the
+  main checkout; a new worktree is adopted (one `worktree` feed event, then
+  polled like any checkout), a vanished one is let go — worktrees are
+  auto-cleaned, so removal is normal life, not an error. A failed `worktree
+  list` reads as *no answer*, never as mass removal. Adoption seeds silently
+  (dirt predating it is old news, same as launch); the blind window is at most
+  one discovery interval, and the agent's own claims cover it.
+- **a subagent transcript is its own lane.** Discovery globs
+  `*/*/subagents/*.jsonl` alongside the top-level logs. The lane is addressed
+  by the agent id (the `agent-` file prefix dropped, so the handle reads like
+  any Session Handle), titled by the spawn `description` from the sibling
+  `.meta.json` — the one place the parent's intent for the agent is written
+  down — and subject to the same Live-window recency claim as every Session.
+- **the sidechain skip is scoped to parent logs.** Activity tracking skips
+  `isSidechain` lines because a parent's sidechains are not the parent's work;
+  a subagent tailer's whole log is one sidechain, so there the flag carries no
+  ambiguity and the lane gets an Activity State.
+- **roots match deepest-first.** A `.claude/worktrees/…` worktree nests under
+  the main checkout, so prefix-matching in list order would file its edits
+  under main as `.claude/worktrees/…/x.py`. The root list is ordered
+  longest-first and shared by reference with every tailer — mutated in place on
+  adopt/remove, so lanes opened before a worktree existed still resolve
+  against it.
+
+*Rejected: subagent transcripts in the Scan Universe* — widening the global
+scan would make every Agent call an inbox entry and force decisions this
+change has no business taking: whether an agent's cost folds into its parent's
+`cost` line or stands alone, and what a lane means in views where a subagent
+is not addressable (`standup session <handle>` cannot open one). The Watch
+alone reads them, at discovery time. **Accepted cost**: a subagent's usage is
+recorded only in its own transcript (nothing is echoed into the parent's
+turns), so `cost` under-counts subagent-heavy work today — recorded here as a
+known gap, not silently changed.
+
+*Rejected: folding subagent events into the parent's lane* — several agents run
+at once, and one lane interleaving N workers cannot be filtered or read; the
+parent's lane keeps the `Agent` Call, the worker gets its own number.
 
 ## The stream/UI boundary
 

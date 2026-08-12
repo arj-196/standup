@@ -16,6 +16,11 @@ Titles ride their own line types (`ai-title`, `custom-title`, `last-prompt`).
 two edits, one commit hash, priced per-turn usage — and is what most tests
 should reach for. Reach for `SessionLog` directly when a test needs a shape
 `fixture_session` does not have.
+
+A third consumer, the Watch, additionally reads **subagent transcripts**
+(`<proj>/<parent-session-id>/subagents/agent-<id>.jsonl`, all-sidechain lines,
+a `.meta.json` beside each) — build those with `sidechain=True` and
+`save_subagent()` (ADR 0004 § the worktree lane).
 """
 
 from __future__ import annotations
@@ -74,6 +79,10 @@ class SessionLog:
     branch: str = "main"
     version: str = "2.0.0"
     start: datetime | None = None
+    # every conversation line's `isSidechain` flag. A subagent transcript is
+    # all sidechain lines — build one with `sidechain=True` and write it with
+    # `save_subagent()` (ADR 0004 § the worktree lane)
+    sidechain: bool = False
     lines: list[dict] = field(default_factory=list)
     # (model, usage) per assistant turn, in the order they were added — what a
     # cost test compares against without re-deriving the Rate Card. Unpriced
@@ -110,11 +119,16 @@ class SessionLog:
         return self._assistant([{"type": "text", "text": text}], model, usage)
 
     def edit(self, file_path: str, *, tool: str = "Edit", model: str = MODEL,
-             usage: dict | None = None, **tool_input) -> "SessionLog":
+             usage: dict | None = None, mid_turn: bool = False,
+             **tool_input) -> "SessionLog":
         """An assistant turn whose `tool_use` block edits `file_path`.
 
         `file_path` must be absolute: `claude_logs` ignores relative paths,
         because a path it cannot join to a repo attributes nothing.
+
+        `mid_turn=True` leaves the call in flight (`stop_reason: "tool_use"`,
+        no result line follows) — the shape the Watch's Activity State reads a
+        tool verb from, and so the tail a mid-turn session ends on.
         """
         block = {
             "type": "tool_use",
@@ -123,7 +137,8 @@ class SessionLog:
             "input": {"file_path": file_path, **tool_input},
             "caller": {"type": "direct"},
         }
-        return self._assistant([block], model, usage)
+        return self._assistant([block], model, usage,
+                               stop_reason="tool_use" if mid_turn else "end_turn")
 
     def commit(self, sha: str, subject: str = "A commit", *,
                branch: str | None = None, files: int = 1) -> "SessionLog":
@@ -157,15 +172,39 @@ class SessionLog:
         log.write_text(self.to_jsonl())
         return log
 
+    def save_subagent(self, projects_dir: Path, parent: "SessionLog", *,
+                      description: str = "Fix the fixture",
+                      agent_type: str = "general-purpose") -> Path:
+        """Write the log as a **subagent transcript** of `parent`, in Claude
+        Code's own layout — under the *parent's* project directory
+        (`<parent-cwd-slug>/<parent-session-id>/subagents/agent-<id>.jsonl`),
+        beside an `agent-<id>.meta.json` carrying the spawn `description` the
+        Watch titles the lane with (ADR 0004 § the worktree lane).
+
+        This log's own `cwd` is where the agent worked — for a worktree agent,
+        the worktree — and its `session_id` is the bare agent id. Build it with
+        `sidechain=True`: a real transcript's lines are all sidechain lines.
+        """
+        d = (Path(projects_dir) / project_dir_name(parent.cwd)
+             / parent.session_id / "subagents")
+        d.mkdir(parents=True, exist_ok=True)
+        log = d / f"agent-{self.session_id}.jsonl"
+        log.write_text(self.to_jsonl())
+        meta = {"agentType": agent_type, "description": description,
+                "spawnedWithWorktree": self.cwd != parent.cwd,
+                "worktreePath": self.cwd, "spawnDepth": 1}
+        (d / f"agent-{self.session_id}.meta.json").write_text(json.dumps(meta))
+        return log
+
     # -- internals ------------------------------------------------------
 
-    def _assistant(self, content: list[dict], model: str,
-                   usage: dict | None) -> "SessionLog":
+    def _assistant(self, content: list[dict], model: str, usage: dict | None,
+                   stop_reason: str = "end_turn") -> "SessionLog":
         u = DEFAULT_USAGE if usage is None else usage
         self._conversation("assistant", {
             "role": "assistant", "type": "message", "model": model,
             "id": f"msg_{len(self.lines):024d}", "content": content,
-            "stop_reason": "end_turn", "usage": u,
+            "stop_reason": stop_reason, "usage": u,
         })
         self.usages.append((model, u))
         return self
@@ -180,7 +219,7 @@ class SessionLog:
             "sessionId": self.session_id,
             "uuid": self._uuid(),
             "parentUuid": None,
-            "isSidechain": False,
+            "isSidechain": self.sidechain,
             "userType": "external",
             "timestamp": self._clock.isoformat().replace("+00:00", "Z"),
             "version": self.version,

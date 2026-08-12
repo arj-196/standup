@@ -31,6 +31,11 @@ LIVE_THRESHOLD = timedelta(minutes=30)  # Live Session recency claim (CONTEXT.md
 GIT_POLL_INTERVAL = 2.0        # seconds between git status/HEAD polls
 PUSH_POLL_EVERY = 5            # push check once per N git polls
 DISCOVERY_INTERVAL = 10.0      # seconds between scans for new session logs
+# A subagent transcript, in Claude Code's layout: it lives under its parent
+# Session's directory (<proj>/<parent-session-id>/subagents/agent-<id>.jsonl),
+# one level below where top-level Session logs sit — which is why the ordinary
+# `*/*.jsonl` glob can never find one (ADR 0004 § the worktree lane).
+SUBAGENT_GLOB = "*/*/subagents/*.jsonl"
 BACKFILL_CAP = 400             # newest events replayed at launch, all sessions
 EDIT_TOOLS = claude_logs.EDIT_TOOLS
 
@@ -81,7 +86,7 @@ class CommitFile:
 class FeedEvent:
     """One entry in the Watch (CONTEXT.md → Feed Event)."""
     kind: str                    # file | call | call_result | prompt | commit |
-                                 # branch | push | unattributed | session
+                                 # branch | push | unattributed | session | worktree
     when: datetime
     session_id: str | None = None
     title: str = ""              # session title (display context)
@@ -214,9 +219,19 @@ class _Tailer:
         self.session = session
         self.path = Path(session.log_path)
         self.offset = 0
-        # realpath both sides of every comparison: agent-written paths and git
-        # toplevels may disagree about symlinks (macOS /var vs /private/var)
-        self.repo_paths = [os.path.realpath(p) for p in repo_paths]
+        # The WatchStream's own root list, shared by reference and mutated in
+        # place when a worktree appears or vanishes mid-watch — a tailer that
+        # copied it would keep resolving against the launch-time checkouts.
+        # Already realpath'd (agent-written paths and git toplevels may disagree
+        # about symlinks — macOS /var vs /private/var — so `_rel` realpaths its
+        # side too) and ordered longest-first, so a file in a worktree nested
+        # under the main checkout resolves against the worktree, not as a
+        # `.claude/worktrees/…` path relative to main.
+        self.repo_paths = repo_paths
+        # A subagent transcript (…/<parent-session>/subagents/<agent>.jsonl) is
+        # one sidechain, tailed as its own lane — its lines are all marked
+        # `isSidechain`, and for *this* tailer they are not someone else's.
+        self.subagent = "/subagents/" in session.log_path
         self.pending_calls: dict[str, datetime] = {}  # tool_use id -> when issued
         self.claimed_shas: set[str] = set()           # commit hashes seen in results
         self.edited_paths: set[str] = set(session.edited_files)
@@ -270,10 +285,12 @@ class _Tailer:
         - a tool result, or your prompt, leaves the model composing: `thinking`,
           the one verb no line ever states.
 
-        Subagent lines are skipped: a sidechain's reads are not this session's,
-        and several running at once have no single answer.
+        Sidechain lines inside a *parent* log are skipped: those reads are not
+        this session's, and several running at once have no single answer. A
+        subagent tailer's whole log is one sidechain, so there the flag carries
+        no such ambiguity and tracking proceeds (ADR 0004 § the worktree lane).
         """
-        if obj.get("isSidechain"):
+        if obj.get("isSidechain") and not self.subagent:
             return
         etype = obj.get("type")
         message = obj.get("message") or {}
@@ -507,6 +524,8 @@ class _GitWatcher:
     twice."""
 
     def __init__(self, checkouts: list[str]):
+        # the WatchStream's own list, shared by reference: it appends/removes
+        # as worktrees appear and vanish mid-watch, bracketed by adopt/forget
         self.checkouts = checkouts
         self.status: dict[str, dict[str, str]] = {}    # checkout -> path -> code
         self.head: dict[str, str] = {}
@@ -517,22 +536,39 @@ class _GitWatcher:
         self._content: dict[tuple[str, str], str | None] = {}   # None = undiffable
         self._fp: dict[tuple[str, str], tuple[int, int] | None] = {}
         # (checkout, path) -> the snapshot a cumulative diff is measured *from*.
-        # HEAD's version for a file that dirties while the Watch runs; the launch
-        # snapshot for dirt that predates it, because startup dirt is old news
-        # and replaying it as one giant event would bury the live narrative.
-        # Costs a second copy of each dirty file's text alongside `_content`,
-        # bounded by MAX_SNAPSHOT_BYTES per path.
+        # HEAD's version for a file that dirties while the Watch runs; the
+        # adoption snapshot for dirt that predates it, because pre-watch dirt is
+        # old news and replaying it as one giant event would bury the live
+        # narrative. Costs a second copy of each dirty file's text alongside
+        # `_content`, bounded by MAX_SNAPSHOT_BYTES per path.
         self._base: dict[tuple[str, str], str | None] = {}
         for co in checkouts:
-            self.status[co] = self._status(co)
-            self.head[co] = self._head(co)
-            self.branch[co] = gitstate._branch(co)
-            self.unpushed[co] = self._unpushed_count(co)
-            for p in self.status[co]:   # seed: startup dirt is old news, no events
-                key = (co, p)
-                self._fp[key] = self._stat(co, p)
-                self._content[key] = self._read(co, p)
-                self._base[key] = self._content[key]
+            self.adopt(co)
+
+    def adopt(self, co: str) -> None:
+        """Start watching a checkout, seeding silently: dirt that predates the
+        adoption is old news, no events. A worktree adopted mid-watch (ADR 0004
+        § the worktree lane) is at most one discovery interval old, so what the
+        seed swallows is bounded — and its Session's claims narrate it anyway."""
+        self.status[co] = self._status(co)
+        self.head[co] = self._head(co)
+        self.branch[co] = gitstate._branch(co)
+        self.unpushed[co] = self._unpushed_count(co)
+        for p in self.status[co]:
+            key = (co, p)
+            self._fp[key] = self._stat(co, p)
+            self._content[key] = self._read(co, p)
+            self._base[key] = self._content[key]
+
+    def forget(self, co: str) -> None:
+        """Drop a checkout that no longer exists (worktrees are removed or
+        auto-cleaned). State only — the caller owns the `checkouts` list."""
+        for d in (self.status, self.head, self.branch, self.unpushed):
+            d.pop(co, None)
+        for key in [k for k in self._fp if k[0] == co]:
+            del self._fp[key]
+            self._content.pop(key, None)
+            self._base.pop(key, None)
 
     @staticmethod
     def _status(co: str) -> dict[str, str]:
@@ -676,6 +712,8 @@ class _GitWatcher:
         now = _now()
         events: list[FeedEvent] = []
         for co in self.checkouts:
+            if not os.path.isdir(co):
+                continue   # a just-removed worktree; the next refresh forgets it
             new_status = self._status(co)
             plain: list[str] = []    # changed but undiffable -> one-line event
             for p, code in new_status.items():
@@ -834,7 +872,12 @@ class WatchStream:
         sessions = claude_logs.scan_sessions(projects_dir, cache)
         cache.flush()
         self.name, self.checkouts = _resolve_target(repo_arg, sessions)
-        self._roots = [os.path.realpath(c).rstrip("/") for c in self.checkouts]
+        # longest-first, so a path inside a worktree nested under the main
+        # checkout (`.claude/worktrees/…`) resolves to the worktree's root, not
+        # to a `.claude/…`-relative path under main. Shared by reference with
+        # every tailer and mutated in place by `_refresh_checkouts`.
+        self._roots = sorted((os.path.realpath(c).rstrip("/") for c in self.checkouts),
+                             key=len, reverse=True)
         self.tailers: dict[str, _Tailer] = {}
         self._nums: dict[str, int] = {}        # session_id -> stable lane number
         self._known_logs: set[str] = {s.log_path for s in sessions}
@@ -849,6 +892,7 @@ class WatchStream:
         here = [s for s in sessions
                 if s.cwd and self._in_repo(s.cwd)
                 and s.last_activity and now - s.last_activity <= self.live_window]
+        here += self._scan_subagents(now)
         # oldest first: lane numbers are first-seen and never re-sorted, so the
         # longest-running session is [1] and stays [1]
         here.sort(key=lambda s: s.last_activity)
@@ -862,8 +906,58 @@ class WatchStream:
         cwd = os.path.realpath(cwd).rstrip("/")
         return any(cwd == r or cwd.startswith(r + "/") for r in self._roots)
 
+    def _scan_subagents(self, now: datetime) -> list[Session]:
+        """Subagent transcripts already on disk that belong to this Repo Entry
+        and are inside the Live window — the same recency claim top-level
+        Sessions answer to. Every transcript found is marked known, lane or
+        not, so `_discover` never replays a long-finished agent as brand new."""
+        found: list[Session] = []
+        for log in self.projects_dir.glob(SUBAGENT_GLOB):
+            lp = str(log)
+            if lp in self._known_logs:
+                continue
+            self._known_logs.add(lp)
+            try:
+                mtime = datetime.fromtimestamp(log.stat().st_mtime, tz=timezone.utc)
+            except OSError:
+                continue
+            if now - mtime > self.live_window:
+                continue          # long settled: not even worth peeking into
+            s = self._subagent_session(log, mtime)
+            if s and self._in_repo(s.cwd):
+                found.append(s)
+        return found
+
+    def _subagent_session(self, log: Path,
+                          mtime: datetime | None = None) -> Session | None:
+        """A subagent transcript as a Session lane (ADR 0004 § the worktree
+        lane). Identity is the agent id — the `agent-` file prefix dropped, so
+        the lane handle reads like any Session Handle — and the title is the
+        spawn description from the sibling `.meta.json`, the one place the
+        parent's intent for this agent is written down. The cwd is peeked from
+        the log itself: a worktree agent's cwd *is* its worktree, which is all
+        the repo membership check needs."""
+        cwd = self._peek_cwd(log)
+        if not cwd:
+            return None
+        if mtime is None:
+            try:
+                mtime = datetime.fromtimestamp(log.stat().st_mtime, tz=timezone.utc)
+            except OSError:
+                mtime = _now()
+        s = Session(session_id=log.stem.removeprefix("agent-"),
+                    log_path=str(log), cwd=cwd, last_activity=mtime)
+        try:
+            with open(log.with_suffix(".meta.json"), errors="replace") as f:
+                meta = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            meta = {}
+        if isinstance(meta.get("description"), str) and meta["description"]:
+            s.custom_title = meta["description"]
+        return s
+
     def _add_tailer(self, session: Session) -> _Tailer:
-        t = _Tailer(session, self.checkouts)
+        t = _Tailer(session, self._roots)
         self.tailers[session.session_id] = t
         self._nums[session.session_id] = len(self._nums) + 1
         b = brief_mod.load_one(session.session_id)
@@ -901,6 +995,9 @@ class WatchStream:
 
         if now_m - self._last_discovery >= DISCOVERY_INTERVAL:
             self._last_discovery = now_m
+            # checkouts first: a worktree that appeared alongside its agent must
+            # be a root before the agent's cwd is checked against the roots
+            events.extend(self._refresh_checkouts())
             events.extend(self._discover())
 
         if now_m - self._last_git >= GIT_POLL_INTERVAL:
@@ -916,18 +1013,58 @@ class WatchStream:
                 return sid
         return None
 
-    def _discover(self) -> list[FeedEvent]:
-        """Notice brand-new session logs in this repo and start tailing them."""
+    def _refresh_checkouts(self) -> list[FeedEvent]:
+        """Re-ask git for the worktree list and fold the answer into the
+        watched set (ADR 0004 § the worktree lane). Claude Code creates its
+        worktrees mid-run (`.claude/worktrees/…`), so a launch-time list goes
+        stale exactly when an agent starts working. The shared root list is
+        mutated in place — every live tailer resolves against the current set —
+        and adoption seeds silently, so only what happens *after* counts."""
+        out = gitstate.git(self.checkouts[0], "worktree", "list", "--porcelain")
+        if out is None:
+            return []      # a transient git failure must not read as removals
+        listed = {os.path.realpath(line[len("worktree "):])
+                  for line in out.splitlines() if line.startswith("worktree ")}
+        listed = {w for w in listed if os.path.isdir(w)}
         events: list[FeedEvent] = []
-        for log in self.projects_dir.glob("*/*.jsonl"):
+        for w in sorted(listed - {os.path.realpath(c) for c in self.checkouts}):
+            self.checkouts.append(w)
+            self._roots.append(w.rstrip("/"))
+            self._roots.sort(key=len, reverse=True)   # keep deepest-first matching
+            self.git.adopt(w)
+            events.append(FeedEvent(
+                kind="worktree", when=_now(),
+                message=f"{os.path.basename(w)} appeared — {gitstate._branch(w)}"))
+        for c in list(self.checkouts[1:]):            # main never leaves
+            if os.path.realpath(c) in listed:
+                continue
+            self.checkouts.remove(c)
+            r = os.path.realpath(c).rstrip("/")
+            if r in self._roots:
+                self._roots.remove(r)
+            self.git.forget(c)
+            events.append(FeedEvent(kind="worktree", when=_now(),
+                                    message=f"{os.path.basename(c)} removed"))
+        return events
+
+    def _discover(self) -> list[FeedEvent]:
+        """Notice brand-new session logs in this repo — top-level Sessions and
+        subagent transcripts alike — and start tailing them."""
+        events: list[FeedEvent] = []
+        for log in (*self.projects_dir.glob("*/*.jsonl"),
+                    *self.projects_dir.glob(SUBAGENT_GLOB)):
             lp = str(log)
             if lp in self._known_logs:
                 continue
             self._known_logs.add(lp)
-            cwd = self._peek_cwd(log)
-            if not cwd or not self._in_repo(cwd):
+            if "/subagents/" in lp:
+                s = self._subagent_session(log, _now())
+            else:
+                cwd = self._peek_cwd(log)
+                s = (Session(session_id=log.stem, log_path=lp, cwd=cwd,
+                             last_activity=_now()) if cwd else None)
+            if not s or not self._in_repo(s.cwd):
                 continue
-            s = Session(session_id=log.stem, log_path=lp, cwd=cwd, last_activity=_now())
             t = self._add_tailer(s)   # new log: tail from the top, it's all fresh
             events.append(FeedEvent(kind="session", when=_now(),
                                     session_id=s.session_id, title=s.title,

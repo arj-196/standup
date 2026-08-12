@@ -88,7 +88,7 @@ RAIL_COLS = 9              # the left rail: gap gutter + session lane + its spac
 
 _MARKS = {
     "file": "✎", "call": "⏺", "commit": "⚑", "push": "⇧",
-    "branch": "⑂", "unattributed": "~", "session": "●",
+    "branch": "⑂", "unattributed": "~", "session": "●", "worktree": "⑂",
 }
 
 
@@ -525,6 +525,16 @@ class EventWidget(Static):
             if arrow:
                 out.append(" → ", style=t.style("muted"))
                 out.append(new, style=t.style("primary"))
+        elif e.kind == "worktree":
+            # same glyph and hue as a branch switch: both restructure where the
+            # narrative can come from, and both are git facts
+            out.append("⑂", style=t.style("chapter", bold=True))
+            out.append("  ")
+            out.append("worktree ", style=t.style("chapter"))
+            name, sep, rest = e.message.partition(" ")
+            out.append(name, style=t.style("primary"))
+            if rest:
+                out.append(f" {rest}", style=t.style("muted"))
         elif e.kind == "unattributed":
             out.append("~", style=t.style("claim", bold=True))
             out.append("  ")
@@ -939,7 +949,7 @@ class WatchApp(App):
         # the filter hides other sessions' work but never repo facts: commits,
         # pushes, branch switches, and Unattributed Changes stay — the feed
         # must not hide dirt (ground truth is never filtered away)
-        if ev.kind in ("commit", "push", "branch", "unattributed"):
+        if ev.kind in ("commit", "push", "branch", "unattributed", "worktree"):
             return True
         return ev.session_id is None or ev.session_id == self.filter_sid
 

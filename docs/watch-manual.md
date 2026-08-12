@@ -28,6 +28,15 @@ plus its worktrees) into a single chronological feed:
 - **commits** — each carrying its own diff — **pushes, branch switches**
 - **Unattributed Changes** — dirt that no session claims — the moment they appear
 
+Worktrees are first-class, including the ones Claude Code creates *mid-run*
+(`.claude/worktrees/…`) for isolated agents
+([ADR 0004 § the worktree lane](adr/0004-the-watch.md)): a worktree that
+appears while the Watch is open joins the watched set within seconds (marked
+`⑂ worktree … appeared`), an agent working inside one gets its own numbered
+lane — titled by what it was spawned to do, filterable like any session — and
+a worktree that is removed or auto-cleaned is let go with a matching mark. You
+do not restart the Watch when an agent spawns workers.
+
 Above that feed it also answers the one question the feed can't: **is the agent
 still working?** Each session that's mid-turn shows its **Activity State** in
 the status bar — `thinking`, `reading`, `writing`, `running` — and a session
@@ -202,7 +211,8 @@ Then a kind mark and the content:
 | `⇧` gold | push | commits left for a remote |
 | `⑂` violet | branch | branch switch, `old → new` — it restructures the narrative |
 | `~` amber | unattributed | changed files git can't even diff (binary, huge, unreadable) |
-| `●` cyan | session | a brand-new session log appeared in this repo |
+| `●` cyan | session | a brand-new session log appeared in this repo — a top-level Session or a subagent's transcript |
+| `⑂` violet | worktree | a worktree joined the watched set (`… appeared — <branch>`) or left it (`… removed`) — same glyph as a branch switch, because both restructure where the narrative can come from |
 
 Every color is a role, and no distinction lives in color alone — each role
 also carries a glyph or attribute that survives `NO_COLOR`: claims are `~` +
