@@ -11,11 +11,16 @@ Design (ADR 0003 § the Session Brief):
 - **out-of-band**: double-forks so the interactive turn is never blocked, even
   if the hook's `async: true` is unsupported by the running Claude Code;
 - **gated**: only sessions with a code footprint (an Edit/Write) get a Brief;
-- **debounced**: a freshness check + a lockfile keep it to ~once per idle gap;
+- **debounced**: the store's freshness check + a lockfile keep it to ~once per
+  idle gap, on the one tolerance a reader hedges past;
 - **turnkey**: `claude -p` reuses the user's existing Claude Code auth — no API
   key, no `--bare` (verified 2026-07-22, CC 2.1.201);
 - **cost-tracked**: `--output-format json` returns the run's own `usage`, which
   is recorded in the Brief as Brief Overhead and priced by the Rate Card.
+
+Location, frontmatter and the atomic write are the Artifact store's
+(`artifacts.py`), reached through `brief.save` — this module owns the decision
+to generate and the prompt, never the file format.
 """
 
 from __future__ import annotations
@@ -24,15 +29,14 @@ import json
 import os
 import subprocess
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 
-from . import transcript
-from .brief import BRIEFS_DIR
+from . import brief, transcript
 from .claude_logs import EDIT_TOOLS
+from .models import Brief
 
 MODEL = "claude-haiku-4-5"
-DEBOUNCE = timedelta(minutes=5)   # regenerate at most this often per session
 GEN_TIMEOUT = 120                 # seconds for the claude -p call
 MAX_DIGEST = 60_000               # chars of transcript fed to the summariser
 HEAD_DIGEST = 40_000              # when over budget: keep this much head + the rest tail
@@ -65,15 +69,6 @@ def _has_footprint(path: Path) -> bool:
     except OSError:
         return False
     return False
-
-
-def _fresh(brief_path: Path, now: datetime) -> bool:
-    """True if a Brief was written within DEBOUNCE — skip to rate-limit."""
-    try:
-        mtime = datetime.fromtimestamp(brief_path.stat().st_mtime, tz=timezone.utc)
-    except OSError:
-        return False
-    return (now - mtime) < DEBOUNCE
 
 
 # ── transcript digest ──────────────────────────────────────────────────────
@@ -133,29 +128,8 @@ def _parse_output(text: str) -> tuple[str, str | None, str]:
 
 # ── the write ──────────────────────────────────────────────────────────────
 
-def _write_brief(brief_path: Path, objective: str, status: str | None,
-                 body: str, usage: dict | None, now: datetime) -> None:
-    fm = [
-        "---",
-        f"objective: {objective}",
-    ]
-    if status:
-        fm.append(f"status: {status}")
-    fm.append(f"generated: {now.isoformat()}")
-    fm.append(f"model: {MODEL}")
-    if isinstance(usage, dict):
-        fm.append("gen_usage: " + json.dumps(usage, separators=(",", ":")))
-    fm.append("---")
-    text = "\n".join(fm) + "\n\n" + (body or "") + "\n"
-    brief_path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = brief_path.with_name(brief_path.name + ".tmp")
-    tmp.write_text(text)
-    tmp.replace(brief_path)  # atomic
-
-
-def _generate(session_id: str, transcript: Path, cwd: str | None,
-              brief_path: Path) -> None:
-    lock = brief_path.with_name(brief_path.name + ".lock")
+def _generate(session_id: str, transcript: Path, cwd: str | None) -> None:
+    lock = brief.STORE.lock_for(session_id)
     try:
         fd = os.open(str(lock), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
         os.close(fd)
@@ -191,8 +165,9 @@ def _generate(session_id: str, transcript: Path, cwd: str | None,
         if not objective:
             return
         usage = data.get("usage") if isinstance(data.get("usage"), dict) else None
-        _write_brief(brief_path, objective, status, body, usage,
-                     datetime.now(timezone.utc))
+        brief.save(Brief(session_id=session_id, objective=objective, status=status,
+                         generated=datetime.now(timezone.utc), model=MODEL,
+                         body=body, gen_usage=usage))
     except (subprocess.SubprocessError, OSError):
         return
     finally:
@@ -240,14 +215,12 @@ def run_from_hook_stdin() -> int:
     if not tpath.exists() or not _has_footprint(tpath):
         return 0
 
-    brief_path = BRIEFS_DIR / f"{session_id}.brief.md"
-    now = datetime.now(timezone.utc)
-    if _fresh(brief_path, now):
+    if brief.STORE.written_within_tolerance(session_id):
         return 0  # debounce
 
     if not _detach():
         return 0  # original process returns immediately; grandchild does the work
     try:
-        _generate(session_id, tpath, cwd, brief_path)
+        _generate(session_id, tpath, cwd)
     finally:
         os._exit(0)

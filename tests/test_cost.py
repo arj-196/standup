@@ -21,6 +21,22 @@ def _yesterday() -> datetime:
     return datetime.now(timezone.utc) - timedelta(days=1)
 
 
+def test_a_worktree_session_groups_under_its_main_checkout(
+        scratch_repo, tmp_path, projects_dir, session_log):
+    """The cost view groups by Repo Entry, and worktrees fold into their parent
+    checkout (CONTEXT.md → the `cost` view) — so a project whose only Sessions
+    ran in a worktree is still named after the main checkout, never after the
+    worktree that happened to be seen first."""
+    repo = scratch_repo("tt")
+    wt = repo.add_worktree(tmp_path / "wt-branchy")
+    session_log(cwd=str(wt.path)).save(projects_dir)
+
+    (proj,) = cost.group_by_project(cost.scan_session_costs(projects_dir, _yesterday()))
+
+    assert proj.name == "tt"
+    assert proj.path == str(repo.path)
+
+
 def test_subagent_usage_folds_into_the_parent_session(projects_dir, session_log):
     parent = session_log(cwd="/tmp/tt")
     # a worktree agent: its own cwd is the worktree, not the parent checkout —

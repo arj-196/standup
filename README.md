@@ -245,8 +245,8 @@ Standup is stateless: the same command at the same moment always prints the
 same inbox (ADR 0001 § the Recent Window). It keeps a derived cache at `~/.standup/cache` to avoid
 re-parsing unchanged session logs — a pure accelerator that never changes
 output; `rm -rf ~/.standup/cache` is always safe (ADR 0001 § the Derived Cache). The `~/.standup`
-root also holds durable, non-recomputable data (Session Briefs), so delete the
-`cache/` subdirectory, not the root.
+root also holds durable, non-recomputable data (Session Briefs and Audits), so
+delete the `cache/` subdirectory, not the root.
 
 ## Reading the output
 
@@ -347,8 +347,10 @@ once and a Claude Code Stop hook will, in the background, summarise each coding
 session's **objective** with Haiku and drop it at
 `~/.standup/briefs/<sessionId>.brief.md`. Standup then shows that objective as a
 marked line under the session's title (hedged `(stale)` when the session moved on
-after the summary was written). It's a *claim*, never derived truth — it augments
-the title, never replaces it, and a session with no Brief just renders as before.
+after the summary was written — the same test on every view: did the session log
+grow after the Brief was written?). It's a *claim*, never derived truth — it
+augments the title, never replaces it, and a session with no Brief just renders
+as before.
 
 Generation is entirely out-of-band: the hook returns immediately and a detached
 `claude -p` does the work, so your live session pays nothing. It uses your

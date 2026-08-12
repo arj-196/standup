@@ -60,12 +60,6 @@ EDIT_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit"}
 LIKELY, SHARED, UNACCOUNTED, UNATTRIBUTED = (
     "likely", "shared", "unaccounted", "unattributed")
 
-# A cached index larger than this is dropped rather than stored: the cache is a
-# pure accelerator, and a session that wrote a hundred large files should not be
-# allowed to grow the DB without bound. Skipping the write costs a reparse and
-# changes no output.
-MAX_CACHED_BYTES = 8 * 1024 * 1024
-
 
 def norm(text: str) -> tuple[str, ...]:
     """A fragment or run as comparable lines: trailing whitespace stripped, a
@@ -174,8 +168,9 @@ def _from_cache(data) -> list[Fragment]:
 
 def for_session(log_path: Path, cache=None) -> dict[str, list[Fragment]]:
     """A session's edit fragments, grouped by realpath. Served from the Derived
-    Cache when the log is unchanged; a cache miss or any cache failure costs a
-    reparse and nothing else."""
+    Cache when the log is unchanged; a cache miss, a cache failure, or an index
+    too large for the cache to accept (`cache.MAX_BLOB_BYTES`) costs a reparse
+    and nothing else."""
     sid = log_path.stem
     st = None
     if cache is not None:

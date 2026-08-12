@@ -35,6 +35,15 @@ class Session:
     ai_title: str | None = None
     slug: str | None = None
     last_prompt: str | None = None
+    # The Session log's mtime: when the log last grew, and the *only* meaning
+    # this field carries as the log reader produces it
+    # (ADR 0001 § the one log reader).
+    # It is the staleness clock for out-of-band artifacts, which ask
+    # "did the session move on after this Brief was written" — a question only
+    # the file's own clock answers. "When the model last spoke" is a different
+    # question with its own name: `claude_logs.ParsedLog.last_turn`.
+    # `cost` still overwrites this with its own window-bounded reading; that
+    # divergence is what the cost view's migration onto the one reader removes.
     last_activity: datetime | None = None
     brief: "Brief | None" = None
     branches: set[str] = field(default_factory=set)
@@ -94,7 +103,8 @@ class Commit:
     short: str
     subject: str
     when: datetime
-    author_email: str = ""
+    author_email: str = ""    # the Done filter's key: "my recent work"
+    author_name: str = ""     # display only — what the commit header prints
     attributions: list[Attribution] = field(default_factory=list)
 
 

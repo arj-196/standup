@@ -9,10 +9,10 @@ from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from . import cache as cache_mod
+from . import artifacts
 from . import audit as audit_mod
 from . import brief as brief_mod
-from . import claude_logs, cost, gitstate, handles, join, loops, rates, render, transcript
+from . import cost, handles, loops, rates, render, transcript, universe
 
 # the Recent Window (ADR 0001 § the Recent Window); --since overrides
 RECENT_WINDOW_DAYS = 7
@@ -67,14 +67,6 @@ SUBCOMMANDS = {"cost", "watch", "session", "audit", "diff", "completion",
 # spawns an Expert Panel against your subscription, and a paid action must name
 # its target explicitly rather than be reachable by a two-word shorthand.
 OBJECT_FIRST = {"cost", "watch", "session", "diff"}
-
-
-def _resolve_repo(arg: str, targets: list[handles.Target], prog: str) -> handles.Target:
-    """A CLI repo argument -> one project. A path (`.`, `../x`, `~/y`) resolves
-    through git; anything else is a Project Handle."""
-    if handles.looks_like_path(arg):
-        return handles.resolve_target_path(arg, targets, prog)
-    return handles.resolve(arg, targets, prog)
 
 
 def _normalize(argv: list[str]) -> list[str]:
@@ -308,39 +300,30 @@ def _cmd_cost(argv: list[str]) -> int:
                         "sessions in the drill-down, projects in the overview")
     p.add_argument("-j", "--json", action="store_true", help="structured output")
     p.add_argument("-P", "--no-pager", action="store_true", help="print instead of opening a pager")
-    p.add_argument("--projects-dir", default=os.path.expanduser("~/.claude/projects"), help=argparse.SUPPRESS)
+    universe.add_projects_dir_argument(p)
     args = p.parse_args(argv)
 
     now = datetime.now(timezone.utc)
     window_start, label = _cost_window(args.since, now)
     order = "recent" if args.recent else "cost"
-    projects_dir = Path(args.projects_dir)
-    if not projects_dir.is_dir():
-        print(f"standup: no Claude Code logs found at {projects_dir}", file=sys.stderr)
-        return 1
 
-    session_costs = cost.scan_session_costs(projects_dir, window_start)
-    projects = cost.group_by_project(session_costs, order)
-    cost.attach_briefs(projects)
-    cost.attach_audit_overhead(projects)
-    cache = cache_mod.open_cache()
-    cost.attach_loops(session_costs, cache)
-    cache.flush()
+    with universe.open_universe(args.projects_dir) as u:
+        session_costs = cost.scan_session_costs(u.projects_dir, window_start)
+        projects = cost.group_by_project(session_costs, order)
+        cost.attach_briefs(projects)
+        cost.attach_audit_overhead(projects)
+        cost.attach_loops(session_costs, u.cache)
 
-    if args.json:
-        print(_cost_json(projects, window_start, label, now, order))
-        return 0
+        if args.json:
+            print(_cost_json(projects, window_start, label, now, order))
+            return 0
 
-    if args.repo:
-        by_target = {handles.Target(p_.name, p_.path): p_ for p_ in projects}
-        try:
-            hit = _resolve_repo(args.repo, list(by_target), "standup cost")
-        except handles.HandleError as e:
-            print(str(e), file=sys.stderr)
-            return 1
-        text = render.render_cost_detail(by_target[hit], label, now, order)
-    else:
-        text = render.render_cost_overview(projects, label, now, order)
+        if args.repo:
+            by_target = {handles.Target(p_.name, p_.path): p_ for p_ in projects}
+            hit = u.resolve_repo(args.repo, list(by_target), "standup cost")
+            text = render.render_cost_detail(by_target[hit], label, now, order)
+        else:
+            text = render.render_cost_overview(projects, label, now, order)
     if args.no_pager:
         print(text)
     else:
@@ -407,71 +390,55 @@ def _cmd_audit(argv: list[str]) -> int:
                    help="regenerate even if a stored Audit exists (no short form: "
                         "it spends your subscription, so it costs the whole word)")
     p.add_argument("-P", "--no-pager", action="store_true", help="print instead of paging")
-    p.add_argument("--projects-dir", default=os.path.expanduser("~/.claude/projects"),
-                   help=argparse.SUPPRESS)
+    universe.add_projects_dir_argument(p)
     args = p.parse_args(argv)
-
-    projects_dir = Path(args.projects_dir)
-    if not projects_dir.is_dir():
-        print(f"standup: no Claude Code logs found at {projects_dir}", file=sys.stderr)
-        return 1
-    try:
-        log_path = transcript.resolve_handle(projects_dir, args.handle)
-    except transcript.HandleError as e:
-        print(str(e), file=sys.stderr)
-        return 1
-    sid = log_path.stem
 
     st = render._style()
     width = render._term_width()
-    cache = cache_mod.open_cache()
 
-    # the free layer first — always, generation or not (ADR 0003 § the Audit)
-    scan = loops.for_session(log_path, cache)
-    sig = loops.significant(scan)
-    head = [st.bold(f"{sid[:8]}") + st.dim(f"  ${scan.session_cost:,.2f} notional"), ""]
-    if sig:
-        for l in sig:
-            evid = f"⟳ {l.iterations}× {l.label} — ${l.cost:.2f} loop cost"
-            if l.unpriced_turns:
-                evid += f" (+{l.unpriced_turns} unpriced turns)"
-            head.append("  " + evid)
-    else:
-        head.append(st.dim("  no above-floor Loops detected"))
-    head.append("")
-    print("\n".join(head))
+    with universe.open_universe(args.projects_dir) as u:
+        log_path = u.resolve_session(args.handle)
+        sid = log_path.stem
 
-    existing = None if args.refresh else audit_mod.load_one(sid)
-    if existing is None:
-        n_experts = 4
-        print(st.dim(f"running Expert Panel: {n_experts}× {'sonnet'} experts "
-                     f"+ opus concluder (billed to your subscription)…"))
+        # the free layer first — always, generation or not (ADR 0003 § the Audit)
+        scan = loops.for_session(log_path, u.cache)
+        sig = loops.significant(scan)
+        head = [st.bold(f"{sid[:8]}") + st.dim(f"  ${scan.session_cost:,.2f} notional"), ""]
+        if sig:
+            for l in sig:
+                evid = f"⟳ {l.iterations}× {l.label} — ${l.cost:.2f} loop cost"
+                if l.unpriced_turns:
+                    evid += f" (+{l.unpriced_turns} unpriced turns)"
+                head.append("  " + evid)
+        else:
+            head.append(st.dim("  no above-floor Loops detected"))
+        head.append("")
+        print("\n".join(head))
 
-        def progress(res: dict) -> None:
-            c = rates.turn_cost(res["model"], res["usage"]) if res.get("usage") else None
-            tag = f"  ${c:.2f}" if c is not None else ""
-            print(st.dim(f"  ✓ {res['label']}{tag}"))
-
-        from . import auditgen
-        try:
-            auditgen.generate(log_path, projects_dir, cache, progress)
-        except auditgen.AuditError as e:
-            print(f"standup audit: {e}", file=sys.stderr)
-            cache.flush()
-            return 1
-        existing = audit_mod.load_one(sid)
+        existing = None if args.refresh else audit_mod.load_one(sid)
         if existing is None:
-            print("standup audit: generation produced no readable Audit", file=sys.stderr)
-            cache.flush()
-            return 1
-        print()
-    cache.flush()
+            n_experts = 4
+            print(st.dim(f"running Expert Panel: {n_experts}× {'sonnet'} experts "
+                         f"+ opus concluder (billed to your subscription)…"))
 
-    try:
-        mtime = datetime.fromtimestamp(log_path.stat().st_mtime, tz=timezone.utc)
-    except OSError:
-        mtime = None
-    audit_mod.stamp_staleness(existing, mtime)
+            def progress(res: dict) -> None:
+                c = rates.turn_cost(res["model"], res["usage"]) if res.get("usage") else None
+                tag = f"  ${c:.2f}" if c is not None else ""
+                print(st.dim(f"  ✓ {res['label']}{tag}"))
+
+            from . import auditgen
+            try:
+                auditgen.generate(log_path, u, progress)
+            except auditgen.AuditError as e:
+                print(f"standup audit: {e}", file=sys.stderr)
+                return 1
+            existing = audit_mod.load_one(sid)
+            if existing is None:
+                print("standup audit: generation produced no readable Audit", file=sys.stderr)
+                return 1
+            print()
+
+    artifacts.stamp_staleness(existing, log_path)
     text = _render_audit(existing, st, min(width, 100))
     if args.no_pager or not sys.stdout.isatty():
         print(text)
@@ -623,132 +590,25 @@ def _cmd_complete(argv: list[str]) -> int:
     it in the help would invite it to be used as one by hand.
     """
     what = argv[0] if argv else ""
-    projects_dir = Path(os.path.expanduser("~/.claude/projects"))
-    if not projects_dir.is_dir():
-        return 0
     clean = lambda s: (s or "").replace(":", " ").replace("\n", " ")
-
-    if what == "projects":
-        # Built from the cached session scan, not the cost scan: a tab press
-        # must not pay for pricing every turn of every log (1.4s vs 0.2s).
-        cache = cache_mod.open_cache()
-        sessions = claude_logs.scan_sessions(projects_dir, cache)
-        cache.flush()
-        targets = _session_targets(sessions)
-        for t in targets:
-            h = handles.handle_of(t, targets)
-            print(f"{h[0] if h else t.name}:{clean(t.name)}")
-        return 0
-
-    if what == "sessions":
-        cache = cache_mod.open_cache()
-        sessions = claude_logs.scan_sessions(projects_dir, cache)
-        cache.flush()
-        for s in sorted(sessions, key=lambda s: s.last_activity or _EPOCH, reverse=True):
-            print(f"{s.session_id[:8]}:{clean(s.title)}")
-        return 0
-    return 2
-
-
-def _session_targets(sessions) -> list[handles.Target]:
-    """The Scan Universe as resolvable Project Handles, one per Repo Entry.
-
-    Built from the cached session scan rather than from git discovery: every
-    caller here only needs *names and paths* to resolve a handle against, and a
-    handle resolution must not pay for a full repo walk."""
-    seen: dict[str, handles.Target] = {}
-    for cwd in dict.fromkeys(s.cwd for s in sessions if s.cwd):
-        res = gitstate._resolve(cwd)
-        key = res[1] if res else os.path.realpath(cwd)
-        path = res[0] if res else cwd
-        seen.setdefault(key, handles.Target(
-            os.path.basename(path.rstrip("/")) or path, path))
-    return list(seen.values())
-
-
-def _newest_session_in(projects_dir: Path, repo: str | None):
-    """The most recently appended Session of one Repo Entry — what `standup
-    session` means with no handle (`repo=None`: the one you are standing in),
-    and what `standup <repo> session` means with one.
-
-    Deliberately no fallback to "newest session anywhere": handing back a
-    transcript from an unrelated repo is the kind of silent misdirection every
-    other view is built to avoid. Standing outside the Scan Universe is an
-    error, and says so.
-    """
-    cache = cache_mod.open_cache()
-    sessions = claude_logs.scan_sessions(projects_dir, cache)
-    cache.flush()
-
-    if repo is None:
-        here = gitstate._resolve(os.getcwd())
-        if not here:
-            raise transcript.HandleError(
-                "standup session: not inside a git repo — name a session handle, "
-                "or a repo with `standup <repo> session`")
-        _, key = here
-        where = render._shorten_home(os.getcwd())
-    else:
-        try:
-            hit = _resolve_repo(repo, _session_targets(sessions), "standup session")
-        except handles.HandleError as e:
-            raise transcript.HandleError(str(e)) from None
-        res = gitstate._resolve(hit.path)
-        if not res:
-            raise transcript.HandleError(f"standup session: {hit.name} is not a git repo")
-        _, key = res
-        where = hit.name
-
-    keys = {}   # cwd -> repo key, resolved once per distinct cwd
-    mine = []
-    for s in sessions:
-        if not s.cwd or not s.last_activity:
-            continue
-        if s.cwd not in keys:
-            res = gitstate._resolve(s.cwd)
-            keys[s.cwd] = res[1] if res else None
-        if keys[s.cwd] == key:
-            mine.append(s)
-    if not mine:
-        raise transcript.HandleError(
-            f"standup session: no sessions recorded for {where}")
-    return max(mine, key=lambda s: s.last_activity), where
-
-
-def _check_session_in(projects_dir: Path, log_path: Path, repo: str) -> None:
-    """A handle *and* a repo: confirm the handle belongs to that Repo Entry.
-
-    `standup st session <handle>` names a repo it does not strictly need — a
-    Session Handle already implies its repo. Rather than reject the pair (which
-    made the object-first spelling useless the moment you pasted a handle into
-    it) or ignore the repo (which would answer about a different project without
-    saying so), the repo becomes a *constraint*: it is the same rule
-    ADR 0005 § two grammars applies to `@<hash>`, where naming a repo means the
-    answer must come from it.
-    """
-    cache = cache_mod.open_cache()
-    sessions = claude_logs.scan_sessions(projects_dir, cache)
-    cache.flush()
+    if what not in ("projects", "sessions"):
+        return 2
     try:
-        hit = _resolve_repo(repo, _session_targets(sessions), "standup session")
-    except handles.HandleError as e:
-        raise transcript.HandleError(str(e)) from None
-    here = gitstate._resolve(hit.path)
-    if not here:
-        raise transcript.HandleError(f"standup session: {hit.name} is not a git repo")
-    _, want = here
-
-    sid = log_path.stem
-    session = next((s for s in sessions if s.session_id == sid), None)
-    found = gitstate._resolve(session.cwd) if (session and session.cwd) else None
-    if found and found[1] == want:
-        return
-    where = (os.path.basename(found[0].rstrip("/")) if found
-             else render._shorten_home(session.cwd) if (session and session.cwd)
-             else "an unknown directory")
-    raise transcript.HandleError(
-        f"standup session: {sid[:8]} is not a session of {hit.name} — it ran in {where}\n"
-        f"  a Session Handle already names its repo: `standup session {sid[:8]}` reads it")
+        # The cached session scan, never the cost scan: a tab press must not pay
+        # for pricing every turn of every log (1.4s vs 0.2s).
+        with universe.open_universe() as u:
+            if what == "projects":
+                targets = u.targets()
+                for t in targets:
+                    h = handles.handle_of(t, targets)
+                    print(f"{h[0] if h else t.name}:{clean(t.name)}")
+            else:
+                for s in sorted(u.sessions(), key=lambda s: s.last_activity or _EPOCH,
+                                reverse=True):
+                    print(f"{s.session_id[:8]}:{clean(s.title)}")
+    except universe.UniverseError:
+        return 0    # no logs: no candidates, and a tab press says nothing
+    return 0
 
 
 def _cmd_session(argv: list[str]) -> int:
@@ -776,21 +636,17 @@ def _cmd_session(argv: list[str]) -> int:
                         "(never its result)")
     p.add_argument("-r", "--raw", action="store_true", help="dump the untouched session JSONL")
     p.add_argument("-P", "--no-pager", action="store_true", help="print instead of opening a pager")
-    p.add_argument("--projects-dir", default=os.path.expanduser("~/.claude/projects"), help=argparse.SUPPRESS)
+    universe.add_projects_dir_argument(p)
     args = p.parse_args(argv)
 
-    projects_dir = Path(args.projects_dir)
-    if not projects_dir.is_dir():
-        print(f"standup: no Claude Code logs found at {projects_dir}", file=sys.stderr)
-        return 1
     header = ""
-    try:
+    with universe.open_universe(args.projects_dir) as u:
         if args.handle:
-            path = transcript.resolve_handle(projects_dir, args.handle)
+            path = u.resolve_session(args.handle)
             if args.in_repo:   # a repo was named too: it constrains the handle
-                _check_session_in(projects_dir, path, args.in_repo)
+                u.check_session_in(path, args.in_repo)
         else:
-            session, place = _newest_session_in(projects_dir, args.in_repo)
+            session, place = u.newest_session_in(args.in_repo)
             path = Path(session.log_path)
             if not args.raw:   # --raw must stay an untouched dump (CONTEXT.md)
                 st = render._style()
@@ -803,9 +659,6 @@ def _cmd_session(argv: list[str]) -> int:
                           + st.dim(f'  ~ "{session.title}"'
                                    f"  — newest session {where}; name a handle for another")
                           + "\n\n")
-    except transcript.HandleError as e:
-        print(str(e), file=sys.stderr)
-        return 1
     text = header + transcript.render_transcript(path, show_thinking=args.thinking,
                                                  raw=args.raw, show_tools=args.tools)
     if args.no_pager:
@@ -845,8 +698,7 @@ def _cmd_diff(argv: list[str]) -> int:
                    help="clip a body line wider than the terminal at the right edge "
                         "instead of folding it onto further rows (marked ↳)")
     p.add_argument("-P", "--no-pager", action="store_true", help="print instead of opening a pager")
-    p.add_argument("--projects-dir", default=os.path.expanduser("~/.claude/projects"),
-                   help=argparse.SUPPRESS)
+    universe.add_projects_dir_argument(p)
     args = p.parse_args(argv)
 
     repo, ref = args.repo, args.ref
@@ -857,68 +709,51 @@ def _cmd_diff(argv: list[str]) -> int:
     if ref is None and repo.startswith("@"):
         repo, ref = ".", repo
 
-    projects_dir = Path(args.projects_dir)
-    if not projects_dir.is_dir():
-        print(f"standup: no Claude Code logs found at {projects_dir}", file=sys.stderr)
-        return 1
-
     now = datetime.now(timezone.utc)
     since = now - timedelta(days=RECENT_WINDOW_DAYS)
-    cache = cache_mod.open_cache()
-    sessions = claude_logs.scan_sessions(projects_dir, cache)
-    entries = gitstate.discover_repos([s.cwd for s in sessions if s.cwd], since)
-    join.attribute(entries, sessions, cache)
 
-    by_target = {handles.Target(e.name, e.main_path): e for e in entries}
-    try:
-        hit = _resolve_repo(repo, list(by_target), "standup diff")
-    except handles.HandleError as e:
-        print(str(e), file=sys.stderr)
-        cache.flush()
-        return 1
-    entry = by_target[hit]
+    # the cache holds the buffered fragment index this view writes, and is
+    # flushed on the way out of the block whichever way this goes
+    with universe.open_universe(args.projects_dir) as u:
+        entries = u.entries(since)
+        sessions = u.sessions()
 
-    sessions_by_id = {s.session_id: s for s in sessions}
-    titles = {s.session_id: s.title for s in sessions}
-    briefs = brief_mod.load_for_sessions(sessions)
-    matcher = diffview.Matcher(cache)
+        by_target = {handles.Target(e.name, e.main_path): e for e in entries}
+        entry = by_target[u.resolve_repo(repo, list(by_target), "standup diff")]
 
-    only_session = None
-    commit_ref = None
-    if ref:
-        if ref.startswith("@"):
-            commit_ref = ref
-        else:
-            try:
-                log = transcript.resolve_handle(projects_dir, ref)
-            except transcript.HandleError as e:
-                print(str(e), file=sys.stderr)
-                cache.flush()
-                return 1
-            only_session = log.stem
+        sessions_by_id = {s.session_id: s for s in sessions}
+        titles = {s.session_id: s.title for s in sessions}
+        briefs = brief_mod.load_for_sessions(sessions)
+        matcher = diffview.Matcher(u.cache)
 
-    width = render._term_width()
-    try:
-        if commit_ref:
-            checkout, sha = diffview.resolve_commit(entry, commit_ref)
-            cd = diffview.build_commit(entry, checkout, sha, sessions_by_id, matcher,
-                                       context=args.context, only_session=only_session)
-            text = diffview.render(entry, [], now, titles=titles, briefs=briefs,
-                                   width=width, stat=args.stat,
-                                   wrap=not args.no_wrap, only_session=only_session,
-                                   commit=cd)
-        else:
-            groups = diffview.build_active(entry, sessions_by_id, matcher,
-                                           context=args.context,
-                                           only_session=only_session)
-            text = diffview.render(entry, groups, now, titles=titles, briefs=briefs,
-                                   width=width, stat=args.stat,
-                                   wrap=not args.no_wrap, only_session=only_session)
-    except diffview.DiffError as e:
-        print(str(e), file=sys.stderr)
-        return 1
-    finally:
-        cache.flush()   # buffered fragment index, whichever way this went
+        only_session = None
+        commit_ref = None
+        if ref:
+            if ref.startswith("@"):
+                commit_ref = ref
+            else:
+                only_session = u.resolve_session(ref).stem
+
+        width = render._term_width()
+        try:
+            if commit_ref:
+                checkout, sha = diffview.resolve_commit(entry, commit_ref)
+                cd = diffview.build_commit(entry, checkout, sha, sessions_by_id, matcher,
+                                           context=args.context, only_session=only_session)
+                text = diffview.render(entry, [], now, titles=titles, briefs=briefs,
+                                       width=width, stat=args.stat,
+                                       wrap=not args.no_wrap, only_session=only_session,
+                                       commit=cd)
+            else:
+                groups = diffview.build_active(entry, sessions_by_id, matcher,
+                                               context=args.context,
+                                               only_session=only_session)
+                text = diffview.render(entry, groups, now, titles=titles, briefs=briefs,
+                                       width=width, stat=args.stat,
+                                       wrap=not args.no_wrap, only_session=only_session)
+        except diffview.DiffError as e:
+            print(str(e), file=sys.stderr)
+            return 1
 
     if args.no_pager:
         print(text)
@@ -977,24 +812,23 @@ def _cmd_watch(argv: list[str]) -> int:
                         "clips at the right edge instead of folding onto further "
                         "rows (marked ↳), so every event keeps a fixed row "
                         "count; w toggles it in the Watch")
-    p.add_argument("--projects-dir", default=os.path.expanduser("~/.claude/projects"),
-                   help=argparse.SUPPRESS)
+    universe.add_projects_dir_argument(p)
     args = p.parse_args(argv)
 
     if not sys.stdout.isatty():
         print("standup watch: needs an interactive terminal", file=sys.stderr)
-        return 1
-    projects_dir = Path(args.projects_dir)
-    if not projects_dir.is_dir():
-        print(f"standup: no Claude Code logs found at {projects_dir}", file=sys.stderr)
         return 1
 
     window = parse_window(args.since) if args.since else None
 
     from . import watchstream, watchui
     try:
-        stream = watchstream.WatchStream(args.repo, projects_dir, quiet=args.quiet,
-                                         live_window=window)
+        # the Universe closes before the Watch runs: it is read to resolve the
+        # repo and pick up the Live Sessions, and a live view must not hold the
+        # Derived Cache open for the minutes it stays on screen
+        with universe.open_universe(args.projects_dir) as u:
+            stream = watchstream.WatchStream(u, args.repo, quiet=args.quiet,
+                                             live_window=window)
     except watchstream.WatchError as e:
         print(str(e), file=sys.stderr)
         return 1
@@ -1003,47 +837,30 @@ def _cmd_watch(argv: list[str]) -> int:
     return 0
 
 
-def main(argv: list[str] | None = None) -> int:
-    argv = list(sys.argv[1:] if argv is None else argv)
-    # object-first -> verb-first, before anything is dispatched
-    # (ADR 0005 § two grammars)
-    argv = _normalize(argv)
-    sub = ALIASES.get(argv[0], argv[0]) if argv else None
-    if sub == "cost":
-        return _cmd_cost(argv[1:])
-    if sub == "watch":
-        return _cmd_watch(argv[1:])
-    if sub == "session":
-        return _cmd_session(argv[1:])
-    if sub == "diff":
-        return _cmd_diff(argv[1:])
-    if sub == "audit":
-        return _cmd_audit(argv[1:])
-    if sub == "completion":
-        return _cmd_completion(argv[1:])
-    # hidden: the Stop hook's entry point (ADR 0003 § the Session Brief)
-    if sub == "_brief":
-        from . import briefgen
-        return briefgen.run_from_hook_stdin()
-    if sub == "_complete":  # hidden: the completion script's candidate source
-        return _cmd_complete(argv[1:])
-    if sub in ("install", "uninstall"):
-        if "-h" in argv[1:] or "--help" in argv[1:]:
-            print(f"usage: standup {sub}\n")
-            if sub == "install":
-                print("Install the Session Brief Stop hook into ~/.claude/settings.json so\n"
-                      "every Claude Code session gets an out-of-band objective summary.\n"
-                      "Idempotent; runs a headless `claude -p` auth check. Takes no options.")
-            else:
-                print("Remove the Session Brief Stop hook from ~/.claude/settings.json.\n"
-                      "Leaves existing Briefs in ~/.standup/briefs/ in place. Takes no options.")
-            return 0
-        if argv[1:]:
-            print(f"standup {sub}: unexpected argument {argv[1]!r} (takes no options)", file=sys.stderr)
-            return 2
-        from . import install as install_mod
-        return install_mod.install() if sub == "install" else install_mod.uninstall()
+def _cmd_install(sub: str, argv: list[str]) -> int:
+    if "-h" in argv or "--help" in argv:
+        print(f"usage: standup {sub}\n")
+        if sub == "install":
+            print("Install the Session Brief Stop hook into ~/.claude/settings.json so\n"
+                  "every Claude Code session gets an out-of-band objective summary.\n"
+                  "Idempotent; runs a headless `claude -p` auth check. Takes no options.")
+        else:
+            print("Remove the Session Brief Stop hook from ~/.claude/settings.json.\n"
+                  "Leaves existing Briefs in ~/.standup/briefs/ in place. Takes no options.")
+        return 0
+    if argv:
+        print(f"standup {sub}: unexpected argument {argv[0]!r} (takes no options)", file=sys.stderr)
+        return 2
+    from . import install as install_mod
+    return install_mod.install() if sub == "install" else install_mod.uninstall()
 
+
+def _cmd_inbox(argv: list[str]) -> int:
+    """The default view: the Triage Inbox, and its per-repo drill-down.
+
+    A command function like every other view's, rather than the tail of
+    `main()` — the default view is a view, and dispatch stays one shape.
+    """
     parser = argparse.ArgumentParser(
         prog="standup",
         description="Morning triage inbox for Claude Code activity across your repos.",
@@ -1092,58 +909,87 @@ def main(argv: list[str] | None = None) -> int:
                              "(default %dd)" % RECENT_WINDOW_DAYS)
     parser.add_argument("-s", "--since", help="override the recent window (yesterday, 3d, 12h, 2w, ISO date)")
     parser.add_argument("-j", "--json", action="store_true", help="structured output for scripts/TUI")
-    parser.add_argument("--projects-dir", default=os.path.expanduser("~/.claude/projects"),
-                        help=argparse.SUPPRESS)
+    universe.add_projects_dir_argument(parser)
     args = parser.parse_args(argv)
 
     now = datetime.now(timezone.utc)
     since = parse_since(args.since) if args.since else now - timedelta(days=RECENT_WINDOW_DAYS)
     window = args.since or f"{RECENT_WINDOW_DAYS}d"
 
-    projects_dir = Path(args.projects_dir)
-    if not projects_dir.is_dir():
-        print(f"standup: no Claude Code logs found at {projects_dir}", file=sys.stderr)
-        return 1
+    with universe.open_universe(args.projects_dir) as u:
+        entries = u.entries(since)
+        sessions = u.sessions()
 
-    cache = cache_mod.open_cache()
-    sessions = claude_logs.scan_sessions(projects_dir, cache)
-    cwds = [s.cwd for s in sessions if s.cwd]
-    entries = gitstate.discover_repos(cwds, since)
-    join.attribute(entries, sessions, cache)
-    cache.flush()
+        # Session Briefs (ADR 0003 § the Session Brief): read-only join, then
+        # drop the artifacts of dead logs — both kinds, through the one store
+        # (ADR 0003 § the Artifact store).
+        briefs = brief_mod.load_for_sessions(sessions)
+        live_ids = {s.session_id for s in sessions}
+        brief_mod.STORE.prune_orphans(live_ids)
+        audit_mod.STORE.prune_orphans(live_ids)
 
-    # Session Briefs (ADR 0003 § the Session Brief): read-only join, then drop
-    # briefs for dead logs.
-    briefs = brief_mod.load_for_sessions(sessions)
-    live_ids = {s.session_id for s in sessions}
-    brief_mod.prune_orphans(live_ids)
-    # Audits mirror the Brief lifecycle (ADR 0003 § the Audit)
-    audit_mod.prune_orphans(live_ids)
+        if args.json:
+            print(_to_json(entries, sessions, since, now))
+            return 0
 
-    if args.json:
-        print(_to_json(entries, sessions, since, now))
-        return 0
+        if args.repo:
+            by_target = {handles.Target(e.name, e.main_path): e for e in entries}
+            hit = u.resolve_repo(args.repo, list(by_target), "standup")
+            # the handle the footer hint should echo: what currently resolves to
+            # this project, which is not necessarily what the user typed
+            shown = handles.handle_of(hit, list(by_target))
+            print(render.render_detail(by_target[hit], now, show_all=args.all,
+                                       window=window, briefs=briefs,
+                                       handle=shown[0] if shown else hit.name))
+            return 0
 
-    if args.repo:
-        by_target = {handles.Target(e.name, e.main_path): e for e in entries}
-        try:
-            hit = _resolve_repo(args.repo, list(by_target), "standup")
-        except handles.HandleError as e:
-            print(str(e), file=sys.stderr)
-            return 1
-        # the handle the footer hint should echo: what currently resolves to
-        # this project, which is not necessarily what the user typed
-        shown = handles.handle_of(hit, list(by_target))
-        print(render.render_detail(by_target[hit], now, show_all=args.all,
-                                   window=window, briefs=briefs,
-                                   handle=shown[0] if shown else hit.name))
-        return 0
-
-    print(render.render_overview(entries, since, now, show_all=args.all, window=window, briefs=briefs))
-    if args.all:  # optional notional-load footer, retrospective only (CONTEXT.md)
-        sc = cost.scan_session_costs(projects_dir, since)
-        print(render.render_cost_footer(sc, window))
+        print(render.render_overview(entries, since, now, show_all=args.all,
+                                     window=window, briefs=briefs))
+        if args.all:  # optional notional-load footer, retrospective only (CONTEXT.md)
+            sc = cost.scan_session_costs(u.projects_dir, since)
+            print(render.render_cost_footer(sc, window))
     return 0
+
+
+# The subcommand table: one entry per user-facing view, plus the two hidden
+# entry points. Dispatch is a lookup, so adding a view is adding a row here and
+# a line to the epilog in `_cmd_inbox` (CLAUDE.md § CLI help must stay complete).
+_COMMANDS = {
+    "cost": _cmd_cost,
+    "watch": _cmd_watch,
+    "session": _cmd_session,
+    "diff": _cmd_diff,
+    "audit": _cmd_audit,
+    "completion": _cmd_completion,
+    # hidden: the completion script's candidate source
+    "_complete": _cmd_complete,
+}
+
+# Failures that are a *message to the user*, not a bug: a view raises one and
+# `main` prints it once, so no view carries its own print-and-return-1
+# (ADR 0001 § one module owns the scan).
+_USER_ERRORS = (universe.UniverseError, handles.HandleError, transcript.HandleError)
+
+
+def main(argv: list[str] | None = None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    # object-first -> verb-first, before anything is dispatched
+    # (ADR 0005 § two grammars)
+    argv = _normalize(argv)
+    sub = ALIASES.get(argv[0], argv[0]) if argv else None
+    try:
+        if sub in _COMMANDS:
+            return _COMMANDS[sub](argv[1:])
+        # hidden: the Stop hook's entry point (ADR 0003 § the Session Brief)
+        if sub == "_brief":
+            from . import briefgen
+            return briefgen.run_from_hook_stdin()
+        if sub in ("install", "uninstall"):
+            return _cmd_install(sub, argv[1:])
+        return _cmd_inbox(argv)
+    except _USER_ERRORS as e:
+        print(str(e), file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":
