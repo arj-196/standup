@@ -275,12 +275,9 @@ class _Tailer:
                 self.act_verb, self.act_since = None, ts
                 self.act_tool = None      # settled: nothing may be held over
                 return
-            name = None
-            if isinstance(content, list):
-                for b in content:      # parallel calls: the last one announced
-                    if isinstance(b, dict) and b.get("type") == "tool_use":
-                        name = b.get("name")
-            if name is None:
+            calls = claude_logs.tool_calls_in(obj)
+            name = calls[-1].name if calls else ""     # parallel: the last one
+            if not name:
                 # `stop_reason` belongs to the whole assistant *message*, but the
                 # message's blocks are flushed as separate lines — a preamble
                 # `text` block and an extended `thinking` block each land on
@@ -390,11 +387,10 @@ class _Tailer:
                 continue  # the session touched a file outside this Repo Entry
             root, rel = loc
             self.edited_paths.add(os.path.realpath(e.path))
-            if e.tool == "MultiEdit" and not e.new and not e.old:
-                # the reader's path-only block: a MultiEdit whose hunks it could
-                # not read still attributes the file, but there is no text for
-                # the feed to narrate and an empty diff body would state a
-                # change nobody made
+            if e.path_only:
+                # the call named the file but the log did not record what it
+                # wrote: the path still counts as explained (the git watcher
+                # must not re-report it), and there is nothing to narrate
                 continue
             change = "modify"
             if e.tool == "Write":

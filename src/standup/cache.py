@@ -8,11 +8,11 @@ disposable. `rm -rf ~/.standup/cache` is always safe; the root is not.
 Holds results derived deterministically from the session logs — one row per
 session file (the fully parsed Session), the typed full reading beside it
 (ADR 0001 § the one log reader), an immutable commit_files(sha) table, and
-detected Loops. What hunk attribution matches against (ADR 0007) is a
-projection of the typed reading, so it is served by that row rather than
-stored a second time.
-Keyed on (size, mtime_ns) so a stale entry is always detected and reparsed;
-output is byte-identical whether the cache is warm, cold, or deleted.
+detected Loops. What hunk attribution matches against (ADR 0007 § Decision) is
+a projection of the typed reading, so it is served by that row rather than
+stored a second time. Keyed on (size, mtime_ns) so a stale entry is always
+detected and reparsed; output is byte-identical whether the cache is warm,
+cold, or deleted.
 
 The cache is disposable. Any read error, a schema/parser version mismatch, or a
 future-version DB triggers a silent cold rebuild; if ~/.standup can't be used at
@@ -282,7 +282,7 @@ def _init_schema(conn: sqlite3.Connection) -> None:
             data           BLOB NOT NULL
         );
         -- the fragment index is a projection of `logs` now (ADR 0007
-        -- § Consequences); an upgraded DB drops the rows it no longer reads
+        -- § Decision); an upgraded DB drops the rows it no longer reads
         DROP TABLE IF EXISTS fragments;
         """
     )

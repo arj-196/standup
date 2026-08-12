@@ -108,7 +108,7 @@ because the reading carries the text of every edit and every prompt. A row too
 large, malformed, or written by another reader version costs a reparse and
 changes no output. It is the *only* cached reading of a log's contents: what
 hunk attribution matches against is a projection of this row (ADR 0007
-§ Consequences), not a second index of the same text.
+§ Decision), not a second index of the same text.
 
 **The line readings are public too** — `tool_calls_in`, `edits_of`/`edits_in`,
 `prompt_in`/`prompt_text`, `turn_usage`, `apply_title_fields` — because a

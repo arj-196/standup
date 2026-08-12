@@ -272,9 +272,11 @@ The prompt is what the agent was told; everything until the next rule is the
 agent answering. `[` and `]` jump between chapters. Anything you typed counts,
 including a line you sent while a call was still in flight — the tool's result
 rides that same log line, and the feed reads it the way `standup session` does
-(ADR 0001 § the one log reader). Injected material never counts: system
-reminders and the body Claude Code splices in behind a slash command are not
-prompts, and the command reads back as the line you entered.
+(ADR 0001 § the one log reader). Such an interjection is a chapter break like
+any other, so the launch replay starts there and the call it interrupted stays
+in the chapter above it. Injected material never counts: system reminders and
+the body Claude Code splices in behind a slash command are not prompts, and the
+command reads back as the line you entered.
 
 A file event's header reads `path  change  +added −removed`, where `change`
 is `create`, `modify`, or `delete`, and the counts are lines. The path itself

@@ -41,7 +41,7 @@ from .models import Session
 EDIT_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit"}
 
 # bump when the typed reading changes shape or meaning (invalidates cache rows)
-READER_VERSION = 1
+READER_VERSION = 2
 # `[branch abc1234]` / `[main (root-commit) abc1234]` / `[detached HEAD abc1234]`
 COMMIT_LINE_RE = re.compile(r"^\[[^\[\]\n]{1,80} ([0-9a-f]{7,40})\]", re.MULTILINE)
 # cheap hint on the raw JSON line (stdout newlines are escaped as \\n there)
@@ -134,9 +134,12 @@ class ToolCall:
 def tool_calls_in(obj: dict, ts: datetime | None = None) -> list[ToolCall]:
     """Every tool call one assistant line recorded, in log order.
 
-    Where the `message.content` walk lives — the one place that knows a tool
-    call is a `type: "tool_use"` block inside an assistant message, rather than
-    each consumer re-deriving it and disagreeing about malformed content.
+    Where the `message.content` walk lives for anything that *acts* on a call —
+    the Loop detector's shapes, the Watch's Calls and file events — so no two
+    of them re-derive it and disagree about malformed content. The Transcript
+    walks the same content itself, because it lays calls out among the line's
+    prose and thinking blocks and needs all three; it reads nothing out of a
+    call that `toolcalls` does not name for it.
     """
     message = obj.get("message") or {}
     content = message.get("content")
@@ -165,6 +168,13 @@ class EditBlock:
 
     `path` is the absolute path exactly as the log recorded it; a relative one
     attributes nothing and is dropped, never guessed at.
+
+    `path_only` marks the block a call yields when the log records *that* it
+    edited a file but not *what* it wrote — a MultiEdit whose `edits[]` is
+    missing or unreadable. The path still attributes the file, so the block
+    exists; there is no text in it, so a consumer that shows change (the Watch)
+    has nothing to show. Saying so here keeps that consumer from having to
+    recognise the shape by inspection and mistake a genuinely empty hunk for it.
     """
     tool: str                      # Edit | Write | MultiEdit | NotebookEdit
     path: str
@@ -172,6 +182,7 @@ class EditBlock:
     old: str
     when: datetime | None = None
     tool_id: str = ""
+    path_only: bool = False
 
 
 def edits_of(call: ToolCall) -> list[EditBlock]:
@@ -191,13 +202,16 @@ def edits_of(call: ToolCall) -> list[EditBlock]:
         return []
     if name == "MultiEdit":
         hunks = [e for e in inp.get("edits") or [] if isinstance(e, dict)]
-        # a MultiEdit whose hunks are missing or malformed still says the
-        # Session touched this file, and path overlap is the attribution
-        # that rests on that alone (CONTEXT.md → Attribution Tier). Dropping
-        # the call would silently cost the file its Session Rollup.
+        if not hunks:
+            # a MultiEdit whose hunks are missing or malformed still says the
+            # Session touched this file, and path overlap is the attribution
+            # that rests on that alone (CONTEXT.md → Attribution Tier). Dropping
+            # the call would silently cost the file its Session Rollup.
+            return [EditBlock(name, fp, "", "", call.when, call.tool_id,
+                              path_only=True)]
         return [EditBlock(name, fp, e.get("new_string") or "",
                           e.get("old_string") or "", call.when, call.tool_id)
-                for e in hunks or [{}]]
+                for e in hunks]
     new = (inp.get("new_string") or inp.get("new_source")
            or inp.get("content") or "")
     return [EditBlock(name, fp, new, inp.get("old_string") or "",
@@ -633,7 +647,8 @@ def _log_to_cache(parsed: ParsedLog) -> dict:
     the lists are long, and a repeated key is paid for on every entry."""
     return {
         "session": _to_cache(parsed.session),
-        "edits": [[e.tool, e.path, e.new, e.old, _iso(e.when), e.tool_id]
+        "edits": [[e.tool, e.path, e.new, e.old, _iso(e.when), e.tool_id,
+                   e.path_only]
                   for e in parsed.edits],
         "prompts": [[p.text, _iso(p.when)] for p in parsed.prompts],
         "turns": [[t.model, _iso(t.when), t.turn_uuid, t.input_tokens,
@@ -651,8 +666,8 @@ def _log_from_cache(session_id: str, log_path: str, mtime: datetime | None,
     try:
         return ParsedLog(
             session=_from_cache(session_id, log_path, mtime, d["session"]),
-            edits=[EditBlock(tool, path, new, old, _parse_ts(when), tid)
-                   for tool, path, new, old, when, tid in d["edits"]],
+            edits=[EditBlock(tool, path, new, old, _parse_ts(when), tid, only)
+                   for tool, path, new, old, when, tid, only in d["edits"]],
             prompts=[Prompt(text, _parse_ts(when)) for text, when in d["prompts"]],
             turns=[TurnUsage(model, _parse_ts(when), *rest)
                    for model, when, *rest in d["turns"]],

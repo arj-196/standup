@@ -64,6 +64,10 @@ def test_a_multiedit_with_no_readable_hunks_still_records_the_path(projects_dir)
     assert [(e.path, e.new, e.old) for e in parsed.edits] == [
         ("/tmp/tt/alpha.py", "", "")]
     assert set(parsed.session.edited_files) == {"/tmp/tt/alpha.py"}
+    # said in the block, not left to be recognised by its emptiness: a consumer
+    # that shows change has nothing to show here, and an edit that genuinely
+    # wrote nothing is a different thing
+    assert parsed.edits[0].path_only is True
 
 
 def test_the_path_alias_and_the_new_text_fallback_read_as_one_shape(projects_dir):
@@ -342,12 +346,17 @@ def test_a_reading_too_large_to_store_is_declined_not_truncated(
 
 def test_an_older_cache_db_gains_the_new_table_and_keeps_its_rows(fake_home):
     """The Derived Cache is disposable, but it is not thrown away for a new
-    slot: a DB written before the reader had one is upgraded in place."""
+    slot: a DB written before the reader had one is upgraded in place — and a
+    slot the reader stopped using goes with the upgrade, rather than sitting
+    there holding the text of every edit a second time — the fragment index is
+    a projection of this row now (ADR 0007 § Decision)."""
     old = cache_mod.open_cache()
     old.put_session("sid", 1, 1, {"cwd": "/tmp/tt"})
     old.flush()
     conn = sqlite3.connect(str(cache_mod.CACHE_PATH))
     conn.execute("DROP TABLE logs")
+    conn.execute("CREATE TABLE fragments (session_id TEXT PRIMARY KEY, data BLOB)")
+    conn.execute("INSERT INTO fragments VALUES('sid', x'00')")
     conn.execute("PRAGMA user_version = 3")
     conn.commit()
     conn.close()
@@ -357,3 +366,6 @@ def test_an_older_cache_db_gains_the_new_table_and_keeps_its_rows(fake_home):
     assert not isinstance(upgraded, cache_mod.NullCache)
     assert upgraded.get_session("sid", 1, 1) == {"cwd": "/tmp/tt"}
     assert upgraded.get_log("sid", 1, 1) is None      # the new table is there
+    tables = {r[0] for r in sqlite3.connect(str(cache_mod.CACHE_PATH))
+              .execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    assert "logs" in tables and "fragments" not in tables

@@ -56,6 +56,28 @@ def test_every_recorded_edit_becomes_a_file_event(scratch_repo, projects_dir):
     assert len(set(gamma)) == 1
 
 
+def test_a_call_the_log_recorded_no_text_for_narrates_nothing(
+        scratch_repo, projects_dir):
+    """A MultiEdit whose hunks the reader could not make out still attributes
+    its file (ADR 0001 § the one log reader) — but there is no change to show,
+    so the feed says nothing rather than drawing an empty one. The path is
+    still explained, so the git watcher does not report it as an Unattributed
+    Change either."""
+    repo = scratch_repo("tt")
+    (SessionLog(cwd=str(repo.path))
+     .prompt("rewrite alpha")
+     .edit(f"{repo.path}/alpha.py", tool="MultiEdit")
+     .save(projects_dir))
+
+    with universe.open_universe(projects_dir) as u:
+        ws = WatchStream(u, str(repo.path))
+    events = ws.start()
+
+    assert [e for e in events if e.kind == "file"] == []
+    assert {p for t in ws.tailers.values() for p in t.edited_paths} == \
+        {str((repo.path / "alpha.py").resolve())}
+
+
 def test_a_call_is_every_tool_that_touches_no_file_and_is_not_silent(
         scratch_repo, projects_dir):
     """Bash carries its shell `command`; another tool carries an `args` digest;
@@ -81,7 +103,11 @@ def test_a_typed_line_beside_a_tool_result_is_still_a_prompt(
     """The one shape the Watch's prompt reading and the Transcript's parted on,
     settled on the reader's (ADR 0001 § the one log reader): the prose was
     typed, so a Watch that dropped the line lost a real prompt — and the two
-    surfaces now answer by construction, not by review."""
+    surfaces now answer by construction, not by review.
+
+    It is a prompt in full, so it is a chapter break like any other: the launch
+    replay starts *there*, and the call it interrupted stays in the chapter
+    above (ADR 0004 § the event source)."""
     repo = scratch_repo("tt")
     (SessionLog(cwd=str(repo.path))
      .prompt("run the suite")
@@ -93,6 +119,7 @@ def test_a_typed_line_beside_a_tool_result_is_still_a_prompt(
 
     assert [e.message for e in events if e.kind == "prompt"] == \
         ["stop — run the other suite"]
+    assert [e.kind for e in events] == ["prompt"]   # the new chapter, alone
 
 
 def test_the_watch_and_the_transcript_read_prompts_the_same_way(
