@@ -125,9 +125,13 @@ a row's recency, is `cost.SessionCost.last_turn`. No view overwrites the field.
 `usage_totals` — one fold over the parent's turns concatenated with its
 subagents', because pricing is per-turn (ADR 0002) and one Session's turns are
 one list however many files they came from. A subagent transcript is a log
-too, so it gets a cache row of its own; because it lives below the sweep's
-`*/*.jsonl` glob and is no Session, `scan_sessions` names those ids live
-explicitly or the prune would discard them on every inbox run.
+too, so it gets a cache row of its own, and being no Session it costs two
+rules of its own: it lives below the sweep's `*/*.jsonl` glob, so
+`scan_sessions` names its id live explicitly or the prune discards the row on
+every inbox run; and its file name (`agent-<id>`) is unique only inside its
+parent's directory, so `cache_id` qualifies it with the parent. Unqualified,
+two parents' identically-named transcripts share a row as soon as size and
+mtime agree, and one Session is priced with another's turns.
 
 Expand first, then contract: the typed reading landed beside the existing
 scanners rather than under them, so no view changed behaviour on the day the

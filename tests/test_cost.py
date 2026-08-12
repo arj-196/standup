@@ -8,6 +8,7 @@ Session's line, never a separate row, marked rather than silent.
 
 from __future__ import annotations
 
+import os
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -78,6 +79,45 @@ def test_a_subagent_reading_survives_the_inboxs_prune(
     assert warm.subagents == 1
 
 
+def test_two_subagents_of_the_same_name_never_share_a_cache_row(projects_dir):
+    """A Session's log is named by its `sessionId`, unique across the Scan
+    Universe; a subagent transcript's name is unique only inside its parent's
+    directory. Two parents can each spawn an `agent-x`, and the Derived Cache
+    is keyed on (id, size, mtime_ns) — so unless the id is qualified by the
+    parent, the cheap session can be served the expensive one's turns
+    (ADR 0001 § the Derived Cache)."""
+    now = datetime.now(timezone.utc)
+    # same shape, same byte length, one digit apart: whatever makes these two
+    # transcripts collide must not be their content
+    cheap = {"input_tokens": 100, "output_tokens": 100,
+             "cache_read_input_tokens": 100, "cache_creation_input_tokens": 100}
+    rich = dict(cheap, output_tokens=900)
+    parents, logs = [], []
+    for name, usage in (("parent-one", cheap), ("parent-two", rich)):
+        p = SessionLog(session_id=name, cwd="/tmp/tt", start=now - timedelta(hours=2))
+        p.prompt("delegate it").save(projects_dir)
+        a = SessionLog(session_id="x", cwd="/tmp/tt", sidechain=True,
+                       start=now - timedelta(hours=1)).turn("work", usage=usage)
+        parents.append(p)
+        logs.append(a.save_subagent(projects_dir, p))
+    # the collision this guards against needs the whole key to match
+    assert logs[0].name == logs[1].name
+    assert logs[0].stat().st_size == logs[1].stat().st_size
+    stamp = int(logs[0].stat().st_mtime_ns)
+    for log in logs:
+        os.utime(log, ns=(stamp, stamp))
+
+    cache = cache_mod.open_cache()
+    cold = {sc.handle: sc.cost
+            for sc in cost.scan_session_costs(projects_dir, _yesterday(), cache)}
+    cache.flush()
+    warm = {sc.handle: sc.cost for sc in
+            cost.scan_session_costs(projects_dir, _yesterday(), cache_mod.open_cache())}
+
+    assert cold["parent-o"] != cold["parent-t"]     # the fixtures differ at all
+    assert warm == cold
+
+
 def test_a_turns_cache_write_is_read_the_same_way_priced_and_displayed(
         projects_dir, session_log, null_cache):
     """A log can carry both spellings of the cache write — the flat
@@ -97,6 +137,25 @@ def test_a_turns_cache_write_is_read_the_same_way_priced_and_displayed(
      .save(projects_dir))
     (sc,) = cost.scan_session_costs(projects_dir, _yesterday(), null_cache)
     assert sc.tokens["cache_write"] == 3_000
+
+
+def test_the_cost_view_and_the_inbox_agree_about_a_sessions_title(
+        projects_dir, null_cache):
+    """Title precedence is one module's rule, applied to both readings of a log
+    — not two copies kept in sync by review, which is the drift that once
+    demoted every cost-view title to its last prompt
+    (ADR 0001 § the one log reader)."""
+    (SessionLog(session_id="0" * 36, cwd="/tmp/tt")
+     .prompt("do the thing").ai_title("An AI title")
+     .custom_title("What Arj called it").turn("on it").save(projects_dir))
+
+    (sc,) = cost.scan_session_costs(projects_dir, _yesterday(), null_cache)
+    (scanned,) = claude_logs.scan_sessions(projects_dir, null_cache)
+
+    assert sc.title == scanned.title == "What Arj called it"
+    assert sc.session.custom_title == scanned.custom_title
+    assert sc.session.ai_title == scanned.ai_title
+    assert sc.session.last_prompt == scanned.last_prompt
 
 
 def test_the_cost_view_leaves_last_activity_meaning_the_logs_mtime(

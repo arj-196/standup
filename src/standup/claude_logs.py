@@ -444,6 +444,25 @@ def parse_log(path: Path | str) -> ParsedLog:
     return parsed
 
 
+def cache_id(path: Path) -> str:
+    """The Derived Cache row id for a log — its name in the cache, which is not
+    always the Session id inside it.
+
+    A Session's own log is named by its `sessionId` and that is unique across
+    the Scan Universe. A **subagent transcript** is named `agent-<id>` and is
+    unique only inside its parent's directory, so it is qualified by the
+    parent. Unqualified, two parents' identically-named transcripts share one
+    row the moment their size and mtime agree, and one Session is priced with
+    the other's turns (ADR 0002 § subagent usage).
+
+    Public because liveness is asked elsewhere: `scan_sessions` names these ids
+    to the prune, and it must spell them the same way.
+    """
+    if path.parent.name == "subagents":
+        return f"{path.parent.parent.name}/{path.stem}"
+    return path.stem
+
+
 def read_log(path: Path | str, cache) -> ParsedLog:
     """One Session log, read through the Derived Cache.
 
@@ -452,20 +471,22 @@ def read_log(path: Path | str, cache) -> ParsedLog:
     views ask for it (ADR 0001 § the one log reader).
     """
     path = Path(path)
-    sid = path.stem
+    key = cache_id(path)
     try:
         st = path.stat()
     except OSError:
         return parse_log(path)
-    hit = cache.get_log(sid, st.st_size, st.st_mtime_ns)
+    hit = cache.get_log(key, st.st_size, st.st_mtime_ns)
     if hit is not None:
+        # the Session id is the file's own stem, never the row's key: a
+        # transcript's row is qualified by its parent, its Session is not
         parsed = _log_from_cache(
-            sid, str(path),
+            path.stem, str(path),
             datetime.fromtimestamp(st.st_mtime, tz=timezone.utc), hit)
         if parsed is not None:
             return parsed
     parsed = parse_log(path)
-    cache.put_log(sid, st.st_size, st.st_mtime_ns, _log_to_cache(parsed))
+    cache.put_log(key, st.st_size, st.st_mtime_ns, _log_to_cache(parsed))
     return parsed
 
 
@@ -539,9 +560,11 @@ def scan_sessions(projects_dir: Path, cache) -> list[Session]:
     # A subagent transcript is a log with a cache row of its own — the cost
     # view reads one per delegating Session (ADR 0002 § subagent usage) — but
     # it lives a level below this sweep's glob and is no Session, so it never
-    # enters the list above. Name it live anyway: a prune that knew only the
-    # ids here would drop those readings on every inbox run.
-    live_ids.update(f.stem for f in projects_dir.glob("*/*/subagents/agent-*.jsonl"))
+    # enters the list above. Name it live anyway, spelled as `cache_id` spells
+    # it: a prune that knew only the ids here would drop those readings on
+    # every inbox run.
+    live_ids.update(cache_id(f)
+                    for f in projects_dir.glob("*/*/subagents/agent-*.jsonl"))
     cache.prune(live_ids)
     return sessions
 
