@@ -24,13 +24,12 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 from datetime import datetime, timezone
 from pathlib import Path
 
 from . import audit as audit_mod
 from . import brief as brief_mod
-from . import gitstate, loops, transcript
+from . import loops, transcript, universe
 from .audit import Audit
 from .models import Session
 
@@ -101,10 +100,8 @@ def _loop_table(scan: loops.LoopScan) -> str:
 
 
 def _repo_key(cwd: str | None) -> str | None:
-    if not cwd:
-        return None
-    res = gitstate._resolve(cwd)
-    return res[1] if res else os.path.realpath(cwd)
+    owner = universe.owner_of(cwd)
+    return owner.key if owner else None
 
 
 def _gather_siblings(target: Session, sessions: list[Session], cache) -> list[dict]:
@@ -259,14 +256,15 @@ async def _run_panel(prompts: dict[str, str], progress) -> list[dict]:
 
 # ── entry point ────────────────────────────────────────────────────────────
 
-def generate(log_path: Path, projects_dir: Path, cache, progress=lambda r: None) -> Path:
+def generate(log_path: Path, u: universe.Universe, progress=lambda r: None) -> Path:
     """Run the full panel for one session and store the Audit. Synchronous
     facade over the async fan-out; raises AuditError on failure (nothing
     partial is ever stored)."""
     from . import claude_logs
 
     sid = log_path.stem
-    sessions = claude_logs.scan_sessions(projects_dir, cache)
+    cache = u.cache
+    sessions = u.sessions()
     target = next((s for s in sessions if s.session_id == sid), None)
     if target is None:  # footprint-less session: parse minimally for cwd/title
         target = Session(session_id=sid, log_path=str(log_path))

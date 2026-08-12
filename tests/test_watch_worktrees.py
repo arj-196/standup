@@ -9,12 +9,20 @@ checkout that appears mid-watch gets polled, one that vanishes is let go).
 
 from __future__ import annotations
 
-from standup import claude_logs
+from standup import claude_logs, universe
 from standup.watchstream import WatchStream
 
 from tests.support.sessions import SessionLog, fixture_session
 
 AGENT_ID = "ab12cd34ef567890a"
+
+
+def _watch(repo, projects_dir) -> WatchStream:
+    """A WatchStream over the Scan Universe, which the Watch reads once at
+    launch and does not hold open (the Derived Cache is closed before the feed
+    runs)."""
+    with universe.open_universe(projects_dir) as u:
+        return WatchStream(u, str(repo.path))
 
 
 def _worktree_agent(repo, projects_dir, *, agent_id=AGENT_ID,
@@ -44,7 +52,7 @@ def test_a_worktree_agents_transcript_is_a_lane(scratch_repo, projects_dir):
     repo = scratch_repo("tt")
     _worktree_agent(repo, projects_dir)
 
-    ws = WatchStream(str(repo.path), projects_dir)
+    ws = _watch(repo, projects_dir)
 
     assert AGENT_ID in ws.tailers
     assert ws.tailers[AGENT_ID].subagent is True
@@ -59,7 +67,7 @@ def test_a_worktree_edit_resolves_against_the_worktree_root(
     repo = scratch_repo("tt")
     _worktree_agent(repo, projects_dir)
 
-    ws = WatchStream(str(repo.path), projects_dir)
+    ws = _watch(repo, projects_dir)
     events = ws.start()
 
     claimed = [e for e in events if e.kind == "file" and e.session_id == AGENT_ID]
@@ -73,7 +81,7 @@ def test_a_subagent_transcript_appearing_mid_watch_gets_a_lane(
     finds the transcript — so the lane's paths resolve against the worktree
     from its first event (ADR 0004 § the worktree lane)."""
     repo = scratch_repo("tt")
-    ws = WatchStream(str(repo.path), projects_dir)
+    ws = _watch(repo, projects_dir)
 
     _worktree_agent(repo, projects_dir)
     ws._last_discovery = float("-inf")
@@ -99,7 +107,7 @@ def test_sidechain_lines_drive_a_subagent_lanes_activity(
               .edit(f"{repo.path}/beta.py", mid_turn=True))
     inline.save(projects_dir)
 
-    ws = WatchStream(str(repo.path), projects_dir)
+    ws = _watch(repo, projects_dir)
     ws.start()
 
     assert ws.tailers[AGENT_ID].act_verb == "writing"
@@ -129,7 +137,7 @@ def test_a_worktree_created_mid_watch_is_adopted_and_polled(
     it is narrated by the git watcher from then on (ADR 0004 § the worktree
     lane)."""
     repo = scratch_repo("tt")
-    ws = WatchStream(str(repo.path), projects_dir)
+    ws = _watch(repo, projects_dir)
     assert len(ws.checkouts) == 1
 
     wt = repo.add_worktree(repo.path / ".claude" / "worktrees" / "agent-x",
@@ -154,7 +162,7 @@ def test_a_removed_worktree_is_let_go(scratch_repo, projects_dir):
     repo = scratch_repo("tt")
     wt = repo.add_worktree(repo.path / ".claude" / "worktrees" / "agent-x",
                            branch="wt-x")
-    ws = WatchStream(str(repo.path), projects_dir)
+    ws = _watch(repo, projects_dir)
     assert len(ws.checkouts) == 2
 
     repo.git("worktree", "remove", "--force", str(wt.path))

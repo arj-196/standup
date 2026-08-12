@@ -9,6 +9,11 @@ silently picks one.
 
 One resolver serves the Triage Inbox, `cost`, and `watch`, so a handle means
 the same thing in every view.
+
+Pure name matching over a list of Targets, and nothing else: this module knows
+no git and reads no logs, so handle resolution is testable without a checkout
+(ADR 0001 § one module owns the scan). Turning a *path* into a Target is a
+question about the Scan Universe, and lives in `universe.Universe.resolve_repo`.
 """
 
 from __future__ import annotations
@@ -96,7 +101,7 @@ def _tiers(needle: str, targets: Sequence[Target]) -> list[list[Target]]:
     ]
 
 
-def _shorten_home(path: str) -> str:
+def shorten_home(path: str) -> str:
     home = os.path.expanduser("~")
     return "~" + path[len(home):] if path.startswith(home) else path
 
@@ -112,35 +117,10 @@ def resolve(arg: str, targets: Sequence[Target], prog: str = "standup") -> Targe
         hit = _narrow(tier)
         if len(hit) == 1:
             return hit[0]
-        listing = "\n".join(f"  {t.name}  {_shorten_home(t.path)}" for t in hit)
+        listing = "\n".join(f"  {t.name}  {shorten_home(t.path)}" for t in hit)
         raise HandleError(f"{prog}: {arg!r} is ambiguous:\n{listing}")
     known = ", ".join(sorted({t.name for t in targets}))
     raise HandleError(f"{prog}: no project matches {arg!r}\nknown projects: {known}")
-
-
-def resolve_target_path(arg: str, targets: Sequence[Target],
-                        prog: str = "standup") -> Target:
-    """A filesystem path -> the project that owns it (worktrees included)."""
-    from . import gitstate
-
-    p = os.path.abspath(os.path.expanduser(arg))
-    if not os.path.isdir(p):
-        raise HandleError(f"{prog}: no such directory: {arg}")
-    res = gitstate._resolve(p)
-    if not res:
-        raise HandleError(f"{prog}: {arg!r} is not inside a git repo")
-    toplevel, key = res
-    real = os.path.realpath(toplevel)
-    for t in targets:
-        if os.path.realpath(t.path) == real:
-            return t
-    # A worktree: its toplevel is its own directory, so fall back to the repo
-    # key (git-common-dir), which worktrees share with their main checkout.
-    for t in targets:
-        other = gitstate._resolve(t.path)
-        if other and other[1] == key:
-            return t
-    raise HandleError(f"{prog}: {_shorten_home(toplevel)} has no Claude Code sessions")
 
 
 def _usable(cand: str) -> bool:
