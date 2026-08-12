@@ -1,4 +1,4 @@
-"""The Attributed Diff over a scratch repo (ADR 0007).
+"""The Attributed Diff over a scratch repo (ADR 0007 § Decision).
 
 `standup <repo> diff` is the one view that reads git's *diff structure* —
 hunks, context, line numbers — rather than a status line. Everything it renders
@@ -53,7 +53,7 @@ def test_uncommitted_work_is_grouped_and_attributed(scratch_repo, projects_dir,
                                                     null_cache):
     """One Session's uncommitted hunk, under that Session's header: the group
     comes from the drill-down's Rollups, the verdict from the log's own edit
-    fragments (ADR 0007)."""
+    fragments (ADR 0007 § Decision)."""
     repo = scratch_repo("tt")
     _seed(repo, projects_dir)
     entry, by_id = _scan(projects_dir, null_cache)
@@ -140,7 +140,8 @@ def test_a_hash_that_names_no_commit_here_is_an_error(scratch_repo,
 
 def test_the_rendered_view_says_what_it_read(scratch_repo, projects_dir,
                                              null_cache, monkeypatch):
-    """The whole text, plainly: the repo header (`· no remote`, ADR 0006), the
+    """The whole text, plainly: the repo header (`· no remote`, carried
+    unconditionally per ADR 0006 § Decision), the
     Session header, the file line and the hunk body with its line numbers."""
     monkeypatch.setenv("NO_COLOR", "1")
     repo = scratch_repo("tt")

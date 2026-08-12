@@ -35,17 +35,23 @@ def test_git_subprocesses_have_exactly_one_calling_module():
     """Every other module asks a named question. A module that assembles git
     argv of its own has to re-decide the porcelain format, the separator and
     the failure convention — and the three of them drifting apart is how two
-    dialects of "what git said" start."""
+    dialects of "what git said" start.
+
+    A source scan, so it catches the mistake at the moment it is written:
+    a `subprocess` call whose argv opens with `git`, or a reach for the
+    private runner by call or by import.
+    """
+    argv = re.compile(r"""subprocess\.\w+\(\s*\[\s*["']git["']""")
+    runner = re.compile(r"gitstate\._?git\(|import\s+[^\n]*\b_git\b")
     offenders = {}
-    for py in sorted(SRC.glob("*.py")):
+    for py in sorted(SRC.rglob("*.py")):
         text = py.read_text()
-        raw_argv = re.findall(r"""subprocess\.\w+\(\s*\[\s*["']git["']""", text)
         if py.name == "gitstate.py":
-            assert len(raw_argv) == 1, "gitstate runs git from one place"
+            assert len(argv.findall(text)) == 1, "gitstate runs git from one place"
             continue
-        hits = raw_argv + re.findall(r"gitstate\._?git\(", text)
+        hits = argv.findall(text) + runner.findall(text)
         if hits:
-            offenders[py.name] = hits
+            offenders[str(py.relative_to(SRC))] = hits
     assert offenders == {}
 
 

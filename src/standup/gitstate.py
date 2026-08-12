@@ -5,13 +5,13 @@ their main checkout; independent clones stay separate).
 
 **One module runs git.** `_git` is the single subprocess call site in Standup,
 and every other module — the Attributed Diff, the Watch, the drill-down — asks
-a *named question* about a checkout instead of assembling argv: `branch()`,
-`status()`, `head_sha()`, `path_diff()`, `commit_meta()`, `unpushed_count()`.
-That is the Checkout interface. What it keeps in one place is everything a
-caller would otherwise have to re-decide: the porcelain status shape and its
-rename arrow, the `\\x1f`-separated commit-log format and its parser, the diff
-flags that make output stable (`--no-color --no-ext-diff --find-renames`), and
-the failure convention below.
+a *named question* about a **Checkout** (CONTEXT.md) instead of assembling
+argv: `branch()`, `status()`, `head_sha()`, `path_diff()`, `commit_meta()`,
+`unpushed_count()`. That is the Checkout interface. What it keeps in one place
+is everything a caller would otherwise have to re-decide: the porcelain status
+shape and its rename arrow, the `\\x1f`-separated commit-log format and its
+parser, the diff flags that make output stable (`--no-color --no-ext-diff
+--find-renames`), and the failure convention below.
 
 **A question git cannot answer returns nothing, never an exception.** `None`
 (or `""`, or `[]`, per the signature) means "git declined" — a missing object,
@@ -63,7 +63,13 @@ def _git(path: str, *args: str) -> str | None:
 
 def _parse_commits(out: str | None) -> list[Commit]:
     """`LOG_FORMAT` records -> Commits, in the order git listed them (newest
-    first). A line that is not that format is dropped rather than guessed at."""
+    first).
+
+    A line that is not that format is dropped rather than guessed at, and so is
+    one whose `%cI` will not parse — a Commit without a time cannot be windowed,
+    aged or bounded, and every view does at least one of those. `%cI` is
+    machine-written ISO-8601, so the drop is a floor, not a path.
+    """
     commits = []
     for line in (out or "").splitlines():
         parts = line.split(SEP)
@@ -102,10 +108,11 @@ def head_sha(checkout: str) -> str:
 def status(checkout: str, *, untracked_all: bool = False) -> dict[str, str]:
     """Pending paths -> their two-letter porcelain code, in git's own order.
 
-    A rename is keyed on its *new* path (git prints `old -> new`), and the
-    quoting git applies to unusual names is undone. `untracked_all` asks for
-    `-uall`, which lists the files inside an untracked directory individually
-    instead of collapsing them to one `dir/` entry.
+    One entry per path, which is what porcelain prints: a rename is a single
+    line keyed on its *new* path (git writes `old -> new`), and the quoting git
+    applies to unusual names is undone. `untracked_all` asks for `-uall`, which
+    lists the files inside an untracked directory individually instead of
+    collapsing them to one `dir/` entry.
     """
     args = ["status", "--porcelain"] + (["-uall"] if untracked_all else [])
     out = _git(checkout, *args) or ""
@@ -166,9 +173,11 @@ def commits_between(checkout: str, old_sha: str, new_sha: str) -> list[Commit]:
                                f"{old_sha}..{new_sha}"))
 
 
-def commit_files(toplevel: str, sha: str) -> list[str]:
-    """The repo-relative paths one commit touched."""
-    out = _git(toplevel, "show", "--name-only", "--format=", sha)
+def commit_files(checkout: str, sha: str) -> list[str]:
+    """The repo-relative paths one commit touched; `[]` when git declined or
+    the commit touched nothing (a merge, an empty commit) — the two are not
+    worth telling apart to a caller that lists filenames."""
+    out = _git(checkout, "show", "--name-only", "--format=", sha)
     return [l for l in (out or "").splitlines() if l]
 
 
@@ -181,9 +190,16 @@ def resolve_commit_sha(checkout: str, prefix: str) -> str | None:
 
 
 def unpushed_count(checkout: str) -> int:
-    """How many commits are not reachable from any remote ref. Zero when git
-    cannot say, and zero for a Remoteless Repo, where nothing is on a remote
-    but nothing can be pushed either (ADR 0006 § Decision)."""
+    """How many commits are not reachable from any remote ref; zero when git
+    cannot say.
+
+    A raw count, not the Unpushed tier: with no remotes `--not --remotes`
+    excludes nothing, so a Remoteless Repo answers with its *whole* history.
+    Only the Watch asks, and only for the *fall* in the number that means a
+    push happened — which is why `standup watch` needed no change under
+    ADR 0006 § Consequences. The tier itself is `_unpushed`, which is empty
+    there by decision.
+    """
     out = _git(checkout, "rev-list", "--count", "HEAD", "--not", "--remotes")
     try:
         return int((out or "").strip())
@@ -193,12 +209,29 @@ def unpushed_count(checkout: str) -> int:
 
 def worktrees(toplevel: str) -> list[str] | None:
     """Every checkout of the repo containing `toplevel`, main first — or None
-    when git could not answer, which callers must not read as "no worktrees"."""
+    when git could not answer, which callers must not read as "no worktrees".
+
+    Only a caller that *watches* the list for changes needs that distinction;
+    everyone else wants `checkout_paths`.
+    """
     out = _git(toplevel, "worktree", "list", "--porcelain")
     if out is None:
         return None
     return [line[len("worktree "):] for line in out.splitlines()
             if line.startswith("worktree ")]
+
+
+def checkout_paths(toplevel: str) -> list[str]:
+    """The repo's checkouts that exist on disk, main first — the list to walk.
+
+    Never empty: when git declines, or when every path it named has since been
+    removed, the answer is `toplevel` itself. A caller about to read one repo is
+    better served by the path it was given than by an empty list it has to
+    guard, and every question below already answers safely for a directory that
+    is not there.
+    """
+    listed = [w for w in (worktrees(toplevel) or []) if os.path.isdir(w)]
+    return listed or [toplevel]
 
 
 def has_remote(path: str) -> bool:
@@ -214,11 +247,6 @@ def has_remote(path: str) -> bool:
 # --------------------------------------------------------------------------
 # the Repo Entry
 # --------------------------------------------------------------------------
-
-
-def _pending(path: str) -> list[PendingFile]:
-    return [PendingFile(code=code, path=p)
-            for p, code in status(path).items()]
 
 
 def _unpushed(path: str, remote: bool) -> list[Commit]:
@@ -270,8 +298,7 @@ def _resolve(cwd: str) -> tuple[str, str] | None:
 
 
 def _build_entry(toplevel: str, since: datetime) -> RepoEntry:
-    listed = worktrees(toplevel) or [toplevel]
-    checkouts = [w for w in listed if os.path.isdir(w)]
+    checkouts = checkout_paths(toplevel)
     main = checkouts[0]
     user_email = (_git(main, "config", "user.email") or "").strip() or None
     # asked once at the repo, not once per worktree: remote config is common
@@ -286,7 +313,8 @@ def _build_entry(toplevel: str, since: datetime) -> RepoEntry:
             continue
         seen.add(real)
         checkout = Checkout(path=wt, branch=branch(wt), is_main=(wt == main))
-        checkout.pending = _pending(wt)
+        checkout.pending = [PendingFile(code=code, path=p)
+                            for p, code in status(wt).items()]
         checkout.unpushed = _unpushed(wt, remote)
         entry.checkouts.append(checkout)
 

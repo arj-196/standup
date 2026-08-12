@@ -794,8 +794,7 @@ def _resolve_target(repo_arg: str, sessions: list[Session]) -> tuple[str, list[s
         if not res:
             raise WatchError(f"standup watch: {repo_arg!r} is not inside a git repo")
         toplevel, _ = res
-        checkouts = [w for w in (gitstate.worktrees(toplevel) or [toplevel])
-                     if os.path.isdir(w)]
+        checkouts = gitstate.checkout_paths(toplevel)
         return os.path.basename(checkouts[0]), checkouts
 
     # a name: resolve against the Scan Universe, same matching as the drill-down
@@ -812,16 +811,13 @@ def _resolve_target(repo_arg: str, sessions: list[Session]) -> tuple[str, list[s
     # map each key to its main checkout (first worktree)
     candidates: list[handles.Target] = []
     for key in order:
-        listed = gitstate.worktrees(by_key[key])
-        main = listed[0] if listed else by_key[key]
+        main = gitstate.checkout_paths(by_key[key])[0]
         candidates.append(handles.Target(os.path.basename(main), main))
     try:
         hit = handles.resolve(repo_arg, candidates, "standup watch")
     except handles.HandleError as e:
         raise WatchError(str(e)) from None
-    checkouts = [w for w in (gitstate.worktrees(hit.path) or [hit.path])
-                 if os.path.isdir(w)]
-    return hit.name, checkouts
+    return hit.name, gitstate.checkout_paths(hit.path)
 
 
 class WatchStream:

@@ -1,5 +1,5 @@
 """The Watch's ground truth: what git tells it, and the events that come out
-(ADR 0004 § event source).
+(ADR 0004 § the event source).
 
 The claim stream is one half of the Watch; this is the other. Every question in
 here is asked of a real scratch repo through `gitstate`'s Checkout interface —
@@ -115,9 +115,10 @@ def test_a_push_is_counted_off_the_unpushed_count(scratch_repo, projects_dir):
 
 
 def test_a_remoteless_repo_never_reports_a_push(scratch_repo, projects_dir):
-    """`standup watch` is deliberately unchanged by ADR 0006: the count is
-    internal, and with no remote `--not --remotes` never falls, so nothing
-    fires. Add a remote and push mid-watch and the event is still true."""
+    """`standup watch` is deliberately unchanged by ADR 0006 § Consequences:
+    the count is internal, and with no remote `--not --remotes` excludes
+    nothing and so never falls. Add a remote and push mid-watch and the event
+    still fires, correctly — which is why the Watch was not special-cased."""
     repo = scratch_repo("tt")
     repo.write("alpha.py", "print('one')\n")
     repo.commit("Add alpha")
