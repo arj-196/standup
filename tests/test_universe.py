@@ -121,9 +121,10 @@ def test_the_cache_is_flushed_even_when_the_view_raises(projects_dir, session_lo
             u.sessions()
             raise RuntimeError("the view blew up")
 
-    st = log.stat()
     warm = cache_mod.open_cache()
-    assert warm.get_session(log.stem, st.st_size, st.st_mtime_ns) is not None
+    assert warm.derive(
+        cache_mod.SESSIONS, log.stem, cache_mod.Stamp.of(log),
+        compute=lambda: pytest.fail("the sweep's row was never written")) is not None
 
 
 # --- resolution, without a git checkout where the domain allows it ----------

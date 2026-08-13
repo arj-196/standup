@@ -2,10 +2,10 @@
 
 Date: 2026-07-23
 
-Four decisions in sequence: the second retires the only state the tool had, the
-third reintroduces a store and must justify itself against the second, the
-fourth deletes a knob the third made pointless. A fifth says where all four are
-implemented.
+Decisions in sequence: the second retires the only state the tool had, the third
+reintroduces a store and must justify itself against the second, the fourth
+gives that store one protocol, the sixth deletes a knob the third made
+pointless. The last says where all of them are implemented.
 
 ## The Scan Universe
 
@@ -77,6 +77,63 @@ Rejected:
   worth the offset/partial-line/truncation machinery. The append-only property
   is recorded so this stays available.
 
+## The accelerator protocol
+
+Every derived reading had grown its own copy of one dance: a `get_x`/`put_x`
+pair on `Cache` *and* on `NullCache`, a buffer dict, a branch in `flush`, a
+table name in `prune`, a `<kind>_version()` shim, and a caller-side
+get → decode → compute → encode → put. The fifth artifact (the typed reading)
+meant editing six places, and a place forgotten is invisible: a table missing
+from `prune` leaks rows forever, a branch missing from `flush` costs a silent
+reparse every run.
+
+**A derived artifact is declared once — `cache.Derivation` — and the protocol
+supplies the rest.** The declaration carries its kind (which is its table), its
+codec, the version that invalidates its rows and which module owns that version,
+whether it is stat-keyed, and how its live keys are enumerated. Callers ask for
+one `cache.derive(spec, key, stamp, compute, load=, dump=)`.
+
+- **the DDL is generated from the declarations** and applied on every open
+  (idempotent), so a derivation declared later gains its table in place instead
+  of costing a rebuild of the rows beside it. `SCHEMA_VERSION` remains the lever
+  for a change the DDL cannot make in place; a DB stamped with a *newer* schema
+  is deleted and rebuilt rather than half-read through columns this version may
+  not know.
+- **a version stays with its owner** — `READER_VERSION`, `DETECTOR_VERSION` —
+  read through the declaration at query time, so the cache holds no copy to keep
+  in step. `PARSER_VERSION` stays here because the sweep's row shape is the
+  cache's own.
+- **the typed round trip stays with its owner too.** `load`/`dump` belong to the
+  module that owns the artifact, so nothing in the cache knows what a Session, a
+  Loop or a commit *is*. Either side may bow out: `dump` returning None declines
+  the row (an empty commit-file list, a reading over `MAX_BLOB_BYTES`), `load`
+  returning None or raising means a row this version cannot read. Both cost a
+  recompute and change no output — precisely what a pure accelerator may do.
+- **liveness is declared, not passed in.** `prune` is handed the projects dir
+  and each declaration enumerates its own keys under it. The rule it replaces
+  was a hand-maintained coupling: the sweep computed one `live_ids` set for all
+  tables, so the first artifact keyed on something the sweep's glob does not
+  produce — a subagent transcript's reading (ADR 0002 § subagent usage) — had
+  every inbox run deleting the rows the cost view had just written (`standup -a`
+  does both). A future artifact keyed on something other than a Session id
+  declares its own enumerator rather than remembering to extend that set.
+- **the write buffer is read back before the DB is**, for every derivation, so
+  one command derives a value once however many views ask for it. That was true
+  of commit files alone before, by hand.
+
+Cost: a caller passes two small functions where it used to write two lines, and
+a declaration sits between `read_log` and its SQL. Accepted — that indirection
+is what makes the fifth artifact cost a declaration and the sixth cost nothing
+new.
+
+Rejected:
+- **a generic `get`/`put` pair over the declaration** — collapses the tables and
+  leaves the five caller-side dances, which is where the version check, the
+  stat key and the malformed-row tolerance were each written five times.
+- **one table with a `kind` column** — kinds differ in key (a sha is not a stat
+  key) and in codec, so the row shape would be the loosest of them and every
+  read would re-assert what a declaration states once.
+
 ## The one log reader
 
 Six modules parsed the same JSONL, each with its own idea of what it says:
@@ -137,9 +194,11 @@ a row's recency, is `cost.SessionCost.last_turn`. No view overwrites the field.
 subagents', because pricing is per-turn (ADR 0002) and one Session's turns are
 one list however many files they came from. A subagent transcript is a log
 too, so it gets a cache row of its own, and being no Session it costs two
-rules of its own: it lives below the sweep's `*/*.jsonl` glob, so
-`scan_sessions` names its id live explicitly or the prune discards the row on
-every inbox run; and its file name (`agent-<id>`) is unique only inside its
+rules of its own: it lives below the sweep's `*/*.jsonl` glob, so the `logs`
+declaration enumerates its liveness with a glob that reaches it (§ the
+accelerator protocol) or the prune discards the row on every inbox run — its
+`loops` and `sessions` siblings are keyed on Sessions and enumerate only those;
+and its file name (`agent-<id>`) is unique only inside its
 parent's directory, so `cache_id` qualifies it with the parent. Unqualified,
 two parents' identically-named transcripts share a row as soon as size and
 mtime agree, and one Session is priced with another's turns.
@@ -235,3 +294,13 @@ Rejected:
 Cost: a Universe is a *command's* view of the world, not a live one — it
 memoizes. The Watch therefore reads one at launch and lets it go rather than
 holding the cache open for the minutes it stays on screen.
+
+## Tried and retracted
+
+- **The sweep names the live ids of every cached artifact.** `scan_sessions`
+  built one `live_ids` set — Session log stems, plus the subagent transcript ids
+  it globbed a level deeper for — and `prune` applied that one set to every
+  table. Retracted: liveness is a property of an artifact's *keys*, so it is
+  declared per derivation (§ the accelerator protocol). The sweep still calls
+  `prune`, and still tells the cache where the logs are; what it no longer does
+  is answer that question on every other artifact's behalf.

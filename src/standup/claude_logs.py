@@ -35,6 +35,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
+from . import cache as cache_mod
 from . import rates
 from .models import Session
 
@@ -535,6 +536,24 @@ def cache_id(path: Path) -> str:
     return path.stem
 
 
+def session_log_ids(projects_dir: Path) -> set[str]:
+    """Every Session log's Derived Cache id — the keys of a derivation keyed on
+    a Session (ADR 0001 § the accelerator protocol), which is what its rows are
+    pruned against."""
+    return {log.stem for log in Path(projects_dir).glob("*/*.jsonl")}
+
+
+def readable_log_ids(projects_dir: Path) -> set[str]:
+    """Every id `read_log` can be handed: the Session logs, plus the subagent
+    transcripts a level below them (ADR 0002 § subagent usage), spelled as
+    `cache_id` spells them. A transcript is no Session and lives under the
+    sweep's glob, so a derivation over *readings* is live against a wider set
+    than one over Sessions — which is why each declares its own."""
+    return session_log_ids(projects_dir) | {
+        cache_id(f)
+        for f in Path(projects_dir).glob("*/*/subagents/agent-*.jsonl")}
+
+
 def read_log(path: Path | str, cache) -> ParsedLog:
     """One Session log, read through the Derived Cache.
 
@@ -543,23 +562,16 @@ def read_log(path: Path | str, cache) -> ParsedLog:
     views ask for it (ADR 0001 § the one log reader).
     """
     path = Path(path)
-    key = cache_id(path)
-    try:
-        st = path.stat()
-    except OSError:
+    stamp = cache_mod.Stamp.of(path)
+    if stamp is None:
         return parse_log(path)
-    hit = cache.get_log(key, st.st_size, st.st_mtime_ns)
-    if hit is not None:
-        # the Session id is the file's own stem, never the row's key: a
-        # transcript's row is qualified by its parent, its Session is not
-        parsed = _log_from_cache(
-            path.stem, str(path),
-            datetime.fromtimestamp(st.st_mtime, tz=timezone.utc), hit)
-        if parsed is not None:
-            return parsed
-    parsed = parse_log(path)
-    cache.put_log(key, st.st_size, st.st_mtime_ns, _log_to_cache(parsed))
-    return parsed
+    # the Session id is the file's own stem, never the row's key: a
+    # transcript's row is qualified by its parent, its Session is not
+    return cache.derive(
+        cache_mod.LOGS, cache_id(path), stamp,
+        compute=lambda: parse_log(path),
+        load=lambda row: _log_from_cache(path.stem, str(path), stamp.mtime, row),
+        dump=_log_to_cache)
 
 
 # ── the Triage Inbox's sweep ────────────────────────────────────────────────
@@ -608,36 +620,37 @@ def _full_scan(session: Session, path: Path) -> None:
                 _extract_commits(session, obj, ts)
 
 
+def _swept_session(log: Path, stamp: cache_mod.Stamp, cache) -> Session:
+    """One log's prefiltered sweep, through the Derived Cache."""
+    sid = log.stem
+
+    def scan() -> Session:
+        session = Session(session_id=sid, log_path=str(log),
+                          last_activity=stamp.mtime)
+        _full_scan(session, log)
+        return session
+
+    return cache.derive(
+        cache_mod.SESSIONS, sid, stamp, compute=scan,
+        load=lambda row: _from_cache(sid, str(log), stamp.mtime, row),
+        dump=_to_cache)
+
+
 def scan_sessions(projects_dir: Path, cache) -> list[Session]:
     """Fully parse every session file, serving unchanged ones from the cache."""
     sessions: list[Session] = []
-    live_ids: set[str] = set()
     for log in sorted(projects_dir.glob("*/*.jsonl")):
-        try:
-            st = log.stat()
-        except OSError:
+        stamp = cache_mod.Stamp.of(log)
+        if stamp is None:
             continue
-        sid = log.stem
-        live_ids.add(sid)
-        mtime = datetime.fromtimestamp(st.st_mtime, tz=timezone.utc)
-        cached = cache.get_session(sid, st.st_size, st.st_mtime_ns)
-        if cached is not None:
-            session = _from_cache(sid, str(log), mtime, cached)
-        else:
-            session = Session(session_id=sid, log_path=str(log), last_activity=mtime)
-            _full_scan(session, log)
-            cache.put_session(sid, st.st_size, st.st_mtime_ns, _to_cache(session))
+        session = _swept_session(log, stamp, cache)
         if session.cwd:
             sessions.append(session)
-    # A subagent transcript is a log with a cache row of its own — the cost
-    # view reads one per delegating Session (ADR 0002 § subagent usage) — but
-    # it lives a level below this sweep's glob and is no Session, so it never
-    # enters the list above. Name it live anyway, spelled as `cache_id` spells
-    # it: a prune that knew only the ids here would drop those readings on
-    # every inbox run.
-    live_ids.update(cache_id(f)
-                    for f in projects_dir.glob("*/*/subagents/agent-*.jsonl"))
-    cache.prune(live_ids)
+    # The sweep is where the cache learns the logs are on disk; *which* of its
+    # rows that makes live is each derivation's own declaration to answer — a
+    # reading keyed on a subagent transcript is live against a set no sweep of
+    # Sessions produces (ADR 0001 § the accelerator protocol).
+    cache.prune(projects_dir)
     return sessions
 
 

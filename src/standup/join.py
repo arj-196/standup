@@ -11,6 +11,7 @@ from __future__ import annotations
 import os
 from datetime import datetime, timedelta, timezone
 
+from . import cache as cache_mod
 from . import gitstate
 from .models import Attribution, Commit, RepoEntry, Rollup, Session
 
@@ -54,14 +55,13 @@ def _match_commits_exact(commits: list[Commit], sessions: list[Session]) -> None
 
 def _commit_files(cache, toplevel: str, sha: str) -> list[str]:
     """commit_files(sha), served from / recorded in the Derived Cache (immutable by sha)."""
-    if cache is not None:
-        hit = cache.get_commit_files(sha)
-        if hit is not None:
-            return hit
-    files = gitstate.commit_files(toplevel, sha)
-    if cache is not None and files:  # never cache an empty/error result
-        cache.put_commit_files(sha, files)
-    return files
+    def compute() -> list[str]:
+        return gitstate.commit_files(toplevel, sha)
+
+    if cache is None:
+        return compute()
+    return cache.derive(cache_mod.COMMIT_FILES, sha, None, compute=compute,
+                        dump=lambda files: files or None)  # never cache an empty result
 
 
 def _match_commits_likely(entry: RepoEntry, commits: list[Commit],
