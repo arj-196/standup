@@ -15,10 +15,12 @@ from __future__ import annotations
 import json
 import os
 import shutil
-import subprocess
 from pathlib import Path
 
+from . import briefgen, llmpass
+
 SETTINGS = Path(os.path.expanduser("~/.claude/settings.json"))
+PROBE_TIMEOUT = 60          # seconds; a doctor-check must not hang an install
 HOOK_COMMAND = "standup _brief"
 HOOK_ENTRY = {"hooks": [{"type": "command", "command": HOOK_COMMAND, "async": True}]}
 
@@ -47,19 +49,23 @@ def _is_ours(entry: dict) -> bool:
               for h in entry.get("hooks", []) if isinstance(h, dict))
 
 
-def _doctor() -> str | None:
-    """Return None if headless `claude -p` works, else a human warning."""
+def _doctor(transport: llmpass.Transport | None = None) -> str | None:
+    """Return None if a real Session Brief pass works, else a human warning.
+
+    The probe goes through the one seam Brief generation uses, on the Brief's own
+    model (ADR 0003 § the LLM-pass seam) — same binary, same flags, same
+    `--output-format json` the Overhead figure is read from — so a pass that
+    works here is a pass the hook can make. A missing binary is answered without
+    paying for anything.
+    """
     if not shutil.which("claude"):
         return "`claude` is not on PATH — the hook can't generate Briefs until Claude Code is installed."
     try:
-        proc = subprocess.run(
-            ["claude", "-p", "reply with exactly: OK", "--model", "claude-haiku-4-5"],
-            input="", capture_output=True, text=True, timeout=60,
-        )
-        if proc.returncode != 0:
-            return f"headless `claude -p` failed (exit {proc.returncode}); Briefs won't generate. Try running it once interactively to sign in."
-    except (subprocess.SubprocessError, OSError) as e:
-        return f"could not run `claude -p` ({e}); Briefs won't generate."
+        llmpass.run(llmpass.Pass(label="doctor", model=briefgen.MODEL,
+                                 prompt="reply with exactly: OK",
+                                 timeout=PROBE_TIMEOUT), transport)
+    except llmpass.PassError as e:
+        return f"a headless `claude -p` pass failed ({e}); Briefs won't generate. Try running it once interactively to sign in."
     return None
 
 

@@ -30,6 +30,7 @@ from standup import artifacts as artifacts_mod
 from standup import cache as cache_mod
 from standup import install as install_mod
 
+from tests.support.llm import FakeLLM
 from tests.support.repos import ScratchRepo, make_repo
 from tests.support.sessions import SessionLog, fixture_session
 
@@ -110,4 +111,18 @@ def session_log():
     hash, per-turn usage). Pass `cwd=` to point it at a scratch repo."""
     def _make(**kwargs) -> SessionLog:
         return fixture_session(**kwargs)
+    return _make
+
+
+@pytest.fixture
+def fake_llm():
+    """Factory for the fake LLM transport: `fake_llm(reply="…")`,
+    `fake_llm(replies={label: text})`, `fake_llm(raises={label: exc})`.
+
+    Every paid pass goes through one seam (ADR 0003 § the LLM-pass seam), so this
+    one double stands in for the whole outside world on the generation path — the
+    suite needs no `claude` binary and no network.
+    """
+    def _make(*args, **kwargs) -> FakeLLM:
+        return FakeLLM(*args, **kwargs)
     return _make

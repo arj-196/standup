@@ -105,8 +105,12 @@ The on-demand, LLM-authored judgment of one **Session** (`standup audit <handle>
 _Avoid_: analysis (vague), report
 
 **Expert Panel**:
-The fixed set of narrow, parallel Sonnet passes that produce an **Audit**'s raw claims — each Expert answers one question over only the evidence it needs (Loop Expert, LLM-as-CPU Expert, Prompt-Structure Expert, Recurrence Expert). Fix-proposing belongs to the Opus concluder, not an Expert: Experts claim, the concluder judges and drafts the **Handoff Prompt**. Standup's code owns the fan-out and records each Expert's own `usage`, so **Audit Overhead** is itemised per Expert.
+The fixed set of narrow, parallel Sonnet **LLM Pass**es that produce an **Audit**'s raw claims — each Expert answers one question over only the evidence it needs (Loop Expert, LLM-as-CPU Expert, Prompt-Structure Expert, Recurrence Expert). Fix-proposing belongs to the Opus concluder, not an Expert: Experts claim, the concluder judges and drafts the **Handoff Prompt**. Standup's code owns the fan-out and records each Expert's own `usage`, so **Audit Overhead** is itemised per Expert.
 _Avoid_: orchestrator-driven delegation, subagents (implies the model chooses the panel)
+
+**LLM Pass**:
+One paid call to a model — prompt and model in, text plus priceable `usage` out — and the only way Standup reaches a model at all. A **Session Brief** is one pass, an **Audit** is five (the **Expert Panel** plus its concluder), `standup install`'s doctor-check is one more; every pass is **out-of-band**, so the render path stays deterministic (see **Resume**). The unit **Brief Overhead** and **Audit Overhead** are itemised in: a pass carries its own `usage`, which the **Rate Card** prices like any turn. Two rules hold for every pass wherever it was made (ADR 0003 § the LLM-pass seam): an *empty result is a failure* — a pass that answered nothing produced no claim, and nothing partial is ever stored — and a pass that *outruns its timeout* is a failure named by its label. Which transport carried it is not a property of the pass and is never a caller's choice.
+_Avoid_: request, query, prompt (the prompt is one half of a pass's input), call (overloaded — a **Call** is a tool call in the Watch)
 
 **LLM-as-CPU**:
 A turn where the model performs mechanical data transformation in its head (parsing, reformatting, arithmetic) that a script would do for ~$0. Only detectable by judging *content* — hence only ever claimed by an **Audit**, never by the deterministic **Loop** detector.
