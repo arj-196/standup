@@ -45,7 +45,7 @@ from textual.widgets import Static
 from . import diffrows, toolcalls
 from .diffrows import lexed_command, styled_lines
 from .theme import Theme
-from .watchstream import LIVE_THRESHOLD, FeedEvent, LiveSessionInfo, WatchStream
+from .watchstream import FeedEvent, LiveSessionInfo, WatchStream
 
 POLL_INTERVAL = 0.25       # seconds between stream polls
 FPS = 30                   # animation frames per second
@@ -1106,9 +1106,10 @@ class WatchApp(App):
         clock = f"watch {_elapsed(time.monotonic() - self._t0, wide)}"
         # A widened Live window (--since) is stated, always: it is why a session
         # that went quiet an hour ago has a lane, and "live" means something
-        # different for this run than it does by default.
-        if self.stream.live_window != LIVE_THRESHOLD:
-            clock = f"live ≤{_window(self.stream.live_window)} · {clock}"
+        # different for this run than it does by default. The stream publishes
+        # the *fact*; the UI does not re-derive it from the default window.
+        if v.widened_window is not None:
+            clock = f"live ≤{_window(v.widened_window)} · {clock}"
         pad = width - top.cell_len - len(clock)
         top.append(" " * max(2, pad))
         top.append(clock, style=t.style("faint"))
@@ -1578,9 +1579,10 @@ class WatchApp(App):
             v = self.stream.vitals()
             if v.live:
                 sid = v.live[0].session_id
-        if sid is None or sid not in self.stream.tailers:
+        info = self.stream.session_info(sid) if sid else None
+        if info is None:
             return
-        log_path = Path(self.stream.tailers[sid].session.log_path)
+        log_path = Path(info.log_path)
         from . import transcript as transcript_mod
         try:
             text = transcript_mod.render_transcript(log_path)

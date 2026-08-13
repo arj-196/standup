@@ -147,10 +147,17 @@ class Activity:
 
 @dataclass
 class LiveSessionInfo:
+    """One Session as the header (and the transcript key) needs it — the whole
+    of what a consumer may know about a lane, so nothing reads the tailers
+    (ADR 0004 § discovery is an entry point, not the constructor)."""
     session_id: str
     title: str
     objective: str | None        # Session Brief claim, when one exists
     last_append: datetime
+    # the Session's JSONL: what `standup session` renders when the Watch hands
+    # off to a Transcript. A path, not an open reader — the Watch's own reading
+    # of this log is incremental and stateful, and a Transcript is a fresh one.
+    log_path: str = ""
     num: int = 0                 # stable lane number, assigned first-seen —
                                  # never re-sorted, so `[2]` stays session 2
     activity: Activity | None = None   # None once the turn is over
@@ -172,6 +179,12 @@ class Vitals:
     # quiet header can state the absence with its last handle ("no live
     # session · last log append 42m ago")
     last: LiveSessionInfo | None = None
+    # This run's Live window when `--since` widened it, None on the default.
+    # The *fact*, not the window: a consumer that received the window alone
+    # would have to compare it against LIVE_THRESHOLD to know whether to say
+    # anything, which is this module's decision reproduced outside it
+    # (ADR 0004 § discovery is an entry point, not the constructor).
+    widened_window: timedelta | None = None
 
 
 def _parse_ts(raw: str | None) -> datetime | None:
@@ -765,23 +778,47 @@ class WatchStream:
 
     The UI drives it by calling poll() on a short interval; internal rate
     limiting keeps git subprocesses and discovery scans on their own cadence.
+
+    Two ways in (ADR 0004 § discovery is an entry point, not the constructor):
+    `discover()` for the live Watch, which reads the environment through the
+    Scan Universe; the constructor for everything else, which is handed the
+    answers — a name, the checkouts, the Sessions, the log directory.
     """
 
-    def __init__(self, u: universe.Universe, repo_arg: str, quiet: bool = False,
+    @classmethod
+    def discover(cls, u: universe.Universe, repo_arg: str, quiet: bool = False,
+                 live_window: timedelta | None = None) -> "WatchStream":
+        """The launch path: resolve the environment, then build the stream.
+
+        Every environment question is asked here and only here — the Derived
+        Cache and the log scan behind `u.sessions()`, the Project Handle (or
+        path) behind `_resolve_target`, and where the logs live. The Universe is
+        read and not kept: a Watch runs for minutes and has no business holding
+        the Derived Cache open for them.
+        """
+        name, checkouts = _resolve_target(repo_arg, u)
+        return cls(name=name, checkouts=checkouts, sessions=u.sessions(),
+                   projects_dir=u.projects_dir, quiet=quiet,
+                   live_window=live_window)
+
+    def __init__(self, name: str, checkouts: list[str], sessions: list[Session],
+                 projects_dir: Path, quiet: bool = False,
                  live_window: timedelta | None = None):
-        # The Universe is read here and not kept: a Watch runs for minutes and
-        # has no business holding the Derived Cache open for them. Everything it
-        # needs afterwards is the log directory, which it globs directly for
-        # sessions and subagent transcripts that appear mid-run.
-        self.projects_dir = u.projects_dir
+        # Resolved values only, so a stream can be built over a scratch repo and
+        # a temp log tree. `sessions` is the *whole* Scan Universe, not this
+        # repo's share of it: which of them get a lane is this object's decision
+        # (repo membership, then the Live window), and the ones that do not still
+        # have to be marked known, so `_discover` never replays them as new.
+        # `projects_dir` is the log directory, globbed for the Sessions and
+        # subagent transcripts that appear mid-run.
+        self.projects_dir = Path(projects_dir)
         self.quiet = quiet
         # The recency claim, widenable per run (`--since`): it decides both which
         # Sessions this Watch picks up and which ones the header still calls
         # live. One window for both, because a lane in the feed that has no row
         # in the header is a Session you can filter to but cannot see.
         self.live_window = live_window or LIVE_THRESHOLD
-        sessions = u.sessions()
-        self.name, self.checkouts = _resolve_target(repo_arg, u)
+        self.name, self.checkouts = name, list(checkouts)
         # longest-first, so a path inside a worktree nested under the main
         # checkout (`.claude/worktrees/…`) resolves to the worktree's root, not
         # to a `.claude/…`-relative path under main. Shared by reference with
@@ -808,6 +845,9 @@ class WatchStream:
         here.sort(key=lambda s: s.last_activity)
         for s in here:
             self._add_tailer(s)
+        # seeded against the checkouts we were handed, so a scratch repo is the
+        # whole of the ground-truth half's environment — the git questions stay
+        # real (ADR 0004 § discovery is an entry point, not the constructor)
         self.git = _GitWatcher(self.checkouts)
 
     # -- setup helpers -------------------------------------------------------
@@ -1039,8 +1079,15 @@ class WatchStream:
         return LiveSessionInfo(session_id=sid, title=t.session.title,
                                objective=self._briefs.get(sid),
                                last_append=t.last_append,
+                               log_path=t.session.log_path,
                                num=self._nums.get(sid, 0),
                                activity=self._activity_of(t))
+
+    def session_info(self, session_id: str) -> LiveSessionInfo | None:
+        """One tailed Session's published state, live or settled — None for a
+        Session this Watch never picked up. The `s` key asks this about whatever
+        the selection names, which is not always a Live Session."""
+        return self._info(session_id) if session_id in self.tailers else None
 
     def vitals(self) -> Vitals:
         now = _now()
@@ -1054,7 +1101,10 @@ class WatchStream:
         return Vitals(repo=self.name, path=self.checkouts[0],
                       branch=self.git.main_branch(),
                       dirty=self.git.dirty_count(), live=live,
-                      last=self._info(last_sid) if last_sid else None)
+                      last=self._info(last_sid) if last_sid else None,
+                      widened_window=(self.live_window
+                                      if self.live_window != LIVE_THRESHOLD
+                                      else None))
 
     def parting_snapshot(self) -> str:
         """The plain-stdout lines printed after the alt-screen closes."""

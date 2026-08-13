@@ -21,7 +21,7 @@ def _events(repo, projects_dir) -> list:
     """The backfill of every Live Session in `repo` — the claim stream with no
     git poll in it."""
     with universe.open_universe(projects_dir) as u:
-        return WatchStream(u, str(repo.path)).start()
+        return WatchStream.discover(u, str(repo.path)).start()
 
 
 def test_every_recorded_edit_becomes_a_file_event(scratch_repo, projects_dir):
@@ -70,7 +70,7 @@ def test_a_call_the_log_recorded_no_text_for_narrates_nothing(
      .save(projects_dir))
 
     with universe.open_universe(projects_dir) as u:
-        ws = WatchStream(u, str(repo.path))
+        ws = WatchStream.discover(u, str(repo.path))
     events = ws.start()
 
     assert [e for e in events if e.kind == "file"] == []
