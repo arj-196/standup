@@ -38,6 +38,17 @@ to it. Rejected: giving each view its own clock — cheaper per view, but it let
 the same Brief render `(stale)` in the inbox and unhedged in `cost`, which is
 the one failure the `~`-marking exists to prevent.
 
+**The `~`-marking is one implementation too**, in `termout`: `claim_hedges` for
+the vocabulary, `claim_line` and `claim_rule` for the two layouts a claim
+appears in (a clamped metadata line under a title; a labelled rule across a
+view). Surfaces choose a layout, never a spelling. Before that, the three
+surfaces each wrote their own — the inbox `stale`, the Transcript `may be
+stale`, the `audit` header `may be stale — session continued after this audit`
+— three sentences about one boolean, and the next surface added would have
+written a fourth or, as the Watch did, none at all. A surface reconstructing the
+mark is caught by a source scan (`tests/test_module_surfaces.py`); that all three
+hedge the same artifact is pinned behaviourally in `tests/test_artifacts.py`.
+
 Both generate by **shelling out to Claude Code, not the Anthropic API**, so the
 user's existing login pays. Verified 2026-07-22 (Claude Code 2.1.201): headless
 `claude -p` authenticates with no `ANTHROPIC_API_KEY` and no TTY — turnkey for

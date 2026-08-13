@@ -86,11 +86,6 @@ RAIL_COLS = 9              # the left rail: gap gutter + session lane + its spac
                            # An event's spine, on every row it occupies — and so
                            # the handle that stays reachable in an open body
 
-_MARKS = {
-    "file": "✎", "call": "⏺", "commit": "⚑", "push": "⇧",
-    "branch": "⑂", "unattributed": "~", "session": "●", "worktree": "⑂",
-}
-
 
 def _hm(when: datetime) -> str:
     return when.astimezone().strftime("%H:%M")

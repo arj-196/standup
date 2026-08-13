@@ -6,56 +6,26 @@ Layout rules (CONTEXT.md, "Resume"):
   for at-a-glance scanning, metadata indented below;
 - no emitted line may exceed the terminal width: content grows vertically,
   never wraps.
+
+Colour, width, clamping, the short-hex marks and the `~`-claim renderer are
+`termout`'s, shared with the Transcript and the `audit` view — this module is
+the Triage Inbox's layout and nothing else.
 """
 
 from __future__ import annotations
 
-import os
 import re
-import shutil
-import sys
 from collections import Counter
 from datetime import datetime, timezone
 
 from . import handles, join
 from .cost import ProjectCost, SessionCost
-from .models import Attribution, Commit, RepoEntry, Rollup
+from .models import Attribution, Brief, Commit, RepoEntry, Rollup
+from .termout import (Style, claim_hedges, claim_line, clamp, commit_ref,
+                      session_ref, style, term_width, visible_len)
 
 AREAS_SHOWN = 3
-ANSI_RE = re.compile(r"\033\[[0-9;]*m")
 _EPOCH = datetime.min.replace(tzinfo=timezone.utc)
-
-
-class Style:
-    def __init__(self, enabled: bool):
-        c = lambda code: (lambda s: f"\033[{code}m{s}\033[0m") if enabled else (lambda s: s)
-        self.bold = c("1")
-        self.dim = c("2")
-        self.red = c("31")
-        self.green = c("32")
-        self.yellow = c("33")
-        self.cyan = c("36")
-
-
-def _style() -> Style:
-    enabled = sys.stdout.isatty() and not os.environ.get("NO_COLOR")
-    return Style(enabled)
-
-
-def _term_width() -> int:
-    return shutil.get_terminal_size((100, 24)).columns
-
-
-def _visible_len(line: str) -> int:
-    return len(ANSI_RE.sub("", line))
-
-
-def _clamp(line: str, width: int) -> str:
-    """Guarantee the line fits; a clamped line loses styling rather than wrap."""
-    if _visible_len(line) <= width:
-        return line
-    plain = ANSI_RE.sub("", line)
-    return plain[: max(0, width - 1)].rstrip() + "…"
 
 
 def humanize(dt: datetime | None, now: datetime) -> str:
@@ -114,31 +84,8 @@ def _attr_label(attrs: list[Attribution], st: Style) -> str:
     return label
 
 
-def _session_ref(handle: str, st: Style) -> str:
-    """A Session Handle — the only short hex in Standup you can actually type.
-
-    It gets the *stronger* of the two treatments (see `_commit_ref`) because it
-    outranks a commit hash: it is an address, not a reference. Cyan is the
-    colour Standup already gives the human's side of a session.
-    """
-    return st.cyan(handle)
-
-
-def _commit_ref(short: str, st: Style) -> str:
-    """A commit's short hash, marked so it can never read as a Session Handle.
-
-    The Session Handle borrows the git-short-hash idiom deliberately
-    (CONTEXT.md), so both are short lowercase hex in a leading column — and a
-    bare hash here invites `standup session 6a4eeef`, which addresses nothing.
-    Grey is the point: a commit hash recedes behind the handle beside it. The
-    `@` sigil carries the distinction on its own when colour cannot (piped
-    output, NO_COLOR).
-    """
-    return st.dim("@" + short)
-
-
 def _commit_line(c: Commit, st: Style, indent: str) -> str:
-    return f"{indent}{_commit_ref(c.short, st)} {c.subject}  {_attr_label(c.attributions, st)}"
+    return f"{indent}{commit_ref(c.short, st)} {c.subject}  {_attr_label(c.attributions, st)}"
 
 
 def _dominant_sessions(commits: list[Commit], st: Style) -> str:
@@ -154,37 +101,32 @@ def _dominant_sessions(commits: list[Commit], st: Style) -> str:
     return label
 
 
-def _brief_line(brief: "Brief | None", st: Style, width: int, indent: str) -> str | None:
+def _brief_line(brief: Brief | None, st: Style, width: int, indent: str) -> str | None:
     """The Session Brief's objective, rendered as a marked *claim* line
-    (ADR 0003 § the Session Brief): a `~` glyph in the honesty family used for
-    `likely` attribution, plus a `(stale)` / status hedge. Never impersonates
-    a derived fact; augments, never replaces, the title line above it.
+    (ADR 0003 § the shared model), through the one claim renderer the Transcript
+    and the `audit` view also use (`termout.claim_line`). Never impersonates a
+    derived fact; augments, never replaces, the title line above it.
     """
     if brief is None or not brief.objective:
         return None
-    tags = []
-    if brief.status and brief.status != "done":
-        tags.append(brief.status)
-    if brief.stale:
-        tags.append("stale")
-    suffix = st.dim("  (" + ", ".join(tags) + ")") if tags else ""
-    return _clamp(f"{indent}{st.dim('~')} {brief.objective}{suffix}", width)
+    return claim_line(brief.objective, st, width, indent=indent,
+                      hedges=claim_hedges(brief))
 
 
 def _rollup_stanza(r: Rollup, now: datetime, st: Style, width: int,
                    briefs: dict | None = None) -> list[str]:
     if r.session_id:
-        title_line = f'  {_session_ref(r.handle, st)}  ~ "{r.title}"'
+        title_line = f'  {session_ref(r.handle, st)}  ~ "{r.title}"'
     else:
         title_line = f"    {st.dim('unattributed')}"
-    lines = [_clamp(title_line, width)]
+    lines = [clamp(title_line, width)]
     bl = _brief_line((briefs or {}).get(r.session_id) if r.session_id else None, st, width, "      ")
     if bl:
         lines.append(bl)
     meta = f"{_plural(len(r.files), 'file')} · {_areas([pf.path for _, pf in r.files])}"
     if r.last_activity:
         meta += f" · {humanize(r.last_activity, now)}"
-    lines.append(_clamp(f"      {st.dim(meta)}", width))
+    lines.append(clamp(f"      {st.dim(meta)}", width))
     return lines
 
 
@@ -220,8 +162,8 @@ def _namer(items, name_of, path_of, st: Style):
 def render_overview(entries: list[RepoEntry], since: datetime, now: datetime,
                     show_all: bool = False, window: str = "7d",
                     briefs: dict | None = None) -> str:
-    st = _style()
-    width = _term_width()
+    st = style()
+    width = term_width()
     out: list[str] = [st.bold(f"standup · {now.astimezone().strftime('%a %b %d')}"), ""]
     named = _namer(entries, lambda e: e.name, lambda e: e.main_path, st)
 
@@ -237,9 +179,9 @@ def render_overview(entries: list[RepoEntry], since: datetime, now: datetime,
             head += f" · {_plural(n_sessions, 'session')}" if n_sessions else " · unattributed"
             if _unpushed_total(e):
                 head += f" · {_plural(_unpushed_total(e), 'commit')} unpushed"
-            out.append(_clamp(head, width))
+            out.append(clamp(head, width))
             dirty_branches = list(dict.fromkeys(co.branch for co in e.checkouts if co.pending))
-            out.append(_clamp(f"  {st.dim(handles.shorten_home(e.main_path) + ' · ' + ', '.join(dirty_branches))}", width))
+            out.append(clamp(f"  {st.dim(handles.shorten_home(e.main_path) + ' · ' + ', '.join(dirty_branches))}", width))
             for r in rolls:
                 out.extend(_rollup_stanza(r, now, st, width, briefs))
             out.append("")
@@ -254,7 +196,7 @@ def render_overview(entries: list[RepoEntry], since: datetime, now: datetime,
             branches = list(dict.fromkeys(co.branch for co in e.checkouts if co.unpushed))
             line = (f"○ {st.bold(named(e))} · {_plural(len(commits), 'commit')} unpushed"
                     f" on {', '.join(branches)} · {_dominant_sessions(commits, st)}")
-            out.append(_clamp(line, width))
+            out.append(clamp(line, width))
         out.append("")
 
     if show_all:
@@ -264,7 +206,7 @@ def render_overview(entries: list[RepoEntry], since: datetime, now: datetime,
             for e in _by_recency(done):
                 line = (f"{st.green('✓')} {st.bold(named(e))} · {_plural(len(e.done), 'commit')} "
                         f"{_terminal_verb(e)} · {_dominant_sessions(e.done, st)}")
-                out.append(_clamp(line, width))
+                out.append(clamp(line, width))
         else:
             out.append(st.dim("  nothing done in the window"))
         out.append("")
@@ -275,25 +217,25 @@ def render_overview(entries: list[RepoEntry], since: datetime, now: datetime,
 def render_detail(entry: RepoEntry, now: datetime,
                   show_all: bool = False, window: str = "7d",
                   briefs: dict | None = None, handle: str | None = None) -> str:
-    st = _style()
-    width = _term_width()
+    st = style()
+    width = term_width()
     # a Remoteless Repo states it here, unconditionally: the drill-down is the
     # one view you asked for by name, and the inbox stays silent (ADR 0006)
     head = st.bold(entry.name) + "  " + st.dim(handles.shorten_home(entry.main_path))
     if not entry.has_remote:
         head += st.dim(" · no remote")
-    out = [_clamp(head, width), ""]
+    out = [clamp(head, width), ""]
     multi = len(entry.checkouts) > 1
 
     rolls = join.rollups(entry)
     for r in rolls:
         if r.session_id:
-            head = f'{_session_ref(r.handle, st)}  ~ "{r.title}"'
+            head = f'{session_ref(r.handle, st)}  ~ "{r.title}"'
             if r.last_activity:
                 head += st.dim(f" · {humanize(r.last_activity, now)}")
         else:
             head = st.dim("unattributed")
-        out.append(_clamp(head, width))
+        out.append(clamp(head, width))
         bl = _brief_line((briefs or {}).get(r.session_id) if r.session_id else None, st, width, "  ")
         if bl:
             out.append(bl)
@@ -308,7 +250,7 @@ def render_detail(entry: RepoEntry, now: datetime,
                 if len(others) > 1:
                     also += f" +{len(others) - 1}"
                 line += f"   {st.dim(also)}"
-            out.append(_clamp(line, width))
+            out.append(clamp(line, width))
         out.append("")
 
     for co in entry.checkouts:
@@ -316,7 +258,7 @@ def render_detail(entry: RepoEntry, now: datetime,
             continue
         out.append(st.bold(f"unpushed · {_plural(len(co.unpushed), 'commit')} on {co.branch}"))
         for c in co.unpushed:
-            out.append(_clamp(_commit_line(c, st, "  "), width))
+            out.append(clamp(_commit_line(c, st, "  "), width))
         out.append("")
 
     if not rolls and not any(co.unpushed for co in entry.checkouts):
@@ -329,7 +271,7 @@ def render_detail(entry: RepoEntry, now: datetime,
         out.append(st.bold(st.green(f"done · {_window_label(window)}")))
         if entry.done:
             for c in entry.done:
-                out.append(_clamp(_commit_line(c, st, "  "), width))
+                out.append(clamp(_commit_line(c, st, "  "), width))
         else:
             out.append(st.dim("  nothing done in the window"))
         out.append("")
@@ -388,18 +330,18 @@ def _cost_disclaimer(st: Style, width: int) -> str:
     the words that make it a disclaimer, leaving a figure that reads as money."""
     full = "notional API-equivalent load — not money paid (real spend: claude.ai)"
     short = "notional load — not money paid"
-    return st.dim(_clamp(full if len(full) <= width else short, width))
+    return st.dim(clamp(full if len(full) <= width else short, width))
 
 
 def render_cost_overview(projects: list[ProjectCost], window: str, now: datetime,
                          order: str = "cost") -> str:
-    st = _style()
-    width = _term_width()
+    st = style()
+    width = term_width()
     # a re-ordered list must say so, or the money column reads as mis-sorted
     head = f"COST · {window}" + (" · by recency" if order == "recent" else "")
-    out = [_clamp(st.bold(head), width), _cost_disclaimer(st, width), ""]
+    out = [clamp(st.bold(head), width), _cost_disclaimer(st, width), ""]
     if not projects:
-        out.append(_clamp(st.dim("no priced sessions in the window"), width))
+        out.append(clamp(st.dim("no priced sessions in the window"), width))
         return "\n".join(out)
 
     total = sum(p.cost for p in projects)
@@ -412,7 +354,7 @@ def render_cost_overview(projects: list[ProjectCost], window: str, now: datetime
         # the sort key is shown when it is what ranked the row
         if order == "recent" and p.last_turn:
             line += f"   {st.dim(humanize(p.last_turn, now))}"
-        out.append(_clamp(line, width))
+        out.append(clamp(line, width))
 
     merged: dict[str, float] = {}
     for p in projects:
@@ -420,28 +362,28 @@ def render_cost_overview(projects: list[ProjectCost], window: str, now: datetime
             merged[m] = merged.get(m, 0.0) + c
     tail = "  ·  " + " · ".join(f"{f} {_money(c)}"
                                 for f, c in sorted(_by_family(merged).items(), key=lambda kv: -kv[1]))
-    out += [_clamp("  " + "─" * w, width),
-            _clamp(f"  {_money(total):>{w}}  {st.bold('total')}{st.dim(tail)}", width)]
+    out += [clamp("  " + "─" * w, width),
+            clamp(f"  {_money(total):>{w}}  {st.bold('total')}{st.dim(tail)}", width)]
 
     overhead = sum(p.brief_overhead for p in projects)
     n_briefs = sum(p.brief_count for p in projects)
     if n_briefs:
-        out.append(_clamp(st.dim(f"  {_money(overhead):>{w}}  brief overhead"
-                                 f"  ({_plural(n_briefs, 'brief')}) — cost of keeping Session Briefs current"),
-                          width))
+        out.append(clamp(st.dim(f"  {_money(overhead):>{w}}  brief overhead"
+                                f"  ({_plural(n_briefs, 'brief')}) — cost of keeping Session Briefs current"),
+                         width))
     audit_overhead = sum(p.audit_overhead for p in projects)
     n_audits = sum(p.audit_count for p in projects)
     if n_audits:
-        out.append(_clamp(st.dim(f"  {_money(audit_overhead):>{w}}  audit overhead"
-                                 f"  ({_plural(n_audits, 'audit')}) — cost of the Expert Panel runs"),
-                          width))
+        out.append(clamp(st.dim(f"  {_money(audit_overhead):>{w}}  audit overhead"
+                                f"  ({_plural(n_audits, 'audit')}) — cost of the Expert Panel runs"),
+                         width))
     return "\n".join(out)
 
 
 def render_cost_detail(project: ProjectCost, window: str, now: datetime,
                        order: str = "cost") -> str:
-    st = _style()
-    width = _term_width()
+    st = style()
+    width = term_width()
     # each session line already shows its own recency, so the header mark is
     # the only extra ink a re-ordered drill-down needs
     order_tag = " · by recency" if order == "recent" else ""
@@ -455,10 +397,10 @@ def render_cost_detail(project: ProjectCost, window: str, now: datetime,
     if project.audit_count:
         extra.append(f"+{_money(project.audit_overhead)} audit overhead")
     one_line = head + "".join(st.dim(f"  · {e}") for e in extra)
-    if _visible_len(one_line) <= width:
+    if visible_len(one_line) <= width:
         out = [one_line]
     else:
-        out = [_clamp(head, width)] + [_clamp("  " + st.dim(e), width) for e in extra]
+        out = [clamp(head, width)] + [clamp("  " + st.dim(e), width) for e in extra]
     out += [_cost_disclaimer(st, width), ""]
     w = max((len(_money(s.cost)) for s in project.sessions), default=5)
     for s in project.sessions:
@@ -468,9 +410,9 @@ def render_cost_detail(project: ProjectCost, window: str, now: datetime,
         if s.loops:
             n = f"{len(s.loops)} loops" if len(s.loops) > 1 else "loop"
             loop_tag = f"  {st.yellow(f'⟳ {n} {_money(s.loop_cost)}')}"
-        head = (f"  {_money(s.cost):>{w}}  {_session_ref(s.handle, st)}  \"{s.title}\""
+        head = (f"  {_money(s.cost):>{w}}  {session_ref(s.handle, st)}  \"{s.title}\""
                 f"  {st.dim(_abbr_model(s.dominant_model or '?'))}{why}{loop_tag}")
-        out.append(_clamp(head, width))
+        out.append(clamp(head, width))
         indent = " " * (w + 4)
         # the Session Brief's objective, in the stanza position the Triage Inbox
         # and `standup session` both use: under the title it augments, above the
@@ -489,20 +431,20 @@ def render_cost_detail(project: ProjectCost, window: str, now: datetime,
         # priced over a window states the recency of the work it priced
         if s.last_turn:
             meta += f" · {humanize(s.last_turn, now)}"
-        out.append(_clamp(indent + st.dim(meta), width))
+        out.append(clamp(indent + st.dim(meta), width))
         for l in s.loops:
             evid = f"⟳ {l.iterations}× {l.label} — {_money(l.cost)} loop cost"
             if l.unpriced_turns:
                 evid += f" (+{l.unpriced_turns} unpriced turns)"
-            out.append(_clamp(indent + st.dim(evid), width))
-        out.append(_clamp(indent + st.dim(f"standup session {s.handle}"), width))
+            out.append(clamp(indent + st.dim(evid), width))
+        out.append(clamp(indent + st.dim(f"standup session {s.handle}"), width))
         out.append("")
     return "\n".join(out)
 
 
 def render_cost_footer(session_costs: list["SessionCost"], window: str) -> str:
     """One dim notional-load line for the `-a` retrospective (never real money)."""
-    st = _style()
+    st = style()
     total = sum(s.cost for s in session_costs)
     merged: dict[str, float] = {}
     for s in session_costs:
@@ -511,11 +453,11 @@ def render_cost_footer(session_costs: list["SessionCost"], window: str) -> str:
     split = " · ".join(f"{f} {_money(c)}"
                        for f, c in sorted(_by_family(merged).items(), key=lambda kv: -kv[1]))
     head = f"notional load · {_window_label(window)}: {_money(total)}"
-    width = _term_width()
+    width = term_width()
     # the per-family split is a detail, the "not real money" is the point: drop
     # the split before clamping, so narrow terminals never lose the caveat
     for tail in (f"  ({split})" if split else "", ""):
         line = f"{head}{tail} — not real money"
         if len(line) <= width:
             return st.dim(line)
-    return st.dim(_clamp(line, width))
+    return st.dim(clamp(line, width))

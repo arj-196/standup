@@ -283,6 +283,21 @@ drill-down.
 Only repos some Claude session has ever visited are scanned (ADR 0001 § the Scan Universe) —
 but within those repos, *all* dirt is shown, Claude-made or not.
 
+`standup --json` prints that same reading as a payload instead of a view, and it
+is derived from the models: every field a Repo Entry, a Checkout, a Commit, an
+Attribution, a Session or a Brief carries is in it, so a field added to the
+domain appears without a code change and can never be silently dropped. A
+Session's `title` is there too — it folds four fields in order, so it is the one
+thing a consumer cannot compute for itself.
+
+`standup cost --json` is a *view* payload rather than a model one — its figures
+are folds over per-turn usage, not fields — so it names its keys explicitly,
+including `unpriced_turns` (turns the rate card had no row for, counted apart
+and never at $0). One key to know about: a session's `last_turn` is the newest
+turn the window counted, and the older key `last_activity` beside it is the same
+value; that name means the *session log's mtime* in the inbox payload, which is
+why the honest one now sits next to it.
+
 ## The attributed diff
 
 `standup <repo> diff` is the drill-down one magnification deeper: where that

@@ -260,15 +260,17 @@ def generate(log_path: Path, u: universe.Universe, progress=lambda r: None) -> P
     """Run the full panel for one session and store the Audit. Synchronous
     facade over the async fan-out; raises AuditError on failure (nothing
     partial is ever stored)."""
-    from . import claude_logs
-
     sid = log_path.stem
     cache = u.cache
     sessions = u.sessions()
     target = next((s for s in sessions if s.session_id == sid), None)
-    if target is None:  # footprint-less session: parse minimally for cwd/title
-        target = Session(session_id=sid, log_path=str(log_path))
-        claude_logs._full_scan(target, log_path)
+    if target is None:
+        # A footprint-less session is absent from the inbox's sweep, so read its
+        # log directly — through the one log reader, which yields the same
+        # Session (cwd, titles) and caches the reading for whatever asks next
+        # (ADR 0001 § the one log reader). Reaching for the sweep's private
+        # prefiltered scan would have made this module a rival reading.
+        target = claude_logs.read_log(log_path, cache).session
 
     scan = loops.for_session(log_path, cache)
     looped_ids = {tid for l in loops.significant(scan) for tid in l.tool_ids}
