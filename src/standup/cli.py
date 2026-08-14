@@ -831,8 +831,8 @@ def _cmd_watch(argv: list[str]) -> int:
         # repo and pick up the Live Sessions, and a live view must not hold the
         # Derived Cache open for the minutes it stays on screen
         with universe.open_universe(args.projects_dir) as u:
-            stream = watchstream.WatchStream(u, args.repo, quiet=args.quiet,
-                                             live_window=window)
+            stream = watchstream.WatchStream.discover(
+                u, args.repo, quiet=args.quiet, live_window=window)
     except watchstream.WatchError as e:
         print(str(e), file=sys.stderr)
         return 1

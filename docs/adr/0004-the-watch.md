@@ -7,7 +7,7 @@ snapshot rendered to stdout; the Watch runs in a terminal you leave and return
 to while an agent works, so it is the one surface that must answer *is something
 happening now* rather than *what is the state*.
 
-Eleven decisions, recorded together because they are one design — each later
+Twelve decisions, recorded together because they are one design — each later
 one reaches into an earlier one's geometry.
 
 ## The event source
@@ -154,6 +154,44 @@ rule is the thing that produced the bug.
 *Rejected: giving `CommitFile` the parser's full hunk shape* — the Watch renders
 a change as it lands, with no line numbers on screen to carry; the projection is
 the boundary that keeps the Watch's model as small as what it draws.
+
+## Discovery is an entry point, not the constructor
+
+**`WatchStream.discover(u, repo_arg)` asks the environment; `WatchStream(...)` is
+handed the answers.** Discovery owns every question that only the machine can
+answer — the Derived Cache and the log scan behind `u.sessions()`, the Project
+Handle (or path) resolution behind `_resolve_target`, and where the logs live —
+and then constructs the stream from name, checkouts, Sessions and log directory.
+Nothing else in the module imports the Universe for its own use.
+
+The reason is testability of the *decisions*, not of the plumbing. Every choice
+the stream makes — which Sessions get a lane, how a hunk becomes a Feed Event,
+when a tool verb yields to `thinking`, whether a dirty path was already
+explained — used to be reachable only through a Scan Universe over a real
+`~/.claude`, so the Watch's own rules were pinned by the two witnesses' tests
+and by nothing that could see the stream object itself.
+
+Deliberately *not* moved: the git watcher's seeding. It runs in the constructor,
+against the checkouts it was handed, so building a stream still shells out to
+`git` — a scratch repo is the whole of that environment. The ground-truth half of
+the Watch *is* git; faking it would test the fake (`tests/support/repos.py`).
+
+**The UI reads published types only.** Two facts the UI used to take from the
+stream's insides now travel on them:
+
+- **the log path**, on `LiveSessionInfo` (and `session_info(sid)` for a Session
+  that is tailed but no longer live) — the `s` key opens a Transcript, and used
+  to read `stream.tailers[sid].session.log_path`;
+- **the widened Live window**, on `Vitals.widened_window` — the fact, not the
+  window. The UI compared `stream.live_window` against `LIVE_THRESHOLD`, so the
+  default window was a constant imported across the boundary and the decision
+  "is this worth stating" was made twice.
+
+*Rejected: a fake Universe for tests* — it pins the Universe's shape, which is
+another module's contract, and leaves the stream's own constructor untested.
+*Rejected: keeping `live_window` on the published surface and letting consumers
+compare* — same rule in two places, and the second copy is the one that goes
+stale when the default moves.
 
 ## Motion never outlives the data
 
