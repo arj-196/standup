@@ -89,6 +89,36 @@ Unplanned payoff: the diff row renderer sits on the Textual-free side, so the
 Watch and the Attributed Diff call the same code and the rules below cannot
 drift between the two surfaces.
 
+**The row model sits on that side too — the containment rule, one layer further
+out.** A feed entry's *content* is `watchrow.EventRow`, plain Python holding no
+`Text` and no cell widths: which later event its Change Run admits, how each
+witness folds, where the collapsed window sits, what the typing animation still
+owes, how a Call's input decomposes into body rows, and whether there is
+anything to disclose. `EventWidget` holds one and draws it. The line between
+them is content against appearance, so the window's *bounds* are the row's and
+the highlighting inside it is the widget's; the animation's *character budget*
+is the row's and the clock spending it is the app's; a Call's body *rows* are
+the row's and their columns are the widget's.
+
+Two constants moved with it and are imported back by the UI — `FRESH`, because
+`RUN_WINDOW` *is* it (§ the Change Run), and `CALL_HEAD_LIMIT`, because a Call's
+body threshold *is* its header's (§ Calls). One constant with two readers, not
+two kept equal by hand.
+
+Payoff: every bound below is table-testable over Feed Events
+(`tests/test_watch_rows.py`) rather than only through a mounted Textual app, and
+what still needs a widget is only what is about drawing
+(`tests/test_watch_render.py`). Accepted cost: one indirection at each call site
+(`w.row.shown_chars`), and a widget that must drop its highlight cache when the
+row it holds absorbs something — the one piece of bookkeeping the split creates.
+
+*Rejected: leaving the policy on the widget* — the bounds were then reachable
+only by constructing widgets, so the tests that existed pinned rendering and the
+rules themselves were pinned by nothing.
+*Rejected: folding runs in the stream instead of in a row model* — see
+*Alternatives considered*: it needs a revision protocol so the stream can say
+"revise what I gave you", and still needs the same UI code.
+
 **Everything between git's bytes and the row is shared, in the same direction.**
 Three things were duplicated across the boundary and are now single:
 
