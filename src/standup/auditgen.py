@@ -6,11 +6,12 @@ needs, then one Opus concluder receives their claims plus the deterministic
 data (never the raw transcript) and owns the solution and the Handoff Prompt.
 No model ever decides the panel's shape.
 
-Transport is the Claude Agent SDK — the programmatic face of `claude -p`,
-driving the same Claude Code binary and inheriting its login, so the user's
-subscription keeps paying (verified 2026-07-30; same keyless-auth ground as
-ADR 0003 § the Session Brief). Imported lazily so the display path gains no
-dependency.
+Reaching a model is `llmpass`'s (ADR 0003 § the LLM-pass seam): this module
+builds five **Pass**es and reads five **Result**s, so the panel's shape, the
+evidence split and the Overhead itemisation are testable against canned text.
+The seam owns the transport, the timeout rule and the empty-result rule — an
+Expert that answered nothing fails the whole panel, and nothing partial is
+stored.
 
 Every pass's `usage` is recorded and itemised in the Audit's frontmatter as
 Audit Overhead; each `standup audit` run prints the overhead it just incurred.
@@ -22,20 +23,20 @@ never the file format.
 
 from __future__ import annotations
 
-import asyncio
 import json
 from datetime import datetime, timezone
 from pathlib import Path
 
 from . import audit as audit_mod
 from . import brief as brief_mod
-from . import claude_logs, loops, transcript, universe
+from . import llmpass, loops, transcript, universe
 from .audit import Audit
 from .models import Session
 
 EXPERT_MODEL = "claude-sonnet-5"
 CONCLUDER_MODEL = "claude-opus-5"
 PASS_TIMEOUT = 420        # seconds per panel pass
+CONCLUDER_TIMEOUT = 600   # the concluder reads four Experts before it writes
 MAX_DIGEST = 120_000      # chars of target transcript fed to transcript-reading Experts
 HEAD_DIGEST = 70_000      # over budget: keep this much head + the rest tail
 MAX_SIBLINGS = 40         # most recent same-repo sessions offered to the Recurrence Expert
@@ -46,49 +47,6 @@ class AuditError(Exception):
 
 
 # ── deterministic evidence ─────────────────────────────────────────────────
-
-def _digest(path: Path, looped_ids: set[str]) -> str:
-    """Numbered plain-text rendering of the target session. Assistant turns get
-    t<N> markers (the Handoff Prompt's evidence coordinates) and their per-turn
-    Notional Cost; tool calls belonging to a detected Loop are marked ⟳."""
-    from . import rates
-    parts: list[str] = []
-    turn = 0
-    try:
-        with open(path, errors="replace") as fh:
-            for line in fh:
-                try:
-                    obj = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                etype = obj.get("type")
-                msg = obj.get("message") or {}
-                if etype == "user":
-                    prompt = claude_logs.prompt_in(obj)
-                    if prompt is not None:
-                        parts.append("USER: " + prompt.text)
-                elif etype == "assistant":
-                    texts, tools = transcript._assistant_parts(
-                        msg.get("content"), show_thinking=False, looped_ids=looped_ids)
-                    if not texts and not tools:
-                        continue
-                    turn += 1
-                    u = msg.get("usage") if isinstance(msg.get("usage"), dict) else None
-                    c = rates.turn_cost(msg.get("model"), u) if u else None
-                    tag = f" (${c:.2f})" if c else ""
-                    head = f"[t{turn}{tag}]"
-                    for t in texts:
-                        parts.append(f"{head} CLAUDE: {t}")
-                        head = f"[t{turn}]"
-                    for tl, looped in tools:
-                        parts.append(f"  {'⟳' if looped else '·'} {tl}")
-    except OSError:
-        return ""
-    text = "\n".join(parts)
-    if len(text) > MAX_DIGEST:
-        text = text[:HEAD_DIGEST] + "\n… [middle elided] …\n" + text[-(MAX_DIGEST - HEAD_DIGEST):]
-    return text
-
 
 def _loop_table(scan: loops.LoopScan) -> str:
     if not scan.loops:
@@ -143,60 +101,71 @@ _CLAIM_RULES = (
 )
 
 
-def _expert_prompts(digest: str, loop_table: str, target_label: str,
-                    siblings: list[dict], target_brief: str | None) -> dict[str, str]:
-    return {
-        "loop-expert": (
-            "You are the Loop Expert on a fixed audit panel judging one Claude "
-            f"Code session ({target_label}) for automatable waste.\n"
-            "A deterministic detector found these Loops (repeated same-shape "
-            "tool-call runs):\n\n" + loop_table + "\n\n"
-            "For EACH Loop, judge: scriptable (a plain script could have done "
-            "this work), legitimate (retries, exploration, iterative dev — not "
-            "automatable), or unclear. Justify from the transcript.\n"
-            + _CLAIM_RULES + "\n\n--- TRANSCRIPT DIGEST ---\n" + digest
-        ),
-        "llm-as-cpu": (
-            "You are the LLM-as-CPU Expert on a fixed audit panel judging one "
-            f"Claude Code session ({target_label}).\n"
-            "Find turns where the assistant performs mechanical data "
-            "transformation IN ITS HEAD — parsing, reformatting, arithmetic, "
-            "copying values between formats, generating repetitive boilerplate "
-            "— work a script would do for ~$0. Distinguish from genuine "
-            "reasoning/design, which is what the model is for.\n"
-            + _CLAIM_RULES + "\n\n--- TRANSCRIPT DIGEST ---\n" + digest
-        ),
-        "prompt-structure": (
-            "You are the Prompt-Structure Expert on a fixed audit panel judging "
-            f"one Claude Code session ({target_label}).\n"
-            "Judge the HUMAN's side: instructions re-explained that belong in "
-            "CLAUDE.md, repeated boilerplate prompts that should be a skill or "
-            "slash command, context pasted that a tool could fetch, vague asks "
-            "that caused expensive exploration.\n"
-            + _CLAIM_RULES + "\n\n--- TRANSCRIPT DIGEST ---\n" + digest
-        ),
-        "recurrence": (
-            "You are the Recurrence Expert on a fixed audit panel.\n"
-            f"Target session: {target_label}\n"
-            + (f"Target objective (LLM-authored claim): {target_brief}\n" if target_brief else "")
-            + "Target Loops:\n" + loop_table + "\n\n"
-            "Below are sibling sessions from the SAME repository (title, "
-            "objective when known, detected Loops with measured Loop Costs). "
-            "Identify which siblings plausibly share the target's objective or "
-            "exhibit the same Loop shapes. Report recurrence as MEASURED FACT "
-            "only: name the matching siblings and sum the Loop Costs you were "
-            "given (e.g. 'recurred in 4 sessions, combined Loop Cost $23'). "
-            "Never forecast future costs.\n" + _CLAIM_RULES + "\n\n"
-            "--- SIBLINGS (JSON) ---\n" + json.dumps(siblings, indent=1)
-        ),
-    }
+def _expert_passes(digest: str, loop_table: str, target_label: str,
+                   siblings: list[dict], target_brief: str | None) -> list[llmpass.Pass]:
+    """The fixed roster, as five-sixths of the panel: four Experts, each handed
+    only the evidence its question needs. The instruction is the Pass's prompt;
+    the bulk evidence is its context (ADR 0003 § the LLM-pass seam)."""
+    transcript_evidence = "--- TRANSCRIPT DIGEST ---\n" + digest
+
+    def expert(label: str, prompt: str, context: str) -> llmpass.Pass:
+        return llmpass.Pass(label=label, model=EXPERT_MODEL, prompt=prompt,
+                            context=context, timeout=PASS_TIMEOUT)
+
+    return [
+        expert("loop-expert",
+               "You are the Loop Expert on a fixed audit panel judging one Claude "
+               f"Code session ({target_label}) for automatable waste.\n"
+               "A deterministic detector found these Loops (repeated same-shape "
+               "tool-call runs):\n\n" + loop_table + "\n\n"
+               "For EACH Loop, judge: scriptable (a plain script could have done "
+               "this work), legitimate (retries, exploration, iterative dev — not "
+               "automatable), or unclear. Justify from the transcript digest that "
+               "follows.\n" + _CLAIM_RULES,
+               transcript_evidence),
+        expert("llm-as-cpu",
+               "You are the LLM-as-CPU Expert on a fixed audit panel judging one "
+               f"Claude Code session ({target_label}).\n"
+               "In the transcript digest that follows, find turns where the "
+               "assistant performs mechanical data transformation IN ITS HEAD — "
+               "parsing, reformatting, arithmetic, copying values between "
+               "formats, generating repetitive boilerplate — work a script would "
+               "do for ~$0. Distinguish from genuine reasoning/design, which is "
+               "what the model is for.\n" + _CLAIM_RULES,
+               transcript_evidence),
+        expert("prompt-structure",
+               "You are the Prompt-Structure Expert on a fixed audit panel judging "
+               f"one Claude Code session ({target_label}).\n"
+               "Judge the HUMAN's side of the transcript digest that follows: "
+               "instructions re-explained that belong in CLAUDE.md, repeated "
+               "boilerplate prompts that should be a skill or slash command, "
+               "context pasted that a tool could fetch, vague asks that caused "
+               "expensive exploration.\n" + _CLAIM_RULES,
+               transcript_evidence),
+        expert("recurrence",
+               "You are the Recurrence Expert on a fixed audit panel.\n"
+               f"Target session: {target_label}\n"
+               + (f"Target objective (LLM-authored claim): {target_brief}\n"
+                  if target_brief else "")
+               + "Target Loops:\n" + loop_table + "\n\n"
+               "Below are sibling sessions from the SAME repository (title, "
+               "objective when known, detected Loops with measured Loop Costs). "
+               "Identify which siblings plausibly share the target's objective or "
+               "exhibit the same Loop shapes. Report recurrence as MEASURED FACT "
+               "only: name the matching siblings and sum the Loop Costs you were "
+               "given (e.g. 'recurred in 4 sessions, combined Loop Cost $23'). "
+               "Never forecast future costs.\n" + _CLAIM_RULES,
+               "--- SIBLINGS (JSON) ---\n" + json.dumps(siblings, indent=1)),
+    ]
 
 
-def _concluder_prompt(target_label: str, repo_path: str | None,
-                      loop_table: str, reports: dict[str, str]) -> str:
-    sections = "\n\n".join(
-        f"### {label}\n{text.strip() or '(empty)'}" for label, text in reports.items())
-    return (
+def _concluder_pass(target_label: str, repo_path: str | None, loop_table: str,
+                    reports: list[llmpass.Result]) -> llmpass.Pass:
+    """The Opus concluder: the Experts' claims plus the deterministic Loop table,
+    and deliberately **not** the transcript (ADR 0003 § the Audit)."""
+    sections = "\n\n".join(f"### {r.label}\n{r.text.strip() or '(empty)'}"
+                           for r in reports)
+    prompt = (
         "You are the concluder of a fixed audit panel for `standup`, a CLI that "
         "analyses Claude Code sessions for automatable cost. Four Experts "
         f"examined session {target_label}"
@@ -221,45 +190,24 @@ def _concluder_prompt(target_label: str, repo_path: str | None,
         "a real example. If nothing is worth scripting, write `(no handoff — "
         "nothing scriptable found)` instead of the fenced block.\n\n"
         "Dollar figures are measured carve-outs of past cost — NEVER present "
-        "them as projected savings.\n\n"
-        "--- DETERMINISTIC LOOP TABLE ---\n" + loop_table + "\n\n"
-        "--- EXPERT CLAIMS ---\n" + sections
+        "them as projected savings."
     )
-
-
-async def _run_pass(label: str, prompt: str, model: str) -> dict:
-    """One panel pass via the Agent SDK: no tools, no user settings, one turn.
-    Returns {label, model, text, usage}."""
-    from claude_agent_sdk import ClaudeAgentOptions, query  # lazy: generation path only
-
-    opts = ClaudeAgentOptions(model=model, max_turns=1,
-                              allowed_tools=[], setting_sources=[])
-    text, usage = "", None
-    async for msg in query(prompt=prompt, options=opts):
-        if type(msg).__name__ == "ResultMessage":
-            text = msg.result or ""
-            usage = msg.usage if isinstance(msg.usage, dict) else None
-    if not text.strip():
-        raise AuditError(f"{label}: empty result from {model}")
-    return {"label": label, "model": model, "text": text, "usage": usage}
-
-
-async def _run_panel(prompts: dict[str, str], progress) -> list[dict]:
-    async def timed(label: str, prompt: str, model: str) -> dict:
-        res = await asyncio.wait_for(_run_pass(label, prompt, model), PASS_TIMEOUT)
-        progress(res)
-        return res
-
-    tasks = [timed(label, p, EXPERT_MODEL) for label, p in prompts.items()]
-    return list(await asyncio.gather(*tasks))
+    context = ("--- DETERMINISTIC LOOP TABLE ---\n" + loop_table
+               + "\n\n--- EXPERT CLAIMS ---\n" + sections)
+    return llmpass.Pass(label="concluder", model=CONCLUDER_MODEL, prompt=prompt,
+                        context=context, timeout=CONCLUDER_TIMEOUT)
 
 
 # ── entry point ────────────────────────────────────────────────────────────
 
-def generate(log_path: Path, u: universe.Universe, progress=lambda r: None) -> Path:
-    """Run the full panel for one session and store the Audit. Synchronous
-    facade over the async fan-out; raises AuditError on failure (nothing
-    partial is ever stored)."""
+def generate(log_path: Path, u: universe.Universe, progress=lambda r: None,
+             transport: llmpass.Transport | None = None) -> Path:
+    """Run the full panel for one session and store the Audit. Raises
+    `AuditError` on failure (nothing partial is ever stored); `progress` is
+    called with each `Result` as it lands, so a run can print what it paid."""
+    from . import claude_logs
+
+
     sid = log_path.stem
     cache = u.cache
     sessions = u.sessions()
@@ -274,7 +222,8 @@ def generate(log_path: Path, u: universe.Universe, progress=lambda r: None) -> P
 
     scan = loops.for_session(log_path, cache)
     looped_ids = {tid for l in loops.significant(scan) for tid in l.tool_ids}
-    digest = _digest(log_path, looped_ids)
+    digest = transcript.digest(log_path, max_chars=MAX_DIGEST, head_chars=HEAD_DIGEST,
+                               looped_ids=looped_ids, numbered=True)
     if not digest.strip():
         raise AuditError("no readable turns in this session")
 
@@ -282,31 +231,22 @@ def generate(log_path: Path, u: universe.Universe, progress=lambda r: None) -> P
     siblings = _gather_siblings(target, sessions, cache)
     b = brief_mod.load_one(sid)
     target_label = f'{sid[:8]} "{target.title}"'
-    prompts = _expert_prompts(digest, loop_table, target_label, siblings,
-                              b.objective if b else None)
-
-    async def run() -> tuple[list[dict], dict]:
-        reports = await _run_panel(prompts, progress)
-        concluder = await asyncio.wait_for(
-            _run_pass("concluder",
-                      _concluder_prompt(target_label,
-                                        target.cwd, loop_table,
-                                        {r["label"]: r["text"] for r in reports}),
-                      CONCLUDER_MODEL),
-            PASS_TIMEOUT + 180)
-        progress(concluder)
-        return reports, concluder
 
     try:
-        reports, concluder = asyncio.run(run())
-    except asyncio.TimeoutError as e:
-        raise AuditError("a panel pass timed out") from e
-    except AuditError:
-        raise
-    except Exception as e:  # SDK/transport errors: surface, never store partials
+        reports = llmpass.run_all(
+            _expert_passes(digest, loop_table, target_label, siblings,
+                           b.objective if b else None),
+            transport, progress)
+        # a fan-out of one: the concluder judges what the Experts claimed, so it
+        # runs after them — on the same transport, through the same two rules
+        (concluder,) = llmpass.run_all(
+            [_concluder_pass(target_label, target.cwd, loop_table, reports)],
+            transport, progress)
+    except llmpass.PassError as e:
         raise AuditError(str(e)) from e
 
     return audit_mod.save(Audit(
-        session_id=sid, body=concluder["text"],
+        session_id=sid, body=concluder.text,
         generated=datetime.now(timezone.utc), target_title=target.title,
-        siblings_considered=len(siblings), overhead=reports + [concluder]))
+        siblings_considered=len(siblings),
+        overhead=[r.overhead_row() for r in [*reports, concluder]]))

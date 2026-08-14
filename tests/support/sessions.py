@@ -11,9 +11,10 @@ of them is a trap.
 real logs use: a `type` per line, `cwd`/`gitBranch`/`timestamp` on the
 conversation lines, tool calls as `tool_use` blocks inside an assistant
 `message` (a NotebookEdit naming its target `notebook_path`, not `file_path`),
-per-turn `usage` on every assistant line, injected bodies marked `isMeta`, and
-a `git commit` announcement in a user line's `toolUseResult`. Titles ride their
-own line types (`ai-title`, `custom-title`, `last-prompt`).
+per-turn `usage` on every assistant line, injected bodies marked `isMeta`, a
+`git commit` announcement in a user line's `toolUseResult`, and the interrupt
+markers a cut-short turn leaves on a plain user line. Titles ride their own line
+types (`ai-title`, `custom-title`, `last-prompt`).
 
 `fixture_session()` is the canonical small Session the issue asks for — titles,
 two edits, one commit hash, priced per-turn usage — and is what most tests
@@ -84,6 +85,12 @@ class SessionLog:
     branch: str = "main"
     version: str = "2.0.0"
     start: datetime | None = None
+    # the gap between consecutive conversation lines. A minute reads like a real
+    # session at a glance, but real logs put a tool call and its result
+    # milliseconds apart, and that gap is the whole subject of the Activity
+    # State's display floor (ADR 0004 § the Activity State) — a fixture that can
+    # only step by a minute cannot express a one-second rule.
+    step: timedelta = STEP
     # every conversation line's `isSidechain` flag. A subagent transcript is
     # all sidechain lines — build one with `sidechain=True` and write it with
     # `save_subagent()` (ADR 0004 § the worktree lane)
@@ -129,9 +136,31 @@ class SessionLog:
         return self
 
     def turn(self, text: str = "Working on it.", *, model: str = MODEL,
-             usage: dict | None = None) -> "SessionLog":
-        """A plain assistant turn, carrying per-turn `usage` like the real ones."""
-        return self._assistant([{"type": "text", "text": text}], model, usage)
+             usage: dict | None = None, mid_turn: bool = False) -> "SessionLog":
+        """A plain assistant turn, carrying per-turn `usage` like the real ones.
+
+        `mid_turn=True` is the shape that traps a reader of `stop_reason` alone:
+        a preamble text block flushed as its own line, carrying the *message's*
+        `tool_use` stop reason while naming no tool. The Activity State leaves
+        its verb untouched on one (ADR 0004 § the Activity State).
+        """
+        return self._assistant([{"type": "text", "text": text}], model, usage,
+                               stop_reason="tool_use" if mid_turn else "end_turn")
+
+    def interrupt(self, *, shutdown: bool = False) -> "SessionLog":
+        """The user line Claude Code writes when a turn is cut short: Esc
+        (`interruptedMessageId`) or the session quitting mid-turn
+        (`interruptedByShutdown`). Both arrive as ordinary user lines whose text
+        is `[Request interrupted by user]`, which is exactly why a prompt
+        reading must not take one for a question (ADR 0004 § the Activity State).
+        """
+        marker = ({"interruptedByShutdown": True} if shutdown
+                  else {"interruptedMessageId": self._uuid()})
+        self._conversation("user",
+                           {"role": "user",
+                            "content": "[Request interrupted by user]"},
+                           **marker)
+        return self
 
     def edit(self, file_path: str, *, tool: str = "Edit", model: str = MODEL,
              usage: dict | None = None, mid_turn: bool = False,
@@ -261,7 +290,7 @@ class SessionLog:
         return self
 
     def _conversation(self, etype: str, message: dict, **extra) -> None:
-        self._clock += STEP
+        self._clock += self.step
         self.lines.append({
             "type": etype,
             "message": message,

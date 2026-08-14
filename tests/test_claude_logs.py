@@ -20,6 +20,10 @@ from standup import claude_logs, rates
 from tests.support.sessions import SessionLog, fixture_session
 
 
+def _never(*a, **kw):
+    raise AssertionError("this value should have been served from the cache")
+
+
 def test_edit_blocks_carry_both_sides_of_every_recorded_edit(projects_dir):
     """An Edit records what went in and what came out; a Write records only
     what went in. Both are one EditBlock, in log order."""
@@ -319,9 +323,9 @@ def test_the_reading_survives_a_cache_that_cannot_hold_it(projects_dir, null_cac
 def test_a_malformed_cached_row_costs_a_reparse_and_nothing_else(projects_dir):
     """A row this version cannot read is not an error the user ever sees."""
     log = fixture_session(cwd="/tmp/tt").save(projects_dir)
-    st = log.stat()
     cache = cache_mod.open_cache()
-    cache.put_log(log.stem, st.st_size, st.st_mtime_ns, {"session": {}, "junk": 1})
+    cache.derive(cache_mod.LOGS, log.stem, cache_mod.Stamp.of(log),
+                 compute=lambda: {"session": {}, "junk": 1})
     cache.flush()
 
     parsed = claude_logs.read_log(log, cache_mod.open_cache())
@@ -340,8 +344,10 @@ def test_a_reading_too_large_to_store_is_declined_not_truncated(
     cache.flush()
 
     assert first == claude_logs.parse_log(log)
-    st = log.stat()
-    assert cache_mod.open_cache().get_log(log.stem, st.st_size, st.st_mtime_ns) is None
+    # nothing was stored, so the next reader is served nothing
+    assert cache_mod.open_cache().derive(
+        cache_mod.LOGS, log.stem, cache_mod.Stamp.of(log),
+        compute=lambda: "recomputed") == "recomputed"
 
 
 def test_an_older_cache_db_gains_the_new_table_and_keeps_its_rows(fake_home):
@@ -350,8 +356,9 @@ def test_an_older_cache_db_gains_the_new_table_and_keeps_its_rows(fake_home):
     slot the reader stopped using goes with the upgrade, rather than sitting
     there holding the text of every edit a second time — the fragment index is
     a projection of this row now (ADR 0007 § Decision)."""
+    stamp = cache_mod.Stamp(1, 1, datetime.fromtimestamp(1, tz=timezone.utc))
     old = cache_mod.open_cache()
-    old.put_session("sid", 1, 1, {"cwd": "/tmp/tt"})
+    old.derive(cache_mod.SESSIONS, "sid", stamp, compute=lambda: {"cwd": "/tmp/tt"})
     old.flush()
     conn = sqlite3.connect(str(cache_mod.CACHE_PATH))
     conn.execute("DROP TABLE logs")
@@ -364,8 +371,11 @@ def test_an_older_cache_db_gains_the_new_table_and_keeps_its_rows(fake_home):
     upgraded = cache_mod.open_cache()
 
     assert not isinstance(upgraded, cache_mod.NullCache)
-    assert upgraded.get_session("sid", 1, 1) == {"cwd": "/tmp/tt"}
-    assert upgraded.get_log("sid", 1, 1) is None      # the new table is there
+    assert upgraded.derive(cache_mod.SESSIONS, "sid", stamp,
+                           compute=_never) == {"cwd": "/tmp/tt"}
+    # the dropped table is back, and empty rather than missing
+    assert upgraded.derive(cache_mod.LOGS, "sid", stamp,
+                           compute=lambda: "cold") == "cold"
     tables = {r[0] for r in sqlite3.connect(str(cache_mod.CACHE_PATH))
               .execute("SELECT name FROM sqlite_master WHERE type='table'")}
     assert "logs" in tables and "fragments" not in tables

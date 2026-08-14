@@ -88,6 +88,71 @@ def _assistant_parts(content, show_thinking: bool,
     return texts, tools
 
 
+# What an over-budget digest gets instead of its middle. Marked rather than
+# silent: a summariser that reads a truncated session should say so.
+ELIDED = "\n… [middle elided] …\n"
+
+
+def digest(path: Path, *, max_chars: int, head_chars: int,
+           looped_ids: frozenset[str] | set[str] = frozenset(),
+           numbered: bool = False) -> str:
+    """A compact plain-text rendering of one Session for an LLM pass — the one
+    body behind a Session Brief's digest and an Audit's
+    (ADR 0003 § the LLM-pass seam).
+
+    The same reading the Transcript renders, minus the colour: your prompts
+    through the one prompt reading (ADR 0001 § the one log reader), Claude's
+    prose, and each tool call as a one-liner.
+
+    `numbered=True` is what an Audit needs on top: `t<N>` turn markers — the
+    evidence coordinates a Handoff Prompt is written in — each turn's per-turn
+    Notional Cost, and a `⟳` on the tool calls of a detected Loop.
+
+    Capped: when over budget, keep the head (where the objective is usually set)
+    plus the tail (where it landed), with the elision marked.
+    """
+    parts: list[str] = []
+    turn = 0
+    try:
+        with open(path, errors="replace") as fh:
+            for line in fh:
+                try:
+                    obj = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                etype = obj.get("type")
+                msg = obj.get("message") or {}
+                if etype == "user":
+                    prompt = claude_logs.prompt_in(obj)
+                    if prompt is not None:
+                        parts.append("USER: " + prompt.text)
+                elif etype == "assistant":
+                    texts, tools = _assistant_parts(msg.get("content"),
+                                                    show_thinking=False,
+                                                    looped_ids=looped_ids)
+                    if not texts and not tools:
+                        continue
+                    turn += 1
+                    head = "CLAUDE:"
+                    if numbered:
+                        u = msg.get("usage") if isinstance(msg.get("usage"), dict) else None
+                        c = rates.turn_cost(msg.get("model"), u) if u else None
+                        tag = f" (${c:.2f})" if c else ""
+                        head = f"[t{turn}{tag}] CLAUDE:"
+                    for t in texts:
+                        parts.append(f"{head} {t}")
+                        if numbered:
+                            head = f"[t{turn}] CLAUDE:"
+                    for tl, looped, _rows in tools:
+                        parts.append(f"  {'⟳' if looped else '·'} {tl}")
+    except OSError:
+        return ""
+    text = "\n".join(parts)
+    if len(text) > max_chars:
+        text = text[:head_chars] + ELIDED + text[-(max_chars - head_chars):]
+    return text
+
+
 def _brief_block(brief, st, width: int, wrap) -> list[str]:
     """The Session Brief header shown at the very top of a Transcript.
 

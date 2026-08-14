@@ -61,7 +61,7 @@ def test_a_dirty_files_delta_keeps_its_dashes_too(scratch_repo, projects_dir):
     repo.write("q.sql", "a\n-- sql comment\nb\n")
     repo.commit("add q.sql")
     with universe.open_universe(projects_dir) as u:
-        ws = WatchStream(u, str(repo.path))
+        ws = WatchStream.discover(u, str(repo.path))
 
     repo.write("q.sql", "a\n++ bumped\nb\n")
     ws._last_git = float("-inf")

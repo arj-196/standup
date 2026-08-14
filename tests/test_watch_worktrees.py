@@ -22,7 +22,7 @@ def _watch(repo, projects_dir) -> WatchStream:
     launch and does not hold open (the Derived Cache is closed before the feed
     runs)."""
     with universe.open_universe(projects_dir) as u:
-        return WatchStream(u, str(repo.path))
+        return WatchStream.discover(u, str(repo.path))
 
 
 def _worktree_agent(repo, projects_dir, *, agent_id=AGENT_ID,
