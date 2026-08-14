@@ -22,7 +22,7 @@ from . import brief as brief_mod
 from . import claude_logs
 from . import loops as loops_mod
 from . import rates, toolcalls
-from .render import _session_ref, _style, _term_width
+from .termout import claim_hedges, claim_rule, session_ref, style, term_width
 
 _HEXISH = re.compile(r"[0-9a-f]{4,40}\Z")
 
@@ -156,22 +156,15 @@ def digest(path: Path, *, max_chars: int, head_chars: int,
 def _brief_block(brief, st, width: int, wrap) -> list[str]:
     """The Session Brief header shown at the very top of a Transcript.
 
-    A *claim*, not a derived fact (CONTEXT.md → Session Brief): marked with the
-    `~` idiom and hedged when stale. Leads with the objective, then the freeform
+    A *claim*, not a derived fact (ADR 0003 § the shared model): marked and
+    hedged through the one claim renderer the inbox and the `audit` view also
+    use (`termout.claim_rule`), in its roomy form — a whole view's width has
+    space to say what "stale" means. Leads with the objective, then the freeform
     body; a dim provenance line closes it. Carries no cost tag — Brief Overhead
     stays a `cost`-view concern.
     """
-    rule = "─" * width
-    tags = []
-    if brief.status and brief.status != "done":
-        tags.append(brief.status)
-    if brief.stale:
-        tags.append("may be stale")
-    label = "── ~ brief"
-    if tags:
-        label += " · " + " · ".join(tags)
-    label += " "
-    header = st.dim(label + rule[len(label):] if len(label) < width else label)
+    header = claim_rule("brief", st, width,
+                        hedges=claim_hedges(brief, verbose=True))
     lines = [header, st.bold(wrap(brief.objective))]
     if brief.body:
         lines.append("")
@@ -193,8 +186,8 @@ def render_transcript(path: Path, show_thinking: bool = False, raw: bool = False
     if raw:
         return path.read_text(errors="replace")
 
-    st = _style()
-    width = min(_term_width(), 100)
+    st = style()
+    width = min(term_width(), 100)
     body = "─" * width
 
     def wrap(s: str) -> str:
@@ -246,7 +239,7 @@ def render_transcript(path: Path, show_thinking: bool = False, raw: bool = False
             msg = obj.get("message") or {}
 
             if not header_done and obj.get("cwd"):
-                out.append(_session_ref(path.stem[:8], st) + "  "
+                out.append(session_ref(path.stem[:8], st) + "  "
                            + st.bold(Path(obj["cwd"]).name))
                 out.append("")
                 header_done = True

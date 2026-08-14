@@ -25,7 +25,6 @@ simply renders title-only, exactly as before Briefs existed.
 
 from __future__ import annotations
 
-from datetime import datetime
 from pathlib import Path
 
 from . import artifacts, rates

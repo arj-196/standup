@@ -12,7 +12,7 @@ from pathlib import Path
 from . import artifacts
 from . import audit as audit_mod
 from . import brief as brief_mod
-from . import cost, handles, loops, rates, render, transcript, universe
+from . import cost, handles, loops, rates, render, termout, transcript, universe
 
 # the Recent Window (ADR 0001 § the Recent Window); --since overrides
 RECENT_WINDOW_DAYS = 7
@@ -164,39 +164,37 @@ def parse_window(raw: str) -> timedelta:
             "d": timedelta(days=n), "w": timedelta(weeks=n)}[unit]
 
 
-def _to_json(entries, sessions, since, now) -> str:
-    def clean(obj):
-        if isinstance(obj, dict):
-            return {k: clean(v) for k, v in obj.items()}
-        if isinstance(obj, (list, tuple)):
-            return [clean(v) for v in obj]
-        if isinstance(obj, set):
-            return sorted(obj)
-        if isinstance(obj, datetime):
-            return obj.isoformat()
-        return obj
+def _clean(obj):
+    """A model, JSON-ready: sets sort, datetimes go ISO, dataclasses are already
+    dicts by the time they get here."""
+    if isinstance(obj, dict):
+        return {k: _clean(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_clean(v) for v in obj]
+    if isinstance(obj, set):
+        return sorted(obj)
+    if isinstance(obj, datetime):
+        return obj.isoformat()
+    return obj
 
+
+def _to_json(entries, sessions, since, now) -> str:
+    """The collect-layer payload: the models, serialised field by field.
+
+    `asdict`-driven on both halves, deliberately — a hand-written key list is
+    how a field added to `models.py` gets dropped from the payload without
+    anyone noticing (`models.Commit.author_name` appeared here with no code
+    change, which is the property `tests/test_json_payload.py` pins). Derived
+    *properties* are not fields and are not swept up, so the one a consumer
+    cannot compute for itself — a Session's `title`, which folds four candidate
+    fields in order — is named explicitly beside them.
+    """
     payload = {
         "since": since.isoformat(),
         "generated_at": now.isoformat(),
-        "repos": [clean(asdict(e)) for e in entries],
+        "repos": [_clean(asdict(e)) for e in entries],
         "sessions": [
-            {
-                "session_id": s.session_id,
-                "title": s.title,
-                "cwd": s.cwd,
-                "last_activity": s.last_activity.isoformat() if s.last_activity else None,
-                "edited_files": {p: t.isoformat() for p, t in s.edited_files.items()},
-                "commit_hashes": {h: t.isoformat() for h, t in s.commit_hashes.items()},
-                "branches": sorted(s.branches),
-                "brief": ({
-                    "objective": s.brief.objective,
-                    "status": s.brief.status,
-                    "generated": s.brief.generated.isoformat() if s.brief.generated else None,
-                    "model": s.brief.model,
-                    "stale": s.brief.stale,
-                } if s.brief else None),
-            }
+            {**_clean(asdict(s)), "title": s.title}
             for s in sessions
             if s.edited_files or s.commit_hashes
         ],
@@ -217,6 +215,16 @@ def _cost_window(since: str | None, now: datetime) -> tuple[datetime, str]:
 
 
 def _cost_json(projects, window_start, label, now, order) -> str:
+    """The cost payload.
+
+    Hand-written rather than `asdict`-driven, because `cost`'s view types are
+    not models: almost everything a consumer wants off a `SessionCost` is a
+    *property* over its held `UsageTotals`, and serialising the fields would
+    publish the fold instead of the figures. The guard is therefore a test that
+    the payload names every field *and* property of both view types, minus a
+    listed few (`tests/test_json_payload.py`) — so a new one is a decision here,
+    never an omission.
+    """
     payload = {
         "window": label,
         "window_start": window_start.isoformat() if window_start != _EPOCH else None,
@@ -227,9 +235,14 @@ def _cost_json(projects, window_start, label, now, order) -> str:
         "total": round(sum(p.cost for p in projects), 4),
         "projects": [
             {
+                # the Repo Entry identity sessions were bucketed by (worktrees
+                # fold into their main checkout), so a consumer can join two
+                # windows' payloads on something stabler than a display name
+                "key": p.key,
                 "name": p.name,
                 "path": p.path,
                 "cost": round(p.cost, 4),
+                "last_turn": p.last_turn.isoformat() if p.last_turn else None,
                 "brief_overhead": round(p.brief_overhead, 4),
                 "brief_count": p.brief_count,
                 "audit_overhead": round(p.audit_overhead, 4),
@@ -252,6 +265,10 @@ def _cost_json(projects, window_start, label, now, order) -> str:
                         "by_model": {m: round(c, 4) for m, c in s.by_model.items()},
                         "tokens": s.tokens,
                         "turns": s.turns,
+                        # a turn the Rate Card could not price is counted apart,
+                        # never at $0 (ADR 0002) — so the payload states it too,
+                        # or a consumer reads `turns` as the whole population
+                        "unpriced_turns": s.unpriced_turns,
                         # transcripts folded into cost/tokens/turns above
                         # (ADR 0002 § subagent usage)
                         "subagents": s.subagents,
@@ -267,10 +284,16 @@ def _cost_json(projects, window_start, label, now, order) -> str:
                             }
                             for l in s.loops
                         ],
-                        # the newest turn this row's figures counted
-                        # (`SessionCost.last_turn`), which is what the view
-                        # ranks and shows — not the log's mtime, which the
-                        # inbox payload's field of this name carries
+                        # The newest turn this row's figures counted, under its
+                        # real field name (`SessionCost.last_turn`) — what the
+                        # view ranks `--recent` by and prints as a row's
+                        # recency. `last_activity` is the same value under the
+                        # key this payload has always used, kept because
+                        # renaming it outright is a compat break for scripts
+                        # reading it; it means the log's mtime in the *inbox*
+                        # payload (ADR 0001 § the one log reader), and one key
+                        # with two meanings is what the honest name retires.
+                        "last_turn": s.last_turn.isoformat() if s.last_turn else None,
                         "last_activity": s.last_turn.isoformat() if s.last_turn else None,
                     }
                     for s in p.sessions
@@ -363,11 +386,18 @@ def _page(text: str, less_flags: str = "-R") -> None:
 
 
 def _render_audit(a, st, width: int) -> str:
-    tags = [a.generated.date().isoformat() if a.generated else None,
-            "may be stale — session continued after this audit" if a.stale else None]
-    label = "── ~ audit · " + " · ".join(t for t in tags if t) + " "
-    rule = "─" * width
-    out = [st.dim(label + rule[len(label):] if len(label) < width else label), ""]
+    """The stored Audit, headed by its claim rule.
+
+    An Audit is a claim squared — experts, then a concluder judging them — so it
+    wears the `~` mark and its hedges through the one claim renderer the inbox
+    and the Transcript also use (ADR 0003 § the shared model). The generation
+    date leads the header as provenance, not as a hedge; the hedges follow it in
+    their roomy spelling, because a rule across the view has space for them.
+    """
+    provenance = [a.generated.date().isoformat()] if a.generated else []
+    out = [termout.claim_rule(
+        "audit", st, width,
+        hedges=provenance + termout.claim_hedges(a, verbose=True)), ""]
     out.append(a.body)
     items = " · ".join(f"{lbl} ${c:.2f}" for lbl, c in a.overhead_items())
     out += ["", st.dim(f"audit overhead: ${a.overhead_cost:.2f}  ({items})"
@@ -397,8 +427,8 @@ def _cmd_audit(argv: list[str]) -> int:
     universe.add_projects_dir_argument(p)
     args = p.parse_args(argv)
 
-    st = render._style()
-    width = render._term_width()
+    st = termout.style()
+    width = termout.term_width()
 
     with universe.open_universe(args.projects_dir) as u:
         log_path = u.resolve_session(args.handle)
@@ -653,13 +683,13 @@ def _cmd_session(argv: list[str]) -> int:
             session, place = u.newest_session_in(args.in_repo)
             path = Path(session.log_path)
             if not args.raw:   # --raw must stay an untouched dump (CONTEXT.md)
-                st = render._style()
+                st = termout.style()
                 # the *resolved* project, never the handle typed: the header has
                 # to say which repo actually answered
                 where = "here" if args.in_repo is None else f"in {place}"
                 # the handle keeps its own colour — nesting it inside the dim
                 # would need the reset that ends the dim for the rest of the line
-                header = (render._session_ref(session.session_id[:8], st)
+                header = (termout.session_ref(session.session_id[:8], st)
                           + st.dim(f'  ~ "{session.title}"'
                                    f"  — newest session {where}; name a handle for another")
                           + "\n\n")
@@ -738,7 +768,7 @@ def _cmd_diff(argv: list[str]) -> int:
             else:
                 only_session = u.resolve_session(ref).stem
 
-        width = render._term_width()
+        width = termout.term_width()
         try:
             if commit_ref:
                 checkout, sha = diffview.resolve_commit(entry, commit_ref)

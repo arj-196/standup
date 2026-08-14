@@ -16,7 +16,7 @@ import pytest
 from standup import artifacts
 from standup import audit as audit_mod
 from standup import brief as brief_mod
-from standup import claude_logs, cli, render, transcript
+from standup import claude_logs, cli, render, termout, transcript
 from standup.audit import Audit
 from standup.models import Brief
 
@@ -297,7 +297,7 @@ def test_both_artifacts_render_as_marked_claims(projects_dir, session_log):
 
     transcript_text = transcript.render_transcript(log)
     audit_text = cli._render_audit(audit_mod.load_one(log.stem),
-                                   render._style(), 100)
+                                   termout.style(), 100)
 
     assert "── ~ brief · in-progress " in transcript_text   # the claim's header
     assert "Teach the inbox to read" in transcript_text
@@ -307,6 +307,41 @@ def test_both_artifacts_render_as_marked_claims(projects_dir, session_log):
     assert "~ audit · " + generated.date().isoformat() in audit_text
     assert "3 siblings considered" in audit_text
     assert "concluder $" in audit_text                       # itemised overhead
+
+
+def test_every_surface_hedges_a_stale_claim_in_the_same_words(projects_dir,
+                                                              session_log):
+    """One `~`-claim renderer, three surfaces (ADR 0003 § the shared model).
+
+    The inbox, the Transcript and the `audit` view all mark the claim and all
+    hedge it; the only thing that varies is how much room the layout has for the
+    hedge, and that choice belongs to `termout`, not to a surface. Before this
+    was one implementation the three said `stale`, `may be stale` and `may be
+    stale — session continued after this audit` about the same fact.
+    """
+    generated = datetime.now(timezone.utc) - timedelta(minutes=30)
+    log = _log_written_at(projects_dir, session_log, datetime.now(timezone.utc))
+    _save_brief(log.stem, objective="Teach the inbox to read", generated=generated)
+    _save_audit(log.stem, generated=generated)
+
+    b = brief_mod.load_one(log.stem)
+    a = audit_mod.load_one(log.stem)
+    artifacts.stamp_staleness(b, log)
+    artifacts.stamp_staleness(a, log)
+    st = termout.style()
+
+    inbox_line = render._brief_line(b, st, 100, "  ")
+    transcript_text = transcript.render_transcript(log)
+    audit_text = cli._render_audit(a, st, 100)
+
+    # every surface marks the claim …
+    assert all(termout.CLAIM in text
+               for text in (inbox_line, transcript_text, audit_text))
+    # … and hedges it, in the spelling its layout has room for
+    assert inbox_line.endswith(f"({termout.STALE_SHORT})")
+    assert termout.STALE_LONG not in inbox_line
+    assert termout.STALE_LONG in transcript_text
+    assert termout.STALE_LONG in audit_text
 
 
 def test_an_unreadable_artifact_degrades_to_absent():

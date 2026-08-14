@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import claude_logs
+from . import claude_logs, universe
 from .models import Session
 
 _EPOCH = datetime.min.replace(tzinfo=timezone.utc)
@@ -223,10 +223,6 @@ def group_by_project(session_costs: list[SessionCost],
     last few sessions cost, however cheap). A session that counted no dated
     turn sorts last under "recent" rather than borrowing a rank.
     """
-    # imported here, not at module scope: `universe` reaches `render`, which
-    # reads this module's ProjectCost — a top-level import would close the loop.
-    from . import universe
-
     cwds = list(dict.fromkeys(sc.session.cwd for sc in session_costs if sc.session.cwd))
     owners = {cwd: universe.owner_of(cwd) for cwd in cwds}
 

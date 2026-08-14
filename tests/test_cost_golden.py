@@ -128,17 +128,28 @@ def test_the_view_is_byte_identical_warm_cold_and_deleted(
 
 
 def test_the_json_payload_is_what_it_was(projects_dir, capsys):
+    """Frozen the same way the printed views are — with the caveat that the
+    payload is allowed to *grow*: a key added here is additive, and the guard
+    that no model field is silently missing lives in `test_json_payload.py`.
+    What must not move is any figure, or the meaning of a key already shipped.
+    """
     _universe(projects_dir)
 
     payload = json.loads(_run(capsys, "cost", "-s", "30d", "-j",
                               "--projects-dir", str(projects_dir)))
 
-    # the two stamps that move with the clock, checked for shape and dropped
+    # the stamps that move with the clock, and the Repo Entry key — an absolute
+    # resolved path, so this machine's `/tmp` symlink is none of the golden's
+    # business — checked for shape and dropped
     assert payload.pop("generated_at")
     assert payload.pop("window_start")
-    stamps = [s.pop("last_activity") for p in payload["projects"]
-              for s in p["sessions"]]
-    assert all(stamps)
+    for p in payload["projects"]:
+        assert p.pop("key")
+        assert p.pop("last_turn")
+        for s in p["sessions"]:
+            # one value, two keys: the honest field name and the one the
+            # payload has always used (ADR 0001 § the one log reader)
+            assert s.pop("last_activity") == s.pop("last_turn")
     assert payload == {
         "window": "last 30d",
         "order": "cost",
@@ -166,6 +177,7 @@ def test_the_json_payload_is_what_it_was(projects_dir, capsys):
                         "tokens": {"input": 900, "output": 120000,
                                    "cache_write": 1000, "cache_read": 4000},
                         "turns": 1,
+                        "unpriced_turns": 0,
                         "subagents": 0,
                         "why": "out-heavy",
                         "loop_cost": 0.0,
@@ -193,6 +205,7 @@ def test_the_json_payload_is_what_it_was(projects_dir, capsys):
                         "tokens": {"input": 36, "output": 1020,
                                    "cache_write": 10500, "cache_read": 83988},
                         "turns": 3,
+                        "unpriced_turns": 0,
                         "subagents": 1,
                         "why": "cache-heavy",
                         "loop_cost": 0.0,
@@ -208,6 +221,7 @@ def test_the_json_payload_is_what_it_was(projects_dir, capsys):
                         "tokens": {"input": 12, "output": 340,
                                    "cache_write": 3500, "cache_read": 27996},
                         "turns": 1,
+                        "unpriced_turns": 1,
                         "subagents": 0,
                         "why": "cache-heavy",
                         "loop_cost": 0.0,
