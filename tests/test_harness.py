@@ -215,7 +215,9 @@ def test_durable_roots_point_inside_the_fake_home(path, fake_home):
 
 def test_open_cache_defaults_into_the_fake_home(fake_home):
     c = cache_mod.open_cache()
-    c.put_session("sid", 1, 1, {"cwd": "/tmp/tt"})
+    c.derive(cache_mod.SESSIONS, "sid",
+             cache_mod.Stamp(1, 1, datetime.fromtimestamp(1, tz=timezone.utc)),
+             compute=lambda: {"cwd": "/tmp/tt"})
     c.flush()
     assert not isinstance(c, cache_mod.NullCache)
     assert fake_home in cache_mod.CACHE_PATH.parents

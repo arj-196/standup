@@ -25,6 +25,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from . import cache as cache_mod
 from . import claude_logs, toolcalls
 
 DETECTOR_VERSION = 3  # bump when detection logic changes (invalidates cache rows)
@@ -249,17 +250,9 @@ def _from_cache(d: dict) -> LoopScan:
 
 def for_session(path: Path, cache) -> LoopScan:
     """Detect via the Derived Cache: unchanged files are never re-read."""
-    try:
-        st = path.stat()
-    except OSError:
+    stamp = cache_mod.Stamp.of(path)
+    if stamp is None:
         return LoopScan()
-    sid = path.stem
-    cached = cache.get_loops(sid, st.st_size, st.st_mtime_ns)
-    if cached is not None:
-        try:
-            return _from_cache(cached)
-        except (TypeError, KeyError):
-            pass  # malformed row — recompute
-    scan = detect(path)
-    cache.put_loops(sid, st.st_size, st.st_mtime_ns, _to_cache(scan))
-    return scan
+    return cache.derive(cache_mod.LOOPS, path.stem, stamp,
+                        compute=lambda: detect(path),
+                        load=_from_cache, dump=_to_cache)
