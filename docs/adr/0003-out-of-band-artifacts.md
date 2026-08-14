@@ -42,7 +42,8 @@ Both generate by **shelling out to Claude Code, not the Anthropic API**, so the
 user's existing login pays. Verified 2026-07-22 (Claude Code 2.1.201): headless
 `claude -p` authenticates with no `ANTHROPIC_API_KEY` and no TTY — turnkey for
 subscription users, who mostly have no API key. `--bare` is avoided: it skips
-the keychain/OAuth read that makes keyless auth work.
+the keychain/OAuth read that makes keyless auth work. Neither generator does the
+shelling out itself: both reach a model through the one **LLM Pass** seam below.
 
 A missing artifact is never an error; the view degrades to what it showed before
 the artifact existed.
@@ -87,6 +88,60 @@ function.
 - **`ROOT` is read at call time**, never captured in a default argument, so the
   durable root is rebindable in one place (which is also what keeps a test run
   out of the real `~/.standup`).
+
+## The LLM-pass seam
+
+Reaching a model is **one named thing** (`llmpass`), not a habit each generator
+picks up: an **LLM Pass** is prompt and model in, text plus priceable `usage`
+out. Brief generation, the Expert Panel fan-out and `standup install`'s
+doctor-check go through it, and nothing else in `src/` may.
+
+The point is testability of the *generation logic*, which is where the bugs and
+the money are: locking, digesting, output parsing, storing and Overhead
+itemisation are exercised against a fake transport returning canned text
+(`tests/support/llm.py`), so the suite needs no `claude` binary and no network —
+the standing rule the conftest cannot enforce. Overhead recording is unchanged
+by the seam: a `Result`'s `usage` is what a Brief's `gen_usage` and an Audit's
+`overhead` rows already carried.
+
+- **A Pass is `prompt` + `context`, not one string.** The instruction is the
+  prompt; bulk evidence (a transcript digest, the siblings table, the Experts'
+  claims) is context. The `claude -p` transport pipes context on **stdin** — a
+  120 KB digest must never become an argv — and the split says which half a
+  prompt change touched.
+- **Two rules live in the seam**, because both are statements about a pass
+  rather than about a Brief or an Audit: an **empty result is a failure** (a pass
+  that answered nothing produced no claim, and nothing partial is ever stored),
+  and a pass that **outruns its timeout is a failure named by its label**. Every
+  transport failure — a missing binary, a broken pipe, an SDK error, a malformed
+  reply — arrives as one `PassError`, so no generator matches on a transport's
+  own exception type.
+- **The transport is chosen from a pass's shape, never by a caller.** A single
+  pass runs through `claude -p`; a fan-out runs through the Agent SDK. Both drive
+  the same Claude Code binary on the same login, so the subscription keeps paying
+  either way (verified 2026-07-22 for `claude -p`, 2026-07-30 for the SDK).
+- **Why not one transport for all three.** Each call path needs something the
+  other cannot express, and both needs are load-bearing:
+  `--no-session-persistence` keeps a Brief's generation out of
+  `~/.claude/projects`, where Standup would otherwise read its own pass back as a
+  Session — a phantom row in the very inbox the pass exists to describe — and the
+  CLI has no flag that turns tools *off* (only an enumerated
+  `--disallowed-tools` denylist, which rots as the tool set grows), while the SDK
+  states an Expert's bounds exactly (`max_turns=1`, `allowed_tools=[]`,
+  `setting_sources=[]`), which is what makes a panel's cost predictable. Pushing
+  either onto the other transport would trade a verified property for a shorter
+  module.
+- **The fan-out is threads over blocking passes**, not an event loop the
+  generator owns: `run_all` preserves the caller's order (the concluder's
+  sections and the Overhead itemisation are read off it) and reports each pass as
+  it lands. Accepted cost: the first failure fails the fan-out, but the failing
+  call still waits for its siblings — a running subprocess cannot be cancelled
+  the way a coroutine could.
+- **One digest, two artifacts.** `transcript.digest` renders a Session as plain
+  text for a pass; an Audit asks for the `t<N>` markers, per-turn costs and Loop
+  marks its evidence coordinates need. They were two near-identical bodies in two
+  generators, differing only in numbering and cost tags — which is how they came
+  to disagree, and how both came to crash on any session containing a tool call.
 
 ## The Session Brief
 
@@ -172,13 +227,15 @@ money.
 ("build a script that does X; evidence in session `<handle>` turns N–M") for a
 fresh session in the target repo. Standup never writes the script.
 
-**Transport theirs, orchestration ours.** Panel calls go through the Python
-`claude-agent-sdk` — the programmatic face of `claude -p`, same binary, same
-login. No agent framework: they speak model APIs natively (breaking subscription
-billing absent a permanently-maintained adapter), and their core value is owning
-orchestration, which is exactly what this keeps in Standup's code. Lifecycle
-monitoring, if ever wanted, comes from data not framework — OTel spans around
-each Expert call feed any OTel UI without ceding control flow.
+**Transport theirs, orchestration ours.** Panel passes ride the fan-out half of
+the LLM-pass seam above, which for a fan-out is the Python `claude-agent-sdk` —
+the programmatic face of `claude -p`, same binary, same login, and the one
+transport that can state an Expert's bounds. No agent framework: they speak model
+APIs natively (breaking subscription billing absent a permanently-maintained
+adapter), and their core value is owning orchestration, which is exactly what
+this keeps in Standup's code. Lifecycle monitoring, if ever wanted, comes from
+data not framework — OTel spans around each Expert pass feed any OTel UI without
+ceding control flow.
 
 **Cost honesty.** Every pass's usage is priced and itemised per Expert as **Audit
 Overhead**, printed after each run. No confirmation prompt — typing the command
@@ -197,6 +254,26 @@ prompt tweak.
 
 ## Alternatives considered
 
+- **One transport for every pass** — either `claude -p` everywhere (the panel
+  loses tool suppression, so an Expert can read files and a panel's cost stops
+  being predictable) or the SDK everywhere (Brief generation loses
+  `--no-session-persistence`, littering `~/.claude/projects` with passes Standup
+  then reads back as Sessions). One module fewer, one verified property gone. The
+  seam keeps callers ignorant of the choice, which is what the shorter version
+  was really buying.
+- **A transport argument on every generator call** — the caller would name a
+  transport, so "which transport" would spread back out to the call sites the
+  seam exists to keep ignorant of it. `transport=` survives only as a test seam,
+  defaulted from the pass's shape.
+- **Mocking `subprocess.run` / the SDK's `query` to test generation** — pins the
+  invocation, not the behaviour: the tests would break on a flag change and pass
+  on a wrong prompt. A fake transport is asserted against the *Pass* — which
+  Expert saw which evidence — which is the thing that can be wrong. The two
+  transports are consequently the deliberately untested edge: one function each,
+  verified by hand against a real login on the dates above.
+- **A seam per artifact** (a Brief transport and an Audit transport) — the two
+  rules that matter (empty result, timeout) would be written twice and drift, the
+  way the two digests did.
 - **Render-time LLM summarizer** — slow, costly, on the interactive path,
   non-deterministic. Breaks derived-only and the Resume rule.
 - **Passive global instruction, or a voluntary "log-session" tool** —

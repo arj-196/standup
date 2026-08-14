@@ -425,10 +425,10 @@ def _cmd_audit(argv: list[str]) -> int:
             print(st.dim(f"running Expert Panel: {n_experts}× {'sonnet'} experts "
                          f"+ opus concluder (billed to your subscription)…"))
 
-            def progress(res: dict) -> None:
-                c = rates.turn_cost(res["model"], res["usage"]) if res.get("usage") else None
+            def progress(res) -> None:
+                c = rates.turn_cost(res.model, res.usage) if res.usage else None
                 tag = f"  ${c:.2f}" if c is not None else ""
-                print(st.dim(f"  ✓ {res['label']}{tag}"))
+                print(st.dim(f"  ✓ {res.label}{tag}"))
 
             from . import auditgen
             try:
