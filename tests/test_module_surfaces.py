@@ -35,14 +35,7 @@ MODULES = {p.stem for p in SRC.glob("*.py")} - {"__init__"}
 # Reaches that are still here, each with the reason and the work that retires
 # it. An *exact* comparison, not a ceiling: an entry that goes stale fails this
 # test, which is how the list empties instead of growing a graveyard.
-KNOWN = {
-    # `transcript._assistant_parts` is the digest both generators build over a
-    # Session log. Retired by #7 (PR #26), which unifies the two digests behind
-    # `transcript.digest` and deletes both call sites — when that lands, these
-    # two entries go with it.
-    ("auditgen", "transcript", "_assistant_parts"),
-    ("briefgen", "transcript", "_assistant_parts"),
-}
+KNOWN: set[tuple[str, str, str]] = set()
 
 
 def _reaches(module: str, text: str) -> set[tuple[str, str, str]]:
