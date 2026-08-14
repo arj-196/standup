@@ -1,7 +1,10 @@
 """The Watch UI: a Textual app over the watchstream Feed Events
 (ADR 0004 § the stream/UI boundary).
 
-This is the only module that imports textual. Layout and color follow the
+This is the only module that imports textual — and it draws feed entries rather
+than deciding what they hold: an entry's content is `watchrow.EventRow`, on the
+Textual-free side of the boundary with the stream (ADR 0004 § the stream/UI
+boundary). Layout and color follow the
 "Watch Redesigned" specs (pass 1: layout; pass 2: color): prompts are chapter
 rules, the clock is a gap gutter, sessions get a lane (digit + bar), and every
 color is a role from theme.py with a glyph or attribute carrier that survives
@@ -42,10 +45,16 @@ from textual.containers import VerticalScroll
 from textual.geometry import Offset
 from textual.widgets import Static
 
-from . import diffrows, toolcalls
+from . import diffrows
 from .diffrows import lexed_command, styled_lines
 from .theme import Theme
-from .watchstream import LIVE_THRESHOLD, FeedEvent, LiveSessionInfo, WatchStream
+# The row model, and the two of its constants this module also reads: FRESH
+# (recency younger than this reads in live-green) because a Change Run's window
+# *is* it, and CALL_HEAD_LIMIT because a Call's body threshold *is* its
+# header's. One constant with two readers, not two kept equal by hand
+# (ADR 0004 § the stream/UI boundary).
+from .watchrow import CALL_HEAD_LIMIT, FRESH, EventRow
+from .watchstream import FeedEvent, LiveSessionInfo, WatchStream
 
 POLL_INTERVAL = 0.25       # seconds between stream polls
 FPS = 30                   # animation frames per second
@@ -53,22 +62,10 @@ STALENESS_BOUND = 2.5      # max seconds the display may lag the log
 BASE_SPEED = 160.0         # chars/sec at rest — the leisurely default
 SPEED_MIN, SPEED_MAX = 40.0, 2000.0
 SNAP_SPEED = 8000.0        # beyond this, blocks land instantly (flash, no typing)
-HEAD_LINES = 12            # animated window into a large block; rest collapses
-REMOVED_LINES = 4          # removed-text lines shown collapsed
 COMMIT_FILE_LINES = 6      # commit's file list shown collapsed; rest counted
-CALL_HEAD_LIMIT = 100      # chars of a Call's argument the header carries; past
-                           # this it clips and the body holds the rest
 MAX_EVENTS = 500           # DOM cap; oldest events beyond it are dropped
 TRIM_SLACK = 200           # extra events tolerated while reading scrollback
 GAP_SHOW = 5               # gaps below this many seconds stay quiet
-FRESH = 30                 # recency younger than this reads in live-green
-RUN_WINDOW = timedelta(seconds=FRESH)   # a Change Run stops absorbing this long
-                           # after it was born (ADR 0004 § the Change Run), so
-                           # sustained work on one file still produces rows and
-                           # a run's displayed time can never be staler than
-                           # this. Deliberately FRESH: the same threshold the
-                           # header already uses to mean "recent" should mean
-                           # it here too
 STRIP_CELLS = 8            # header activity strip: 8 cells, one minute each
 STRIP_BLOCKS = "▁▂▃▄▅▆▇█"
 NARROW = 100               # below this width: strips, briefs, hint labels drop
@@ -151,11 +148,19 @@ class EventWidget(Static):
     same path and the same witness are folded into it as a **Change Run** (ADR
     0004 § the Change Run), so one file being worked on reads as one entry that
     evolves
-    rather than a row per tool call or per git poll."""
+    rather than a row per tool call or per git poll.
+
+    What the entry *contains* is not this class's business: the `EventRow` it
+    holds owns admission, folding, the collapsed window, the animation's
+    character budget, a Call's body rows and the disclosure rule, all of it
+    Textual-free and table-testable (ADR 0004 § the stream/UI boundary). This
+    widget owns only how those are drawn — highlighting, columns, glyphs, and
+    the row's width."""
 
     def __init__(self, event: FeedEvent, theme: Theme, num: int) -> None:
         super().__init__()
         self.event = event
+        self.row = EventRow(event)
         self.t = theme
         self.num = num                    # stable session lane number, 0 = none
         self.expand_level = 0             # files/prompts/Calls: 0|1 · commits: 0|1|2
@@ -163,35 +168,7 @@ class EventWidget(Static):
         self.call_ok: bool | None = None
         self.gap_seconds: float | None = None   # set by the app (visible-chain gap)
         self.lane_head = True                   # digit vs bar — set by the app
-        # Change Run state. `calls` holds the *tool call* ids folded in, so one
-        # MultiEdit counts once however many hunks it emitted; `contributions`
-        # counts the events, which is what decides where the window sits.
-        self.calls: set[str] = {event.tool_id} if event.tool_id else set()
-        self.contributions = 1
-        # the body as raw lines: counting, window bounds and the char budget all
-        # work off these, so none of them pays for highlighting
-        self.added_raw = event.added.split("\n") if event.kind == "file" and event.added else []
-        self.removed_raw = event.removed.split("\n") if event.kind == "file" and event.removed else []
         self._lexed: dict[str, list[Text]] = {}
-        # A Call's body: the input entire, as `(path, text)` rows. Bash keeps its
-        # own reading — the command's lines lead, shell-lexed, and its remaining
-        # keys follow as ordinary rows, so no tool is silently carved out of "the
-        # body is the input" (ADR 0004 § Calls).
-        self.shell_rows = 0
-        self.call_rows: list[tuple[str | None, str]] = []
-        if event.kind == "call":
-            rest = dict(event.tool_input or {})
-            if event.command is not None:
-                lines = event.command.splitlines() or [""]
-                self.shell_rows = len(lines)
-                self.call_rows = [(None, ln) for ln in lines]
-                rest.pop("command", None)
-            self.call_rows += toolcalls.input_rows(rest)
-        # the collapsed window into the body, and the animation's char budget
-        self.win_start = self.win_end = 0
-        self.lines_above = self.lines_below = 0
-        self.total_chars = self.shown_chars = self.frozen_chars = 0
-        self._reflow(len(self.added_raw))
         # commit diffs are highlighted lazily: a commit can carry many files, and
         # lexing them all at mount time would stall the feed for a body nobody
         # has asked to see yet
@@ -206,71 +183,19 @@ class EventWidget(Static):
     def expanded(self) -> bool:
         return self.expand_level > 0
 
-    @property
-    def call_expandable(self) -> bool:
-        """Does this Call hold more than its header row showed? One scalar the
-        header carried whole is not more — and saying so is the point: a Call
-        used to advertise nothing either way, so a row with nothing to open was
-        indistinguishable from one that simply refused to open."""
-        rows = self.call_rows
-        if len(rows) > 1:
-            return True
-        return bool(rows) and len(rows[0][1]) > CALL_HEAD_LIMIT
-
     # -- the Change Run ---------------------------------------------------------
 
     def absorbs(self, ev: FeedEvent) -> bool:
-        """Does `ev` continue this widget's Change Run (ADR 0004 § the Change Run)?
-
-        Strict adjacency: the caller only ever asks the *tail* widget, so a run
-        grows at the bottom of the feed and never rewrites a row above the
-        reader. Any other event between two same-file events has already closed
-        the run by the time this is asked.
-
-        The witness must match — a Session's claim and git's observation are
-        different kinds of statement and never merge — as must the backfill side
-        of the launch boundary, so a live event cannot grow a replayed block
-        across the rule that separates them. RUN_WINDOW closes a run that would
-        otherwise absorb a long burst forever, which is what keeps the feed
-        producing rows while the agent works and bounds how stale the run's
-        displayed timestamp can be."""
-        e = self.event
-        return (e.kind == "file" and ev.kind == "file"
-                and ev.path == e.path
-                and ev.session_id == e.session_id
-                and ev.restates == e.restates
-                and ev.backfill == e.backfill
-                and ev.when - e.when <= RUN_WINDOW)
+        """Does `ev` continue this widget's Change Run? The row decides
+        (ADR 0004 § the Change Run); the widget only ever asks about its own."""
+        return self.row.absorbs(ev)
 
     def absorb(self, ev: FeedEvent, animate: bool) -> None:
-        """Fold `ev` into this Change Run.
-
-        Two shapes, one per witness. A Session claims hunks, which *accumulate*:
-        the body grows and the new text types in from where the last one stopped.
-        The git watcher states the whole delta of the path, which *supersedes*:
-        the body is replaced and lands instantly, because re-typing rows already
-        on screen every poll is a flicker, not an animation.
-
-        `when`, `change` and the gap gutter stay as the run was born with them —
-        rows must not rewrite themselves under a reader — and RUN_WINDOW is what
-        bounds the resulting staleness."""
-        e = self.event
-        if ev.tool_id:
-            self.calls.add(ev.tool_id)
-        if ev.restates:
-            e.added, e.removed = ev.added, ev.removed
-            fresh = 0
-        else:
-            e.added = "\n".join(p for p in (e.added, ev.added) if p)
-            e.removed = "\n".join(p for p in (e.removed, ev.removed) if p)
-            fresh = len(ev.added.split("\n")) if ev.added else 0
-        self.added_raw = e.added.split("\n") if e.added else []
-        self.removed_raw = e.removed.split("\n") if e.removed else []
+        """Fold `ev` into this Change Run, and drop the highlighting of a body
+        that just changed. The fold itself is the row's (`EventRow.absorb`);
+        what belongs here is the cache of `Text` built from it."""
+        self.row.absorb(ev, animate)
         self._lexed.clear()
-        self.contributions += 1
-        self._reflow(fresh)
-        if animate and fresh:
-            self.shown_chars = self.frozen_chars
 
     # -- body construction ----------------------------------------------------
 
@@ -298,50 +223,24 @@ class EventWidget(Static):
     @property
     def added_lines(self) -> list[Text]:
         """The whole added body, highlighted — the expanded reading."""
-        return self._lex("added", self.added_raw)
+        return self._lex("added", self.row.added_raw)
 
     @property
     def removed_lines(self) -> list[Text]:
         """The whole removed body, highlighted — the expanded reading."""
-        return self._lex("removed", self.removed_raw)
+        return self._lex("removed", self.row.removed_raw)
 
     @property
     def removed_head(self) -> list[Text]:
-        """The removed lines a collapsed body shows."""
-        return self._lex("removed_head", self.removed_raw[:REMOVED_LINES])
-
-    def _reflow(self, fresh_lines: int) -> None:
-        """Recompute the collapsed window and the animation's char budget.
-
-        The window sits where the news is (ADR 0004 § the Change Run). An
-        accumulating run is chronological, so once it holds more than one
-        contribution it shows its
-        *tail* — otherwise the newest hunk, the one you are watching for, would
-        be the one hidden behind the line count. A lone event and a restating
-        witness both show their *head*: a single hunk reads top-down, and a
-        cumulative body is a file-ordered snapshot with no newest end at all.
-
-        `fresh_lines` is how many added lines arrived in the contribution being
-        reflowed for. Everything ahead of them in the window is already on
-        screen, and becomes the frozen head that must not re-type."""
-        raw = self.added_raw
-        tail = self.contributions > 1 and not self.event.restates
-        self.win_start = max(0, len(raw) - HEAD_LINES) if tail else 0
-        self.win_end = min(len(raw), self.win_start + HEAD_LINES)
-        win = raw[self.win_start:self.win_end]
-        self.lines_above = self.win_start
-        self.lines_below = len(raw) - self.win_end
-        self.total_chars = sum(len(s) + 1 for s in win) - 1 if win else 0
-        n_fresh = min(fresh_lines, len(win))
-        frozen = sum(len(s) + 1 for s in win[: len(win) - n_fresh])
-        self.frozen_chars = min(frozen, self.total_chars)
-        self.shown_chars = self.total_chars  # instant by default; app may lower it
+        """The removed lines a collapsed body shows, highlighted."""
+        return self._lex("removed_head", self.row.removed_head)
 
     @property
     def window_lines(self) -> list[Text]:
-        """The added lines a collapsed body shows, highlighted."""
-        return self._lex(f"win:{self.win_start}:{self.win_end}",
-                         self.added_raw[self.win_start:self.win_end])
+        """The added lines a collapsed body shows, highlighted. Where that
+        window sits is the row's decision (ADR 0004 § the Change Run)."""
+        row = self.row
+        return self._lex(f"win:{row.win_start}:{row.win_end}", row.added_window)
 
     def commit_lines(self) -> list[tuple[str, str, list[Text], list[Text]]]:
         """(path, change, added lines, removed lines) per file of a commit,
@@ -420,7 +319,8 @@ class EventWidget(Static):
         right: Text | None = None
 
         if e.kind == "file":
-            plus, minus = len(self.added_raw), len(self.removed_raw)
+            row = self.row
+            plus, minus = len(row.added_raw), len(row.removed_raw)
             if e.session_id is None:      # git is the only witness — a claim gap
                 out.append("~", style=t.style("claim", bold=True))
             else:
@@ -435,16 +335,15 @@ class EventWidget(Static):
             # of git polls that happened to catch the file, which is a fact about
             # GIT_POLL_INTERVAL and not about the agent
             # (ADR 0004 § the Change Run).
-            if not e.restates and len(self.calls) > 1:
-                out.append(f"  ×{len(self.calls)}", style=t.style("muted"))
+            if not e.restates and len(row.calls) > 1:
+                out.append(f"  ×{len(row.calls)}", style=t.style("muted"))
             if e.session_id is None:
                 out.append("  ~unattributed", style=t.style("claim"))
-            body = plus + minus
+            hidden = row.disclosure_lines
             if self.expanded:
                 right = Text("▾ ", style=t.style("primary"))
-            elif body > (len(self.removed_raw[:REMOVED_LINES])
-                         + (self.win_end - self.win_start)):
-                right = Text(f"▸ {body} lines ", style=t.style("faint"))
+            elif hidden is not None:
+                right = Text(f"▸ {hidden} lines ", style=t.style("faint"))
         elif e.kind == "call":
             # One kind, one glyph: `⏺` says *a call happened* and the text says
             # which. Bash is the tool whose argument is a shell command, so it
@@ -460,8 +359,8 @@ class EventWidget(Static):
             # facts — did it work, is there more — while the argument is the one
             # part with somewhere else to be read in full, so it is the part
             # that yields (ADR 0004 § fold, don't clip).
-            if self.call_expandable:
-                n = len(self.call_rows)
+            if self.row.call_expandable:
+                n = len(self.row.call_rows)
                 right = (Text("▾ ", style=t.style("primary")) if self.expanded
                          else Text(f"▸ {n} line{'s' if n != 1 else ''} ",
                                    style=t.style("faint")))
@@ -696,7 +595,7 @@ class EventWidget(Static):
             right = (Text("▸ ", style=t.style("faint"))
                      if (e.kind == "file" and (e.added or e.removed))
                      or (e.kind == "commit" and e.files)
-                     or (e.kind == "call" and self.call_expandable) else None)
+                     or (e.kind == "call" and self.row.call_expandable) else None)
         line = self._prefix(first=True)
         line.append_text(head)
         out = self._rline(line, right, width)
@@ -712,9 +611,9 @@ class EventWidget(Static):
             # cannot be expanded back into what it summarised. What was **asked**
             # is still all it ever shows: the Watch never renders a tool's
             # result, expanded or not (ADR 0004 § Calls).
-            if self.expanded and self.call_expandable:
-                for i, (path, text) in enumerate(self.call_rows):
-                    if i < self.shell_rows:
+            if self.expanded and self.row.call_expandable:
+                for i, (path, text) in enumerate(self.row.call_rows):
+                    if i < self.row.shell_rows:
                         code = lexed_command(text, t.depth == "none")
                     elif path is None:      # a value's own second and later lines
                         code = Text(text, style=t.style("primary"))
@@ -735,15 +634,16 @@ class EventWidget(Static):
                 self._sign_row(out, "+", ln, width)
             return out
 
-        if self.removed_raw:
+        row = self.row
+        if row.removed_raw:
             for ln in self.removed_head:
                 self._sign_row(out, "-", ln, width)
-            if len(self.removed_raw) > REMOVED_LINES:
-                self._more_row(out, len(self.removed_raw) - REMOVED_LINES)
-        if self.lines_above:      # a Change Run showing its tail: the rest is above
-            self._more_row(out, self.lines_above, above=True)
-        shown = int(self.shown_chars)
-        animating = self.shown_chars < self.total_chars
+            if row.removed_hidden:
+                self._more_row(out, row.removed_hidden)
+        if row.lines_above:      # a Change Run showing its tail: the rest is above
+            self._more_row(out, row.lines_above, above=True)
+        shown = int(row.shown_chars)
+        animating = row.animating
         for ln in self.window_lines:
             if shown <= 0:
                 break
@@ -753,8 +653,8 @@ class EventWidget(Static):
             shown -= len(ln.plain) + 1   # +1 spends the newline
         if animating:
             out.append("▌", style=t.style("added", bold=True) + Style(blink=True))
-        elif self.lines_below:
-            self._more_row(out, self.lines_below)
+        elif row.lines_below:
+            self._more_row(out, row.lines_below)
         return out
 
     def refresh_event(self) -> None:
@@ -976,7 +876,7 @@ class WatchApp(App):
             tail.absorb(ev, animate=animate and not ev.backfill)
             if animate and not self._following():
                 self._new_below += 1
-            if tail.shown_chars < tail.total_chars and tail not in self.anim_queue:
+            if tail.row.animating and tail not in self.anim_queue:
                 self.anim_queue.append(tail)
             tail.refresh_event()
             return
@@ -990,8 +890,8 @@ class WatchApp(App):
             self._place_after_tail(w)
         if animate and not self._following():
             self._new_below += 1
-        if animate and ev.kind == "file" and w.total_chars > 0 and not ev.backfill:
-            w.shown_chars = 0
+        if animate and ev.kind == "file" and w.row.total_chars > 0 and not ev.backfill:
+            w.row.rewind()
             self.anim_queue.append(w)
         feed.mount(w)
         w.refresh_event()
@@ -1045,23 +945,20 @@ class WatchApp(App):
         # NB: not named `_animate` — that would shadow textual's BoundAnimator
         if not self.anim_queue:
             return
-        remaining = sum(w.total_chars - w.shown_chars for w in self.anim_queue)
+        remaining = sum(w.row.pending_chars for w in self.anim_queue)
         speed = max(self.speed, remaining / STALENESS_BOUND)
         if speed >= SNAP_SPEED:
             for w in self.anim_queue:       # burst: land everything instantly
-                w.shown_chars = w.total_chars
+                w.row.snap()
                 w.refresh_event()
             self.anim_queue.clear()
         else:
             budget = speed / FPS
             while budget > 0 and self.anim_queue:
                 head = self.anim_queue[0]
-                need = head.total_chars - head.shown_chars
-                step = min(need, budget)
-                head.shown_chars += step
-                budget -= step
+                budget -= head.row.advance(budget)
                 head.refresh_event()
-                if head.shown_chars >= head.total_chars:
+                if not head.row.animating:
                     self.anim_queue.pop(0)
 
     # -- header + status bar ------------------------------------------------------
@@ -1106,9 +1003,10 @@ class WatchApp(App):
         clock = f"watch {_elapsed(time.monotonic() - self._t0, wide)}"
         # A widened Live window (--since) is stated, always: it is why a session
         # that went quiet an hour ago has a lane, and "live" means something
-        # different for this run than it does by default.
-        if self.stream.live_window != LIVE_THRESHOLD:
-            clock = f"live ≤{_window(self.stream.live_window)} · {clock}"
+        # different for this run than it does by default. The stream publishes
+        # the *fact*; the UI does not re-derive it from the default window.
+        if v.widened_window is not None:
+            clock = f"live ≤{_window(v.widened_window)} · {clock}"
         pad = width - top.cell_len - len(clock)
         top.append(" " * max(2, pad))
         top.append(clock, style=t.style("faint"))
@@ -1327,7 +1225,7 @@ class WatchApp(App):
         # one key back to now: snap animation debt, drop the selection,
         # re-anchor at the bottom, and trim any scrollback overflow
         for w in self.anim_queue:
-            w.shown_chars = w.total_chars
+            w.row.snap()
             w.refresh_event()
         self.anim_queue.clear()
         self._select(None)
@@ -1441,7 +1339,7 @@ class WatchApp(App):
             w.expand_level = (w.expand_level + 1) % 3
         else:
             w.expand_level = 0 if w.expand_level else 1
-        w.shown_chars = w.total_chars   # expanding also finishes any typing
+        w.row.snap()                    # expanding also finishes any typing
         if w in self.anim_queue:
             self.anim_queue.remove(w)
         w.refresh_event()
@@ -1453,10 +1351,10 @@ class WatchApp(App):
                 continue
             # a Call that has nothing to open must not be what bare `enter`
             # picks — otherwise "expand the newest expandable event" lands on a
-            # row that then does nothing, which is the failure this fixed
-            if (w.lines_above or w.lines_below or w.event.kind == "prompt"
-                    or w.event.files
-                    or (w.event.kind == "call" and w.call_expandable)):
+            # row that then does nothing, which is the failure this fixed. The
+            # row answers for every kind but the prompt, whose rule is about
+            # the rendered width (`EventRow.expandable`)
+            if w.row.expandable or w.event.kind == "prompt":
                 return w
         return None
 
@@ -1578,9 +1476,10 @@ class WatchApp(App):
             v = self.stream.vitals()
             if v.live:
                 sid = v.live[0].session_id
-        if sid is None or sid not in self.stream.tailers:
+        info = self.stream.session_info(sid) if sid else None
+        if info is None:
             return
-        log_path = Path(self.stream.tailers[sid].session.log_path)
+        log_path = Path(info.log_path)
         from . import transcript as transcript_mod
         try:
             text = transcript_mod.render_transcript(log_path)

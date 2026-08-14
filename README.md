@@ -410,7 +410,7 @@ It runs offline and needs no `claude` binary, and it cannot reach the real
 every durable path Standup froze at import — autouse, so no test opts in. `git`
 is the one external binary it shells out to.
 
-Two builders under `tests/support/` stand in for the outside world:
+Three builders under `tests/support/` stand in for the outside world:
 
 - `sessions.py` writes a **Session** log in Claude Code's own layout
   (`~/.claude/projects/<cwd-slug>/<sessionId>.jsonl`). `fixture_session()` is the
@@ -423,8 +423,14 @@ Two builders under `tests/support/` stand in for the outside world:
 - `repos.py` builds real scratch git repos — `make_repo()` with a remote,
   without one (a **Remoteless Repo**), or with a worktree folded into the same
   **Repo Entry**.
+- `llm.py` is a fake **LLM Pass** transport: canned text in, a result with priced
+  `usage` out, recording every pass it was handed. Every paid pass Standup makes
+  goes through one seam (ADR 0003 § the LLM-pass seam), so this one double covers
+  **Session Brief** generation, the **Expert Panel** fan-out and `install`'s
+  doctor-check — which is why the suite needs no `claude` binary.
 
-Both are importable directly. The conftest also offers them as fixtures —
-`projects_dir` (an empty Scan Universe root), `session_log` and `scratch_repo`
-(factories over the two builders), `null_cache` (the **Derived Cache** switched
-off) — and `fake_home`, which is autouse and needs no asking for.
+All three are importable directly. The conftest also offers them as fixtures —
+`projects_dir` (an empty Scan Universe root), `session_log`, `scratch_repo` and
+`fake_llm` (factories over the three builders), `null_cache` (the **Derived
+Cache** switched off) — and `fake_home`, which is autouse and needs no asking
+for.

@@ -7,7 +7,7 @@ snapshot rendered to stdout; the Watch runs in a terminal you leave and return
 to while an agent works, so it is the one surface that must answer *is something
 happening now* rather than *what is the state*.
 
-Eleven decisions, recorded together because they are one design — each later
+Twelve decisions, recorded together because they are one design — each later
 one reaches into an earlier one's geometry.
 
 ## The event source
@@ -89,6 +89,36 @@ Unplanned payoff: the diff row renderer sits on the Textual-free side, so the
 Watch and the Attributed Diff call the same code and the rules below cannot
 drift between the two surfaces.
 
+**The row model sits on that side too — the containment rule, one layer further
+out.** A feed entry's *content* is `watchrow.EventRow`, plain Python holding no
+`Text` and no cell widths: which later event its Change Run admits, how each
+witness folds, where the collapsed window sits, what the typing animation still
+owes, how a Call's input decomposes into body rows, and whether there is
+anything to disclose. `EventWidget` holds one and draws it. The line between
+them is content against appearance, so the window's *bounds* are the row's and
+the highlighting inside it is the widget's; the animation's *character budget*
+is the row's and the clock spending it is the app's; a Call's body *rows* are
+the row's and their columns are the widget's.
+
+Two constants moved with it and are imported back by the UI — `FRESH`, because
+`RUN_WINDOW` *is* it (§ the Change Run), and `CALL_HEAD_LIMIT`, because a Call's
+body threshold *is* its header's (§ Calls). One constant with two readers, not
+two kept equal by hand.
+
+Payoff: every bound below is table-testable over Feed Events
+(`tests/test_watch_rows.py`) rather than only through a mounted Textual app, and
+what still needs a widget is only what is about drawing
+(`tests/test_watch_render.py`). Accepted cost: one indirection at each call site
+(`w.row.shown_chars`), and a widget that must drop its highlight cache when the
+row it holds absorbs something — the one piece of bookkeeping the split creates.
+
+*Rejected: leaving the policy on the widget* — the bounds were then reachable
+only by constructing widgets, so the tests that existed pinned rendering and the
+rules themselves were pinned by nothing.
+*Rejected: folding runs in the stream instead of in a row model* — see
+*Alternatives considered*: it needs a revision protocol so the stream can say
+"revise what I gave you", and still needs the same UI code.
+
 **Everything between git's bytes and the row is shared, in the same direction.**
 Three things were duplicated across the boundary and are now single:
 
@@ -124,6 +154,44 @@ rule is the thing that produced the bug.
 *Rejected: giving `CommitFile` the parser's full hunk shape* — the Watch renders
 a change as it lands, with no line numbers on screen to carry; the projection is
 the boundary that keeps the Watch's model as small as what it draws.
+
+## Discovery is an entry point, not the constructor
+
+**`WatchStream.discover(u, repo_arg)` asks the environment; `WatchStream(...)` is
+handed the answers.** Discovery owns every question that only the machine can
+answer — the Derived Cache and the log scan behind `u.sessions()`, the Project
+Handle (or path) resolution behind `_resolve_target`, and where the logs live —
+and then constructs the stream from name, checkouts, Sessions and log directory.
+Nothing else in the module imports the Universe for its own use.
+
+The reason is testability of the *decisions*, not of the plumbing. Every choice
+the stream makes — which Sessions get a lane, how a hunk becomes a Feed Event,
+when a tool verb yields to `thinking`, whether a dirty path was already
+explained — used to be reachable only through a Scan Universe over a real
+`~/.claude`, so the Watch's own rules were pinned by the two witnesses' tests
+and by nothing that could see the stream object itself.
+
+Deliberately *not* moved: the git watcher's seeding. It runs in the constructor,
+against the checkouts it was handed, so building a stream still shells out to
+`git` — a scratch repo is the whole of that environment. The ground-truth half of
+the Watch *is* git; faking it would test the fake (`tests/support/repos.py`).
+
+**The UI reads published types only.** Two facts the UI used to take from the
+stream's insides now travel on them:
+
+- **the log path**, on `LiveSessionInfo` (and `session_info(sid)` for a Session
+  that is tailed but no longer live) — the `s` key opens a Transcript, and used
+  to read `stream.tailers[sid].session.log_path`;
+- **the widened Live window**, on `Vitals.widened_window` — the fact, not the
+  window. The UI compared `stream.live_window` against `LIVE_THRESHOLD`, so the
+  default window was a constant imported across the boundary and the decision
+  "is this worth stating" was made twice.
+
+*Rejected: a fake Universe for tests* — it pins the Universe's shape, which is
+another module's contract, and leaves the stream's own constructor untested.
+*Rejected: keeping `live_window` on the published surface and letting consumers
+compare* — same rule in two places, and the second copy is the one that goes
+stale when the default moves.
 
 ## Motion never outlives the data
 
