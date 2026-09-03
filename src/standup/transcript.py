@@ -3,7 +3,8 @@
 Your prompts and Claude's responses in reading order. Tool calls collapse to
 one-liners — `--tools` prints each one's whole input beneath it, never its
 result; thinking is hidden unless asked for; injected noise (system
-reminders, hook output, tool results) is stripped so "you" is what you typed.
+reminders, hook output, tool results) is stripped so "you" is what you typed,
+and an interrupted turn is marked as interrupted rather than credited to you.
 Each assistant turn is annotated with its per-turn Notional Cost.
 
 This is the one view exempt from the inbox's never-wrap rule (CONTEXT.md):
@@ -123,9 +124,16 @@ def digest(path: Path, *, max_chars: int, head_chars: int,
                 etype = obj.get("type")
                 msg = obj.get("message") or {}
                 if etype == "user":
-                    prompt = claude_logs.prompt_in(obj)
-                    if prompt is not None:
-                        parts.append("USER: " + prompt.text)
+                    # kept, and labelled as itself: an Expert judging the
+                    # human's side of a session reads an abandoned turn as
+                    # evidence, and reading it as a prompt would make Esc look
+                    # like a question (ADR 0001 § the one log reader)
+                    if claude_logs.is_interrupt(obj):
+                        parts.append("INTERRUPTED BY USER")
+                    else:
+                        prompt = claude_logs.prompt_in(obj)
+                        if prompt is not None:
+                            parts.append("USER: " + prompt.text)
                 elif etype == "assistant":
                     texts, tools = _assistant_parts(msg.get("content"),
                                                     show_thinking=False,
@@ -246,6 +254,15 @@ def render_transcript(path: Path, show_thinking: bool = False, raw: bool = False
                 brief_insert_idx = len(out)
 
             if etype == "user":
+                # An interrupt is not a prompt — its `[Request interrupted by
+                # user]` is text nobody typed — but it *is* why the turn above
+                # stops mid-sentence, so it gets a rule of its own rather than
+                # being credited to you (ADR 0001 § the one log reader).
+                if claude_logs.is_interrupt(obj):
+                    flush()
+                    out.append(st.dim(f"── interrupted {body[15:]}"))
+                    out.append("")
+                    continue
                 # what you typed, through the one reading the Watch also shows
                 # (ADR 0001 § the one log reader): injected bodies, system
                 # reminders and bare tool results are none of them prompts

@@ -144,6 +144,24 @@ def test_the_watch_and_the_transcript_read_prompts_the_same_way(
     assert "the injected skill body" not in text
 
 
+def test_an_interrupt_opens_no_chapter(scratch_repo, projects_dir):
+    """`[Request interrupted by user]` is the one non-prompt that reads as
+    prose, so the feed used to open a chapter titled with it — a rule crediting
+    you with a line you never typed, and a chapter break where the turn merely
+    stopped. It is not a prompt in the one reading, so it is no chapter here
+    (ADR 0001 § the one log reader)."""
+    repo = scratch_repo("tt")
+    (SessionLog(cwd=str(repo.path))
+     .prompt("run the suite")
+     .call("Bash", command="sleep 600")
+     .interrupt()
+     .save(projects_dir))
+
+    events = _events(repo, projects_dir)
+
+    assert [e.message for e in events if e.kind == "prompt"] == ["run the suite"]
+
+
 def test_a_bare_tool_result_is_not_a_prompt(scratch_repo, projects_dir):
     """Injected material is not a prompt: a result with no prose beside it is
     the Session's own machinery, and the feed says nothing about it."""

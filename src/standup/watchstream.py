@@ -259,12 +259,14 @@ class _Tailer:
 
         Four transitions, in the order they have to be tested:
 
-        - an **interrupt** settles the session. `interruptedMessageId` (Esc) and
-          `interruptedByShutdown` (the session quit mid-turn) both arrive as
-          plain user lines, so this must be checked before the prompt reading —
-          the line's text is `[Request interrupted by user]`, which would
-          otherwise look like you asking a question. Without it the state would
-          read `thinking` for as long as the Watch stays open.
+        - an **interrupt** settles the session. It arrives as a plain user
+          line whose text is `[Request interrupted by user]`, so this must be
+          checked before the prompt reading — that text would otherwise look
+          like you asking a question, and the state would read `thinking` for
+          as long as the Watch stays open. `claude_logs.is_interrupt` holds
+          which markers count, because the tags this used to key on
+          (`interruptedMessageId` / `interruptedByShutdown`) stopped being
+          written and the text is the only one every version has.
         - `stop_reason == "tool_use"` *and* a `tool_use` block on the line names
           the call about to run: its verb. The stop reason alone is not enough —
           see the block comment below.
@@ -310,7 +312,7 @@ class _Tailer:
 
         if etype != "user" or obj.get("isMeta"):
             return
-        if "interruptedMessageId" in obj or "interruptedByShutdown" in obj:
+        if claude_logs.is_interrupt(obj):
             self.act_verb, self.act_since = None, ts
             self.act_tool = None          # cut short: nothing may be held over
             return

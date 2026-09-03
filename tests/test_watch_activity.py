@@ -144,18 +144,41 @@ def test_a_line_naming_no_tool_leaves_the_state_where_it_was(
 
 
 def test_an_interrupt_settles_the_state(scratch_repo, projects_dir, monkeypatch):
-    """Esc and a mid-turn shutdown both arrive as plain user lines, and must be
-    read before the prompt reading: their text is `[Request interrupted by
-    user]`, which would otherwise look like a question — and the state would
-    read `thinking` for as long as the Watch stays open."""
+    """Esc, a mid-turn shutdown and a refused tool call all arrive as plain
+    user lines, and must be read before the prompt reading: their text is
+    `[Request interrupted by user]`, which would otherwise look like a question
+    — and the state would read `thinking` for as long as the Watch stays open."""
     repo = scratch_repo("tt")
     esc = (_log(repo, "e" * 36).prompt("write alpha")
            .call("Bash", mid_turn=True, command="sleep 600").interrupt())
-    quit_ = (_log(repo, "f" * 36).prompt("write alpha")
-             .call("Bash", mid_turn=True, command="sleep 600")
-             .interrupt(shutdown=True))
+    refused = (_log(repo, "f" * 36).prompt("write alpha")
+               .call("Bash", mid_turn=True, command="sleep 600")
+               .interrupt(text="[Request interrupted by user for tool use]"))
 
     assert _activity(repo, projects_dir, monkeypatch, esc) is None
+    assert _activity(repo, projects_dir, monkeypatch, refused) is None
+
+
+def test_an_interrupt_settles_the_state_without_its_retired_tag(
+        scratch_repo, projects_dir, monkeypatch):
+    """The interrupt used to be read off `interruptedMessageId` /
+    `interruptedByShutdown` alone — tags almost no real interrupt line carries
+    (2 of 79 across a machine's logs), which left interrupted sessions stuck
+    reading `thinking` until they aged out of the Live window. Both shapes
+    settle: a log that has the tag is not wrong
+    (ADR 0004 § the Activity State)."""
+    repo = scratch_repo("tt")
+    untagged = (_log(repo, "a" * 36).prompt("write alpha")
+                .call("Bash", mid_turn=True, command="sleep 600").interrupt())
+    tagged = (_log(repo, "b" * 36).prompt("write alpha")
+              .call("Bash", mid_turn=True, command="sleep 600")
+              .interrupt(tagged=True))
+    quit_ = (_log(repo, "c" * 36).prompt("write alpha")
+             .call("Bash", mid_turn=True, command="sleep 600")
+             .interrupt(shutdown=True, tagged=True))
+
+    assert _activity(repo, projects_dir, monkeypatch, untagged) is None
+    assert _activity(repo, projects_dir, monkeypatch, tagged) is None
     assert _activity(repo, projects_dir, monkeypatch, quit_) is None
 
 

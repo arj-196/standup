@@ -276,7 +276,10 @@ rides that same log line, and the feed reads it the way `standup session` does
 any other, so the launch replay starts there and the call it interrupted stays
 in the chapter above it. Injected material never counts: system reminders and
 the body Claude Code splices in behind a slash command are not prompts, and the
-command reads back as the line you entered.
+command reads back as the line you entered. Nor does an interrupt: pressing
+`Esc` writes a line reading `[Request interrupted by user]`, which is text you
+never typed, so it opens no chapter — what it does instead is blank the
+**Activity State** band.
 
 A file event's header reads `path  change  +added −removed`, where `change`
 is `create`, `modify`, or `delete`, and the counts are lines. The path itself
@@ -823,6 +826,11 @@ nothing about the pause between them — so the pause is what `thinking` is. The
 practical consequence: a session killed outright in that gap (window closed,
 `kill -9`) leaves a tail that looks exactly like a session still composing, and
 it will read `thinking` until it ages past the 30-minute Live window.
+
+**An interrupt is not silence.** `Esc` mid-turn, a session quitting mid-turn
+and a tool call you refuse are all written down, so the bar blanks the moment
+one lands — an interrupted session is a finished one as far as the Watch is
+concerned, and never reads `thinking` afterwards.
 
 **A frozen spinner means nothing is arriving.** The `⠹` beside the verb turns
 only while the log is still being appended. After 30 quiet seconds it stops and

@@ -224,11 +224,27 @@ absence is the answer.
 |---|---|
 | a `tool_use` **block** on the line | the tool's verb — `reading` / `writing` / `running`, or `acting` unmapped |
 | any other `stop_reason` | none: turn over |
-| `interruptedMessageId` / `interruptedByShutdown` | none: turn cut short |
+| `[Request interrupted by user…]` as a user line's whole text | none: turn cut short |
 | a `tool_result`, or a user prompt, with no assistant line yet | `thinking` — **inferred from silence** |
 | a line naming no tool | unchanged: the model is still composing |
 
-Four commitments:
+Five commitments:
+
+**The interrupt is read off the line's text**, not off a tag. Esc, a mid-turn
+quit and a refused tool call are one shape: a plain `user` line whose whole text
+is `[Request interrupted by user]` (`… for tool use]` for the refusal), which is
+why it must be tested *before* the prompt reading — text nobody typed would
+otherwise read as a question, and the state would stay `thinking` for as long as
+the Watch is open. Claude Code *sometimes* tags the line as well
+(`interruptedMessageId` for Esc, `interruptedByShutdown` for the quit), and this
+originally keyed on the tags alone — which settled almost nothing: 2 of 79
+interrupt lines across a machine's logs (2.1.205 … 2.1.258) carry either tag,
+and no recent one does, so every interrupted session read `thinking` until it
+aged out of the Live window. The tags are still read, because a log that has one
+is not wrong; the text is what is always there.
+`claude_logs.is_interrupt` owns which markers count, so the reading is one
+function rather than a condition copied per consumer (ADR 0001 § the one log
+reader).
 
 **`thinking` is an inference and is documented as one**, here and in the manual.
 It is not `~`-marked: the tilde marks claims about *what happened or was

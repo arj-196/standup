@@ -147,18 +147,27 @@ class SessionLog:
         return self._assistant([{"type": "text", "text": text}], model, usage,
                                stop_reason="tool_use" if mid_turn else "end_turn")
 
-    def interrupt(self, *, shutdown: bool = False) -> "SessionLog":
-        """The user line Claude Code writes when a turn is cut short: Esc
-        (`interruptedMessageId`) or the session quitting mid-turn
-        (`interruptedByShutdown`). Both arrive as ordinary user lines whose text
-        is `[Request interrupted by user]`, which is exactly why a prompt
-        reading must not take one for a question (ADR 0004 § the Activity State).
+    def interrupt(self, *, shutdown: bool = False, tagged: bool = False,
+                  text: str = "[Request interrupted by user]") -> "SessionLog":
+        """The user line Claude Code writes when a turn is cut short: Esc, the
+        session quitting mid-turn, or a refused tool call (`text` carries that
+        one's `… for tool use]` wording). All arrive as ordinary user lines
+        whose whole text is `[Request interrupted by user]`, which is exactly
+        why a prompt reading must not take one for a question (ADR 0004 § the
+        Activity State).
+
+        Untagged by default, because that is what nearly every real interrupt
+        line looks like. `tagged=True` adds the `interruptedMessageId` /
+        `interruptedByShutdown` field a small minority carry, so both readings
+        stay pinned.
         """
-        marker = ({"interruptedByShutdown": True} if shutdown
-                  else {"interruptedMessageId": self._uuid()})
+        marker = {}
+        if tagged:
+            marker = ({"interruptedByShutdown": True} if shutdown
+                      else {"interruptedMessageId": self._uuid()})
         self._conversation("user",
                            {"role": "user",
-                            "content": "[Request interrupted by user]"},
+                            "content": [{"type": "text", "text": text}]},
                            **marker)
         return self
 

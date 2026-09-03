@@ -149,7 +149,7 @@ session title to its last prompt.
 | reading | type | the schema detail it hides |
 | --- | --- | --- |
 | edits | `EditBlock` | `file_path`/`notebook_path`; MultiEdit fans out, one block per hunk under a shared `tool_id`; new text is `new_string`/`new_source`/`content` |
-| prompts | `Prompt` | injected material is not a prompt: system reminders, `isMeta` bodies, tool-result-only turns |
+| prompts | `Prompt` | injected material is not a prompt: system reminders, `isMeta` bodies, tool-result-only turns, an interrupt's `[Request interrupted by user]` — the one of those that reads as prose, so `is_interrupt` names it and every consumer inherits the refusal |
 | per-turn usage | `TurnUsage` | counts *and* the modifiers that price them (fast mode, batch tier, US geo, web search); undifferentiated `cache_creation_input_tokens` reads as 5m |
 | the Session | `models.Session` | titles and their precedence, `cwd`, branches, edited files, captured commit hashes |
 

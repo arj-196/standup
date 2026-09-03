@@ -122,6 +122,28 @@ def test_prose_beside_a_tool_result_is_a_prompt(projects_dir):
                                                 "stop — try the other suite"]
 
 
+def test_an_interrupt_is_not_a_prompt(projects_dir):
+    """`[Request interrupted by user]` is the one piece of injected text that
+    reads as ordinary prose, so a prompt reading that only strips reminders and
+    `isMeta` bodies counts Esc as a question you asked — and every consumer of
+    the reading (the Watch's chapter rules, a Brief's digest, an Audit's
+    prompt-structure evidence) inherits the miscount
+    (ADR 0001 § the one log reader)."""
+    log = (SessionLog(cwd="/tmp/tt")
+           .prompt("fix the parser")
+           .call("Bash", command="sleep 600")
+           .interrupt()
+           .prompt("never mind, run the suite")
+           .interrupt(tagged=True)
+           .interrupt(text="[Request interrupted by user for tool use]")
+           .save(projects_dir))
+
+    parsed = claude_logs.parse_log(log)
+
+    assert [p.text for p in parsed.prompts] == ["fix the parser",
+                                                "never mind, run the suite"]
+
+
 def test_every_tool_call_on_a_line_is_read_once_in_order(projects_dir):
     """The reading the Loop detector shapes and the Watch renders: every
     `tool_use` block, silent and file-touching ones included, carrying the id

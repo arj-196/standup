@@ -42,7 +42,7 @@ from .models import Session
 EDIT_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit"}
 
 # bump when the typed reading changes shape or meaning (invalidates cache rows)
-READER_VERSION = 2
+READER_VERSION = 3
 # `[branch abc1234]` / `[main (root-commit) abc1234]` / `[detached HEAD abc1234]`
 COMMIT_LINE_RE = re.compile(r"^\[[^\[\]\n]{1,80} ([0-9a-f]{7,40})\]", re.MULTILINE)
 # cheap hint on the raw JSON line (stdout newlines are escaped as \\n there)
@@ -54,6 +54,9 @@ _REMINDER_RE = re.compile(r"<system-reminder>.*?</system-reminder>", re.DOTALL)
 _CMD_NAME_RE = re.compile(r"<command-name>(.*?)</command-name>", re.DOTALL)
 _CMD_ARGS_RE = re.compile(r"<command-args>(.*?)</command-args>", re.DOTALL)
 _CMD_TAG_RE = re.compile(r"</?command-[^>]*>", re.DOTALL)
+# the whole text of an interrupted turn's user line — `[Request interrupted by
+# user]`, and the `… for tool use]` variant a refused tool call writes
+_INTERRUPT_RE = re.compile(r"^\[Request interrupted by user[^\]]*\]$")
 
 
 def log_mtime(path: Path) -> datetime | None:
@@ -262,8 +265,11 @@ class Prompt:
 
     "Typed" is the whole point: injected material is not a prompt. System
     reminders, the bodies Claude Code splices in behind a slash command
-    (`isMeta`), and turns that carry nothing but a tool result are all dropped
-    here, so a consumer never has to know which of them exist.
+    (`isMeta`), turns that carry nothing but a tool result, and the
+    `[Request interrupted by user]` line an interrupt writes are all dropped
+    here, so a consumer never has to know which of them exist. The interrupt is
+    the one of those that reads as ordinary prose, so it is the one a consumer
+    would have counted as a question you asked — `is_interrupt` names it.
 
     The rule is **prose makes a prompt**, whatever else rides the line. The
     Watch used to additionally drop any user line carrying a `toolUseResult`,
@@ -303,15 +309,42 @@ def prompt_text(content) -> str | None:
     return text or None
 
 
+def is_interrupt(obj: dict) -> bool:
+    """Is this line a turn *cut short* rather than one finished or continued?
+
+    `Esc` mid-turn, the session quitting mid-turn, and a refused tool call all
+    arrive as an ordinary `user` line whose whole text is
+    `[Request interrupted by user]` — text nobody typed, which a reader looking
+    for prompts would take for a question you asked (ADR 0004 § the Activity
+    State).
+
+    **The text is the only marker actually written.** Claude Code sometimes
+    also tagged the line — `interruptedMessageId` (Esc),
+    `interruptedByShutdown` (quit mid-turn) — but rarely: 2 of 79 interrupt
+    lines across this machine's logs (2.1.205 … 2.1.258) carried either, and
+    none of the recent ones do. The tags are still read, because a log that has
+    one is not wrong, but a reading that needs one settles almost nothing.
+    """
+    if obj.get("type") != "user":
+        return False
+    if "interruptedMessageId" in obj or "interruptedByShutdown" in obj:
+        return True
+    text = prompt_text((obj.get("message") or {}).get("content"))
+    return bool(text and _INTERRUPT_RE.match(text))
+
+
 def prompt_in(obj: dict, ts: datetime | None = None) -> Prompt | None:
     """One log line as a Prompt, or None when it is not one.
 
     The whole rule in one call — the line must be a user turn, must not be
-    `isMeta`, and must hold prose — so a consumer reading a log line by line
-    (the Watch's tailer, the Brief and Audit digests) asks the same question
-    `parse_log` asks, rather than half of it.
+    `isMeta`, must not be an interrupt, and must hold prose — so a consumer
+    reading a log line by line (the Watch's tailer, the Brief and Audit
+    digests) asks the same question `parse_log` asks, rather than half of it.
+
+    A view that wants the interrupt itself asks `is_interrupt` and marks it as
+    what it is; what it may not do is render it as something you typed.
     """
-    if obj.get("type") != "user" or obj.get("isMeta"):
+    if obj.get("type") != "user" or obj.get("isMeta") or is_interrupt(obj):
         return None
     text = prompt_text((obj.get("message") or {}).get("content"))
     return Prompt(text, ts) if text else None
