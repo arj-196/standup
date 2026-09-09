@@ -5,7 +5,8 @@ The `cache/` subdirectory is deliberate: the `~/.standup` root is durable and
 holds non-recomputable data (Session Briefs, see brief.py), so only `cache/` is
 disposable. `rm -rf ~/.standup/cache` is always safe; the root is not.
 
-Holds results derived deterministically from the session logs — one row per
+Holds results derived deterministically from the session logs of both agents
+(ADR 0001 § two dialects, one reading) — one row per
 session file (the fully parsed Session), the typed full reading beside it
 (ADR 0001 § the one log reader), an immutable commit_files(sha) table, and
 detected Loops. What hunk attribution matches against (ADR 0007 § Decision) is
@@ -45,7 +46,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 SCHEMA_VERSION = 5
-PARSER_VERSION = 1  # bump when session parse logic changes (invalidates rows)
+PARSER_VERSION = 2  # bump when session parse logic changes (invalidates rows)
 
 CACHE_PATH = Path(os.path.expanduser("~/.standup")) / "cache" / "cache.db"
 
@@ -153,10 +154,11 @@ def _owned_version(module: str, attr: str) -> Callable[[], int]:
     return read
 
 
-def _live(module: str, attr: str) -> Callable[[Path], set[str]]:
-    """A derivation's liveness enumerator, resolved the same lazy way."""
-    def keys(root: Path) -> set[str]:
-        return getattr(importlib.import_module(f".{module}", __package__), attr)(root)
+def _live(module: str, attr: str) -> Callable[[Any], set[str]]:
+    """A derivation's liveness enumerator, resolved the same lazy way. Handed
+    the log roots (`logs.Roots`), every one of which it enumerates."""
+    def keys(roots) -> set[str]:
+        return getattr(importlib.import_module(f".{module}", __package__), attr)(roots)
     return keys
 
 
@@ -192,7 +194,7 @@ class Derivation:
 SESSIONS = Derivation(
     kind="sessions",
     version_column="parser_version", version=lambda: PARSER_VERSION,
-    live_keys=_live("claude_logs", "session_log_ids"),
+    live_keys=_live("logs", "session_log_ids"),
 )
 # immutable by sha, so no version and no stat: a commit's file list cannot
 # change under its own hash, and a sha nobody asks for again costs one row
@@ -203,15 +205,15 @@ LOOPS = Derivation(
     kind="loops",
     version_column="detector_version",
     version=_owned_version("loops", "DETECTOR_VERSION"),
-    live_keys=_live("claude_logs", "session_log_ids"),
+    live_keys=_live("logs", "session_log_ids"),
 )
 # the typed full reading (ADR 0001 § the one log reader) — the one derivation
 # whose keys include logs the Session sweep never enumerates
 LOGS = Derivation(
     kind="logs", codec=ZLIB_JSON,
     version_column="reader_version",
-    version=_owned_version("claude_logs", "READER_VERSION"),
-    live_keys=_live("claude_logs", "readable_log_ids"),
+    version=_owned_version("logs", "READER_VERSION"),
+    live_keys=_live("logs", "readable_log_ids"),
 )
 
 DERIVED: tuple[Derivation, ...] = (SESSIONS, COMMIT_FILES, LOOPS, LOGS)
@@ -223,7 +225,7 @@ class NullCache:
     def derive(self, spec, key, stamp, compute, load=None, dump=None):
         return compute()
 
-    def prune(self, projects_dir):
+    def prune(self, roots):
         pass
 
     def flush(self):
@@ -238,7 +240,7 @@ class Cache:
         # once however many views ask for it.
         self._buffer: dict[str, dict[str, tuple[Stamp | None, Any]]] = {
             spec.kind: {} for spec in DERIVED}
-        self._prune_root: Path | None = None
+        self._prune_roots = None
 
     # --- the one caller-side call ---------------------------------------
 
@@ -314,12 +316,14 @@ class Cache:
 
     # --- lifecycle ------------------------------------------------------
 
-    def prune(self, projects_dir: Path | str) -> None:
+    def prune(self, roots) -> None:
         """Drop the rows of logs that are gone, each derivation against its own
-        enumerator. A root that is not there enumerates nothing, which would
-        read as "everything is dead" — so it prunes nothing instead."""
-        root = Path(projects_dir)
-        self._prune_root = root if root.is_dir() else None
+        enumerator over the log roots (`logs.Roots`, or one Claude Code root as
+        a bare path). Roots that are not there enumerate nothing, which would
+        read as "everything is dead" — so with none present, nothing is pruned."""
+        from . import logs
+        present = logs.as_roots(roots).present()
+        self._prune_roots = present if present else None
 
     def flush(self) -> None:
         """Apply all buffered writes and pruning in one transaction, then close."""
@@ -365,12 +369,12 @@ class Cache:
         return values + [row]
 
     def _apply_prune(self) -> None:
-        if self._prune_root is None:
+        if self._prune_roots is None:
             return
         for spec in DERIVED:
             if spec.live_keys is None:
                 continue
-            live = spec.live_keys(self._prune_root)
+            live = spec.live_keys(self._prune_roots)
             existing = {r[0] for r in
                         self._conn.execute(f"SELECT {spec.key_column} FROM {spec.kind}")}
             stale = existing - live

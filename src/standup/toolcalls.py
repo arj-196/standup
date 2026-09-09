@@ -42,8 +42,11 @@ _UUIDISH = re.compile(r"\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-"
 # 4615 non-Bash calls their remaining arguments and rendered `notion-update-page`
 # as the bare verb `update_content`: the key naming the page was dropped because
 # `command` outranks `page_id`.
-_ARG_KEYS = ("file_path", "notebook_path", "command", "path", "pattern",
-             "query", "url", "uri", "prompt", "id", "page_id", "expression")
+# `cmd` is Codex's `exec_command` argument, `patch` its `apply_patch` body and
+# `code` its REPL tools' script — the same rank their Claude counterparts hold.
+_ARG_KEYS = ("file_path", "notebook_path", "command", "cmd", "patch", "path",
+             "pattern", "query", "url", "uri", "prompt", "code", "id", "page_id",
+             "expression")
 
 
 def display_name(raw: str) -> str:

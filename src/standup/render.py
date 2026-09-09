@@ -22,7 +22,7 @@ from . import handles, join
 from .cost import ProjectCost, SessionCost
 from .models import Attribution, Brief, Commit, RepoEntry, Rollup
 from .termout import (Style, claim_hedges, claim_line, clamp, commit_ref,
-                      session_ref, style, term_width, visible_len)
+                      agent_tag, session_ref, style, term_width, visible_len)
 
 AREAS_SHOWN = 3
 _EPOCH = datetime.min.replace(tzinfo=timezone.utc)
@@ -116,7 +116,7 @@ def _brief_line(brief: Brief | None, st: Style, width: int, indent: str) -> str 
 def _rollup_stanza(r: Rollup, now: datetime, st: Style, width: int,
                    briefs: dict | None = None) -> list[str]:
     if r.session_id:
-        title_line = f'  {session_ref(r.handle, st)}  ~ "{r.title}"'
+        title_line = f'  {session_ref(r.handle, st)}  ~ "{r.title}"{agent_tag(r.agent, st)}'
     else:
         title_line = f"    {st.dim('unattributed')}"
     lines = [clamp(title_line, width)]
@@ -230,7 +230,7 @@ def render_detail(entry: RepoEntry, now: datetime,
     rolls = join.rollups(entry)
     for r in rolls:
         if r.session_id:
-            head = f'{session_ref(r.handle, st)}  ~ "{r.title}"'
+            head = f'{session_ref(r.handle, st)}  ~ "{r.title}"{agent_tag(r.agent, st)}'
             if r.last_activity:
                 head += st.dim(f" · {humanize(r.last_activity, now)}")
         else:
@@ -411,6 +411,7 @@ def render_cost_detail(project: ProjectCost, window: str, now: datetime,
             n = f"{len(s.loops)} loops" if len(s.loops) > 1 else "loop"
             loop_tag = f"  {st.yellow(f'⟳ {n} {_money(s.loop_cost)}')}"
         head = (f"  {_money(s.cost):>{w}}  {session_ref(s.handle, st)}  \"{s.title}\""
+                f"{agent_tag(s.session.agent, st)}"
                 f"  {st.dim(_abbr_model(s.dominant_model or '?'))}{why}{loop_tag}")
         out.append(clamp(head, width))
         indent = " " * (w + 4)

@@ -5,12 +5,16 @@ Date: 2026-07-23
 Decisions in sequence: the second retires the only state the tool had, the third
 reintroduces a store and must justify itself against the second, the fourth
 gives that store one protocol, the sixth deletes a knob the third made
-pointless. The last says where all of them are implemented.
+pointless, the seventh says where all of them are implemented. The last admits
+a second agent's logs without teaching any view a second schema.
 
 ## The Scan Universe
 
-**Auto-discovered from Session `cwd` values in `~/.claude/projects/*/*.jsonl`.**
-Zero configuration, no disk walking. Within a discovered repo the inbox **never
+**Auto-discovered from Session `cwd` values in the logs under two roots:
+`~/.claude/projects/*/*.jsonl` and `~/.codex/sessions/**/rollout-*.jsonl`
+(plus `~/.codex/archived_sessions/`).** Zero configuration, no disk walking.
+Either root may be absent; the Universe reads the ones present and errors only
+when neither is (§ two dialects, one reading). Within a discovered repo the inbox **never
 filters by attribution**: dirt from a hand edit or another tool appears as an
 **Unattributed Change**.
 
@@ -109,8 +113,9 @@ one `cache.derive(spec, key, stamp, compute, load=, dump=)`.
   the row (an empty commit-file list, a reading over `MAX_BLOB_BYTES`), `load`
   returning None or raising means a row this version cannot read. Both cost a
   recompute and change no output — precisely what a pure accelerator may do.
-- **liveness is declared, not passed in.** `prune` is handed the projects dir
-  and each declaration enumerates its own keys under it. The rule it replaces
+- **liveness is declared, not passed in.** `prune` is handed the log roots
+  (`logs.Roots`, § two dialects, one reading) and each declaration enumerates
+  its own keys under them. The rule it replaces
   was a hand-maintained coupling: the sweep computed one `live_ids` set for all
   tables, so the first artifact keyed on something the sweep's glob does not
   produce — a subagent transcript's reading (ADR 0002 § subagent usage) — had
@@ -143,8 +148,9 @@ and `transcript` (prompt text). The duplication was not theoretical — a
 mistyped prefilter in `cost`'s copy of the title reading silently demoted every
 session title to its last prompt.
 
-**`claude_logs` owns the reading. One pass over one log yields one typed
-`ParsedLog`:**
+**One pass over one log yields one typed `ParsedLog`** — the shape is `logs`'
+and the Claude Code schema behind it is `claude_logs`' (since § two dialects,
+one reading, which added Codex's beside it):
 
 | reading | type | the schema detail it hides |
 | --- | --- | --- |
@@ -294,6 +300,98 @@ Rejected:
 Cost: a Universe is a *command's* view of the world, not a live one — it
 memoizes. The Watch therefore reads one at launch and lets it go rather than
 holding the cache open for the minutes it stays on screen.
+
+## Two dialects, one reading
+
+*(2026-09-09)* Codex writes its Sessions too — `~/.codex/sessions/YYYY/MM/DD/
+rollout-<ts>-<id>.jsonl`, one thread per file, every line `{timestamp,
+ordinal, type, payload}` — and nothing in that schema resembles Claude Code's:
+usage rides an `event_msg`/`token_count` line that names no model (a
+`turn_context` line did), edits are `apply_patch` custom tool calls with
+cwd-relative paths in a patch body, the shell is `exec_command`, an interrupt
+is a `turn_aborted` event, and the user's side carries `<environment_context>`
+and plugin lists spliced in as separate items.
+
+**The typed reading is the seam. `logs` owns the shape every view consumes —
+`ParsedLog`, `EditBlock`, `Prompt`, `TurnUsage`, `ToolCall` — and the
+`LineReader` contract a streaming consumer reads through; a dialect module
+(`claude_logs`, `codex_logs`) owns one schema and nothing else; no consumer
+imports a dialect.** `logs.dialect_of(path)` decides by the file's own shape
+(`rollout-*.jsonl` is Codex), so a path handed to a view — a Session Handle's
+log — needs no root context. `logs.read_log`, `logs.parse_log` and
+`logs.reader` dispatch through it; `logs.Roots` names the roots and is the one
+enumeration the Universe's scan, the cache's prune, the cost sweep and the
+Watch's discovery share.
+
+Rules the seam imposes, each because a view would otherwise learn a schema:
+
+- **a reader is made per file, and may keep state.** A Codex line does not
+  name its model or its cwd; an earlier line did. Every public method of the
+  Codex reader absorbs those facts from the line it is handed, so a consumer
+  that asks only some of the questions (the Watch never calls `note_session`)
+  still reads a patch against the right cwd. Claude's reader is the old public
+  functions wrapped; the functions stay public and tested.
+- **the reading's meaning is fixed by `logs`, and a dialect converts to it.**
+  `TurnUsage.input_tokens` is *uncached* input: Claude counts it so, Codex
+  counts cached inside `input_tokens`, so the Codex reader subtracts
+  (ADR 0002 § Codex usage). `EditBlock.path` is absolute: Claude records
+  absolute paths and drops a relative one as unattributable; Codex's patch
+  format *defines* its paths as cwd-relative, so joining them is reading the
+  format, not guessing.
+- **the shell tool, the silent tools and the Activity State verbs are the
+  dialect's.** `shell_command(call)`, `is_silent(name)` and `activity(obj)`
+  answer for `Bash`/`Read`/`stop_reason` on one side and
+  `exec_command`/nothing/`task_complete` on the other (ADR 0004 § Calls,
+  § the Activity State). `ACT_VERBS` moved out of the Watch and into each
+  dialect; the two states no table names (`SETTLED`, `THINKING`) are `logs`'.
+- **one `READER_VERSION`, in `logs`.** The cache row is the shape, whichever
+  schema it was read from; a dialect that changes what it reads bumps the shared
+  version. `Session.agent` rides the row, so a row without it is a reparse.
+- **a Codex rollout is one Session, id from its file name.** A resumed thread
+  writes a second rollout `…-<thread>_<fork>.jsonl` carrying the parent thread's
+  id inside; the Session id is the *last* id in the name — the one unique to the
+  file — so a handle names one log. Codex's internal threads (`thread_source`
+  `subagent`/`guardian_review`, its auto-reviewer) get no `cwd` and leave the
+  Universe the way every cwd-less Session does.
+- **the Codex sweep is the full reading.** Claude's inbox sweep keeps its line
+  prefilter (§ the one log reader); a rollout's facts ride lines no cheap scan
+  tells apart, and the cache makes the full reading free after the first run.
+- **a Codex Session's title is its first prompt.** Rollouts carry no title
+  field; `Session.first_prompt` exists for them, ranked above `last_prompt` in
+  the fallback, because a thread's last prompt is usually `y`.
+- **`Session.agent` is a fact, not a claim.** Read off the file's shape, printed
+  bare (`termout.agent_tag`) after a title wherever a Codex Session is named;
+  Claude Code's carry nothing, because a tag on every line says less than a
+  tag on the exception.
+
+Accepted costs:
+
+- **the Loop detector's turn cost is coarser on Codex.** A Claude usage line
+  carries the uuid the calls on it carry; a Codex call names its turn and its
+  usage lines each carry their own id, so a Loop's cost there sums over the
+  turns its calls fall in. `detect` now accumulates per uuid instead of taking
+  the first — identical for Claude, where a uuid appears once.
+- **Session Briefs stay Claude Code's.** The Stop hook is Claude Code's; a Codex
+  Session renders briefless, which every view already handles.
+- **Codex's review threads are counted nowhere.** Their usage is Codex's own
+  overhead, not the user's delegated work (the distinction ADR 0002 § subagent
+  usage draws), and no parent link is written into them reliably enough to fold
+  on. Stated in `codex_logs`; revisit if the auto-reviewer's spend matters.
+- **a Codex fork reads as a new Session**, with the thread's earlier prompts in
+  the other file. Correct for attribution and cost (each file's usage is its
+  own) and honest about what was read; a joined view of a thread across its
+  rollouts is a Transcript question, not a reading one.
+
+Rejected:
+- **teaching each consumer both schemas** — six consumers, two schemas, and
+  the drift § the one log reader was written to end.
+- **normalising Codex lines into Claude's line shape** — a fake `tool_use`
+  block is a third schema nobody writes, and the Watch's activity rule reads
+  `stop_reason`, which Codex has no analogue of.
+- **`session_meta.payload.id` as the Session id** — a fork repeats its parent's,
+  so two files would answer one handle.
+- **deciding the dialect by root** — a view handed a path (a Session Handle's
+  log) would need the root passed alongside it everywhere.
 
 ## Tried and retracted
 

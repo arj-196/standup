@@ -10,6 +10,15 @@ inference geo, web search) are read from the turn's own `usage` object.
 Source: platform.claude.com/docs/en/about-claude/pricing (captured 2026-07-22;
 claude-opus-5 added 2026-07-30). Update the numbers and the date when Anthropic
 changes prices.
+
+The OpenAI rows price Codex Sessions (ADR 0002 § Codex usage). Source:
+developers.openai.com/api/docs/pricing (captured 2026-09-09), standard tier,
+short context. Cached input is 10% of input and a short-context cache write
+1.25× on every row that lists one, so the shared multipliers below hold for
+both providers; the long-context rows (>272K-token prompts, 2× input) are not
+modelled — no Codex log seen carries a prompt that long. The Codex reader's
+`input_tokens` is already the uncached share, so a row prices it as
+Anthropic's do.
 """
 
 from __future__ import annotations
@@ -22,6 +31,16 @@ CARD: dict[str, dict] = {
     "claude-mythos-5":  {"in": 10.0, "out": 50.0},
     "claude-sonnet-5":  {"in": 2.0,  "out": 10.0},   # introductory rate (through Aug 31 2026)
     "claude-haiku-4-5": {"in": 1.0,  "out": 5.0},
+    # OpenAI, as Codex names them in `turn_context.model`
+    "gpt-6-astra":      {"in": 10.0, "out": 50.0},
+    "gpt-5.6-sol":      {"in": 4.0,  "out": 20.0},
+    "gpt-5.6-terra":    {"in": 2.0,  "out": 12.0},
+    "gpt-5.6-luna":     {"in": 0.2,  "out": 1.2},
+    "gpt-5.5":          {"in": 5.0,  "out": 30.0},
+    "gpt-5.4":          {"in": 2.5,  "out": 15.0},
+    "gpt-5.4-mini":     {"in": 0.75, "out": 4.5},
+    "gpt-5.4-nano":     {"in": 0.2,  "out": 1.25},
+    "gpt-5.3-codex":    {"in": 1.75, "out": 14.0, "fast": (3.5, 28.0)},
 }
 
 # cache multipliers relative to base input

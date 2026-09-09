@@ -3,7 +3,7 @@ n-grams in a Session.
 
 A Loop is a *measured fact*, not a judgment — a run of >= MIN_ITERATIONS
 repetitions of an n-gram (n <= MAX_NGRAM) of tool calls matching on tool name +
-argument shape (dirname for file tools, command head for Bash). Its Loop Cost is
+argument shape (dirname for file tools, command head for the shell tool). Its Loop Cost is
 the summed per-turn Notional Cost of the assistant turns the loop's calls live
 in — a carve-out of the Session's Notional Cost, never a projected saving.
 
@@ -26,9 +26,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import cache as cache_mod
-from . import claude_logs, toolcalls
+from . import logs, toolcalls
 
-DETECTOR_VERSION = 3  # bump when detection logic changes (invalidates cache rows)
+DETECTOR_VERSION = 4  # bump when detection logic changes (invalidates cache rows)
 
 MIN_ITERATIONS = 5
 MAX_NGRAM = 3
@@ -36,10 +36,10 @@ GAP_TOLERANCE = 2  # non-matching calls tolerated between iterations
 FLOOR_DOLLARS = 1.0
 FLOOR_FRACTION = 0.10
 
-# Tools whose argument shape is a path, so two calls are "the same" when they
-# name the same directory. The file-touching ones are the reader's set, never a
-# second list of them (ADR 0001 § the one log reader).
-FILE_TOOLS = claude_logs.EDIT_TOOLS | {"Read", "Glob", "Grep"}
+# Tools whose argument is a path, so two calls are "the same" when they name
+# the same directory. The file-touching ones are the reader's own set
+# (`edit_tools`, per dialect); these are the local reads beside them.
+READ_TOOLS = frozenset({"Read", "Glob", "Grep"})
 _PATH_KEYS = ("file_path", "notebook_path", "path")
 
 
@@ -69,14 +69,20 @@ def significant(scan: LoopScan) -> list[Loop]:
 
 # ── shapes ──────────────────────────────────────────────────────────────────
 
-def _shape(name: str, inp: dict) -> str:
-    """The shape key of one tool call: what must match for calls to be 'the same'."""
-    if name == "Bash":
-        cmd = (inp.get("command") or "").strip()
+def _shape(reader, call: logs.ToolCall) -> str:
+    """The shape key of one tool call: what must match for calls to be 'the
+    same'. The reader says which tool is the shell and which touch files, so
+    the rule reads the same over both dialects (ADR 0001 § two dialects)."""
+    name, inp = call.name or "tool", call.input
+    cmd = reader.shell_command(call)
+    if cmd is not None:
+        cmd = cmd.strip()
         head = os.path.basename(cmd.split()[0]) if cmd.split() else ""
         return f"{name}:{head}"
-    if name in FILE_TOOLS:
-        fp = next((inp[k] for k in _PATH_KEYS if isinstance(inp.get(k), str)), "")
+    if name in reader.edit_tools or name in READ_TOOLS:
+        paths = [e.path for e in reader.edits_of(call)]
+        fp = paths[0] if paths else next(
+            (inp[k] for k in _PATH_KEYS if isinstance(inp.get(k), str)), "")
         return f"{name}:{os.path.dirname(fp)}"
     return f"{name}:"
 
@@ -195,33 +201,42 @@ def detect(path: Path) -> LoopScan:
     """Read one session JSONL and detect its Loops. Pure derivation.
 
     Both readings are the log reader's — the tool calls on a line and the
-    line's per-turn usage (ADR 0001 § the one log reader). What stays here is
-    the prefilter: a line carrying neither a `tool_use` block nor a `usage`
-    field can hold nothing this detector counts, and skipping `json.loads` on
-    it is the whole reason detection is free.
+    line's per-turn usage (ADR 0001 § the one log reader), in whichever
+    dialect the file is. What stays here is the prefilter: the reader's `hint`
+    says whether a raw line can carry either, and skipping `json.loads` on the
+    rest is the whole reason detection is free.
+
+    A turn's cost accumulates per `turn_uuid`. Claude stamps each usage line
+    with its own uuid, so this is one price per line; Codex's calls name their
+    turn while its usage lines each carry their own id, so a Loop's cost there
+    is the sum over the turns its calls fall in — coarser, and stated as such
+    (ADR 0001 § two dialects, one reading).
     """
+    reader = logs.reader(path)
     elements: list[_Elem] = []
     turn_cost: dict[str, float | None] = {}
     session_cost = 0.0
     with open(path, errors="replace") as fh:
         for line in fh:
-            if '"tool_use"' not in line and '"usage"' not in line:
+            if not reader.hint(line):
                 continue
             try:
                 obj = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            if obj.get("type") != "assistant":
+            if not isinstance(obj, dict):
                 continue
-            turn = claude_logs.turn_usage(obj)
-            if turn is not None and turn.turn_uuid not in turn_cost:
+            turn = reader.turn_usage(obj)
+            if turn is not None:
                 c = turn.cost
-                turn_cost[turn.turn_uuid] = c
+                prev = turn_cost.get(turn.turn_uuid)
+                turn_cost[turn.turn_uuid] = c if prev is None else (
+                    prev if c is None else prev + c)
                 if c is not None:
                     session_cost += c
-            for call in claude_logs.tool_calls_in(obj):
+            for call in reader.tool_calls_in(obj):
                 elements.append(_Elem(
-                    shape=_shape(call.name or "tool", call.input),
+                    shape=_shape(reader, call),
                     tool_id=call.tool_id,
                     turn_uuid=call.turn_uuid,
                 ))
@@ -253,6 +268,6 @@ def for_session(path: Path, cache) -> LoopScan:
     stamp = cache_mod.Stamp.of(path)
     if stamp is None:
         return LoopScan()
-    return cache.derive(cache_mod.LOOPS, path.stem, stamp,
+    return cache.derive(cache_mod.LOOPS, logs.cache_id(path), stamp,
                         compute=lambda: detect(path),
                         load=_from_cache, dump=_to_cache)

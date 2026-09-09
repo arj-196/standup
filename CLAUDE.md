@@ -43,13 +43,17 @@ real `~/.standup`. Staying off the network and away from the `claude` binary is
 a rule the tests keep, not a wall the conftest builds — break it and nothing
 will stop you.
 
-Two builders under `tests/support/` stand in for the outside world, wrapped as
-fixtures in the conftest: `sessions.py` writes a Session log in Claude Code's
+Three builders under `tests/support/` stand in for the outside world, wrapped
+as fixtures in the conftest: `sessions.py` writes a Session log in Claude Code's
 own layout (`fixture_session()` is the canonical small one — titles, edits, a
-captured commit hash, per-turn usage), and `repos.py` builds real scratch git
-repos, with a remote, without one, or with a worktree. Prefer extending a
-builder to hand-rolling a second one in a test file; a fixture only one test
-can read is how two dialects of "a Session" start.
+captured commit hash, per-turn usage), `codex_sessions.py` writes a Codex
+rollout in Codex's layout (`fixture_codex_session()` is its counterpart), and
+`repos.py` builds real scratch git repos, with a remote, without one, or with a
+worktree. Prefer extending a builder to hand-rolling a second one in a test
+file; a fixture only one test can read is how a third dialect of "a Session"
+starts. The two real dialects are `claude_logs` and `codex_logs`, and they
+alone know a schema (ADR 0001 § two dialects, one reading) — a consumer
+reaches them through `logs`.
 
 A test that pins a decision cites the ADR section it pins, exactly as `src/`
 does — `tests/` is inside the citation check.

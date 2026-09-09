@@ -1,29 +1,29 @@
 """Read ~/.claude/projects JSONL session logs — the one module that knows their
-schema (ADR 0001 § the one log reader).
+schema (ADR 0001 § the one log reader; its place beside the Codex reader is
+ADR 0001 § two dialects, one reading).
 
 Two entry points, one set of line readings:
 
-- `scan_sessions(projects_dir, cache)` sweeps the Scan Universe for the Triage
+- `scan_sessions(projects_dir, cache)` sweeps this root for the Triage
   Inbox's facts (cwd, titles, branches, edited files, captured commit hashes).
   Line-level prefiltering keeps `json.loads` off the ~99% of lines that carry
-  none of them.
-- `read_log(path, cache)` reads *one* log completely into a typed `ParsedLog`:
-  the same Session, plus the edit blocks, prompt text and per-turn usage the
-  other views need. Every line is parsed, because those live on ordinary
-  conversation lines.
-
-Both are cached in the Derived Cache (ADR 0001 § the Derived Cache) keyed on
-(size, mtime_ns): unchanged files are served without being opened. Parsing is
-not gated by a lookback horizon — the cache makes full-history parsing cheap,
-and attribution is ageless (ADR 0001 § ageless attribution).
+  none of them. `logs.scan_sessions` is the sweep over every root, and it
+  reaches this one through `swept_session`.
+- `parse_log(path)` reads *one* log completely into a typed `ParsedLog`
+  (`logs.ParsedLog`): the same Session, plus the edit blocks, prompt text and
+  per-turn usage the other views need. Every line is parsed, because those live
+  on ordinary conversation lines. `logs.read_log` is the cached form.
 
 The **line readings** those two are built from are public in their own right —
 `tool_calls_in`, `edits_of`/`edits_in`, `prompt_in`/`prompt_text`,
-`turn_usage`, `apply_title_fields` — because a whole-file reading is the wrong
-shape for a consumer that never holds the whole file: the Watch tails a log as
-it grows, and the Loop detector prefilters lines it will not count. They read a
-line the same way `parse_log` does, so a streaming consumer is a projection of
-the same reading rather than a rival one (ADR 0001 § the one log reader).
+`turn_usage`, `apply_title_fields`, `is_interrupt` — because a whole-file
+reading is the wrong shape for a consumer that never holds the whole file: the
+Watch tails a log as it grows, and the Loop detector prefilters lines it will
+not count. `Reader` wraps them into the `logs.LineReader` face both dialects
+present, so those consumers read a Claude log and a Codex log through one call
+and never learn which is which. The wrapped functions read a line the same way
+`parse_log` does, so a streaming consumer is a projection of the same reading
+rather than a rival one.
 """
 
 from __future__ import annotations
@@ -31,20 +31,46 @@ from __future__ import annotations
 import json
 import os
 import re
-from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 
 from . import cache as cache_mod
-from . import rates
+from . import logs, rates, toolcalls
+from .logs import (ACTING, COMMIT_LINE_RE, READER_VERSION, SETTLED, THINKING, EditBlock, ParsedLog,
+                   Part, Prompt, ToolCall, ToolResult, TurnUsage, UsageTotals,
+                   log_mtime, usage_totals)
 from .models import Session
 
-EDIT_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit"}
+__all__ = [
+    "EDIT_TOOLS", "ACT_VERBS", "COMMIT_LINE_RE", "READER_VERSION", "SUBAGENT_GLOB",
+    "Reader",
+    "EditBlock", "ParsedLog", "Prompt", "ToolCall", "TurnUsage", "UsageTotals",
+    "usage_totals", "log_mtime", "title_hint", "apply_title_fields",
+    "tool_calls_in", "edits_of", "edits_in", "prompt_text", "is_interrupt",
+    "prompt_in", "turn_usage", "parse_log", "read_log", "scan_sessions",
+    "session_id_of", "cache_id", "session_logs", "readable_logs", "peek_cwd",
+    "session_log_ids", "readable_log_ids", "swept_session",
+]
 
-# bump when the typed reading changes shape or meaning (invalidates cache rows)
-READER_VERSION = 3
-# `[branch abc1234]` / `[main (root-commit) abc1234]` / `[detached HEAD abc1234]`
-COMMIT_LINE_RE = re.compile(r"^\[[^\[\]\n]{1,80} ([0-9a-f]{7,40})\]", re.MULTILINE)
+EDIT_TOOLS = frozenset({"Edit", "Write", "MultiEdit", "NotebookEdit"})
+
+# Activity State verbs (ADR 0004 § the Activity State): the pending tool call
+# read as one word. An unmapped tool falls to `acting` — true of anything, so a
+# new or MCP tool never needs a table entry to stay honest.
+ACT_VERBS = {
+    "Read": "reading", "Grep": "reading", "Glob": "reading",
+    "NotebookRead": "reading", "WebFetch": "reading", "WebSearch": "reading",
+    "Write": "writing", "Edit": "writing", "MultiEdit": "writing",
+    "NotebookEdit": "writing",
+    "Bash": "running", "BashOutput": "running", "KillShell": "running",
+}
+
+# A subagent transcript lives under its parent Session's directory
+# (<proj>/<parent-session-id>/subagents/agent-<id>.jsonl), one level below where
+# top-level Session logs sit — which is why the ordinary `*/*.jsonl` glob can
+# never find one (ADR 0004 § the worktree lane).
+SUBAGENT_GLOB = "*/*/subagents/agent-*.jsonl"
+
 # cheap hint on the raw JSON line (stdout newlines are escaped as \\n there)
 COMMIT_HINT_RE = re.compile(r"\[[^\]\n]{1,80} [0-9a-f]{7,40}\]")
 
@@ -57,29 +83,6 @@ _CMD_TAG_RE = re.compile(r"</?command-[^>]*>", re.DOTALL)
 # the whole text of an interrupted turn's user line — `[Request interrupted by
 # user]`, and the `… for tool use]` variant a refused tool call writes
 _INTERRUPT_RE = re.compile(r"^\[Request interrupted by user[^\]]*\]$")
-
-
-def log_mtime(path: Path) -> datetime | None:
-    """A log's last-append time — the one meaning of a Session's
-    `last_activity` (ADR 0001 § the one log reader), and what a windowed view
-    gates a file on before opening it. None when the file cannot be stat'd.
-
-    Public because it is the same question outside this module: the cost view
-    asks it of every log and every subagent transcript.
-    """
-    try:
-        return datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
-    except OSError:
-        return None
-
-
-def _parse_ts(raw: str | None) -> datetime | None:
-    if not raw:
-        return None
-    try:
-        return datetime.fromisoformat(raw)
-    except ValueError:
-        return None
 
 
 # ── one line of the log ─────────────────────────────────────────────────────
@@ -95,9 +98,7 @@ def title_hint(line: str) -> bool:
 
     The cheap prefilter that lets the inbox's sweep skip `json.loads` on the
     ~99% of lines that hold no title. Paired with `apply_title_fields`, this is
-    the one place that knows the log's title schema — `cost` used to carry its
-    own copy of the pair, and a mistyped prefilter in it silently demoted every
-    session title to its last prompt (ADR 0001 § the one log reader).
+    the one place that knows the log's title schema.
     """
     return '"custom-title"' in line or '"ai-title"' in line or '"last-prompt"' in line
 
@@ -122,33 +123,12 @@ def apply_title_fields(session: Session, obj: dict) -> None:
         session.slug = obj["slug"]
 
 
-@dataclass(frozen=True)
-class ToolCall:
-    """One `tool_use` block: what the Session called, and with what.
-
-    The typed reading of a tool call *before* anything is made of it — the Loop
-    detector reads its shape, the Watch renders it as a **Call** or projects it
-    into file events, and `edits_of` turns the file-touching ones into
-    `EditBlock`s. `input` is the block's own input dict, unclipped: a consumer
-    that needs a digest makes one (`toolcalls`), and one that needs the request
-    itself still has it.
-    """
-    name: str
-    input: dict
-    tool_id: str = ""
-    turn_uuid: str = ""
-    when: datetime | None = None
-
-
 def tool_calls_in(obj: dict, ts: datetime | None = None) -> list[ToolCall]:
     """Every tool call one assistant line recorded, in log order.
 
     Where the `message.content` walk lives for anything that *acts* on a call —
     the Loop detector's shapes, the Watch's Calls and file events — so no two
-    of them re-derive it and disagree about malformed content. The Transcript
-    walks the same content itself, because it lays calls out among the line's
-    prose and thinking blocks and needs all three; it reads nothing out of a
-    call that `toolcalls` does not name for it.
+    of them re-derive it and disagree about malformed content.
     """
     message = obj.get("message") or {}
     content = message.get("content")
@@ -166,41 +146,14 @@ def tool_calls_in(obj: dict, ts: datetime | None = None) -> list[ToolCall]:
     return out
 
 
-@dataclass(frozen=True)
-class EditBlock:
-    """One recorded edit: the text a Session put in, and the text it took out.
-
-    `new` is empty for a pure deletion, `old` for a Write or a create. A
-    MultiEdit fans out to one EditBlock per entry in its `edits[]` — the hunks
-    were one action by the agent, which `tool_id` (shared across the fan-out) is
-    what remembers.
-
-    `path` is the absolute path exactly as the log recorded it; a relative one
-    attributes nothing and is dropped, never guessed at.
-
-    `path_only` marks the block a call yields when the log records *that* it
-    edited a file but not *what* it wrote — a MultiEdit whose `edits[]` is
-    missing or unreadable. The path still attributes the file, so the block
-    exists; there is no text in it, so a consumer that shows change (the Watch)
-    has nothing to show. Saying so here keeps that consumer from having to
-    recognise the shape by inspection and mistake a genuinely empty hunk for it.
-    """
-    tool: str                      # Edit | Write | MultiEdit | NotebookEdit
-    path: str
-    new: str
-    old: str
-    when: datetime | None = None
-    tool_id: str = ""
-    path_only: bool = False
-
-
 def edits_of(call: ToolCall) -> list[EditBlock]:
     """The edits one tool call recorded — empty for a call that edits no file.
 
     The path aliases (`file_path`, `notebook_path`) and the new-text fallbacks
     (`new_string`, `new_source`, `content`) live here and nowhere else: the
     schema is Claude Code's, and reading it in three modules is how two of them
-    end up disagreeing about what a NotebookEdit wrote.
+    end up disagreeing about what a NotebookEdit wrote. A relative path
+    attributes nothing and is dropped, never guessed at.
     """
     name = call.name
     if name not in EDIT_TOOLS:
@@ -232,54 +185,16 @@ def edits_in(obj: dict, ts: datetime | None = None) -> list[EditBlock]:
     return [e for call in tool_calls_in(obj, ts) for e in edits_of(call)]
 
 
-def _note_edits(session: Session, blocks: list[EditBlock]) -> None:
-    """Fold edit blocks into the Session's path -> latest-edit index.
-
-    An undated block (a log line with no timestamp) is stamped `now` only when
-    the path is new: the index answers "did this session touch this file, and
-    how recently", and a missing stamp must not overwrite a real one.
-    """
-    for e in blocks:
-        prev = session.edited_files.get(e.path)
-        if e.when and (prev is None or e.when > prev):
-            session.edited_files[e.path] = e.when
-        elif prev is None and e.when is None:
-            session.edited_files[e.path] = datetime.now(timezone.utc)
-
-
-def _extract_commits(session: Session, obj: dict, ts: datetime | None) -> None:
+def _result_text(obj: dict) -> str:
+    """The text of a user line's `toolUseResult`, "" when it carries none."""
     tr = obj.get("toolUseResult")
     if tr is None:
-        return
-    text = tr if isinstance(tr, str) else json.dumps(tr) if not isinstance(tr, dict) else (tr.get("stdout") or "")
-    for m in COMMIT_LINE_RE.finditer(text):
-        sha = m.group(1)
-        when = ts or datetime.now(timezone.utc)
-        if sha not in session.commit_hashes or when > session.commit_hashes[sha]:
-            session.commit_hashes[sha] = when
-
-
-@dataclass(frozen=True)
-class Prompt:
-    """One user turn's typed text, and when it was typed.
-
-    "Typed" is the whole point: injected material is not a prompt. System
-    reminders, the bodies Claude Code splices in behind a slash command
-    (`isMeta`), turns that carry nothing but a tool result, and the
-    `[Request interrupted by user]` line an interrupt writes are all dropped
-    here, so a consumer never has to know which of them exist. The interrupt is
-    the one of those that reads as ordinary prose, so it is the one a consumer
-    would have counted as a question you asked — `is_interrupt` names it.
-
-    The rule is **prose makes a prompt**, whatever else rides the line. The
-    Watch used to additionally drop any user line carrying a `toolUseResult`,
-    which parts from this reading on exactly one shape: a tool result with
-    prose beside it — what you typed while a call was in flight. That is a real
-    prompt, so this reading is the one that stands and the Watch adopted it
-    (ADR 0001 § the one log reader).
-    """
-    text: str
-    when: datetime | None = None
+        return ""
+    if isinstance(tr, str):
+        return tr
+    if isinstance(tr, dict):
+        return tr.get("stdout") or ""
+    return json.dumps(tr)
 
 
 def _tagged(pattern: re.Pattern, text: str) -> str:
@@ -338,70 +253,15 @@ def prompt_in(obj: dict, ts: datetime | None = None) -> Prompt | None:
 
     The whole rule in one call — the line must be a user turn, must not be
     `isMeta`, must not be an interrupt, and must hold prose — so a consumer
-    reading a log line by line (the Watch's tailer, the Brief and Audit
-    digests) asks the same question `parse_log` asks, rather than half of it.
-
-    A view that wants the interrupt itself asks `is_interrupt` and marks it as
-    what it is; what it may not do is render it as something you typed.
+    reading a log line by line asks the same question `parse_log` asks, rather
+    than half of it. The rule is **prose makes a prompt**, whatever else rides
+    the line: a tool result with prose beside it is what you typed while a call
+    was in flight, and that is a real prompt (ADR 0001 § the one log reader).
     """
     if obj.get("type") != "user" or obj.get("isMeta") or is_interrupt(obj):
         return None
     text = prompt_text((obj.get("message") or {}).get("content"))
     return Prompt(text, ts) if text else None
-
-
-@dataclass(frozen=True)
-class TurnUsage:
-    """One assistant turn's `usage`, typed as the Rate Card reads it.
-
-    Counts *and* the per-turn modifiers: fast mode, the batch tier, US
-    inference geo and web-search requests each move a turn's price (ADR 0002),
-    so a reading that kept only token counts would price a fast Opus turn at
-    half its weight. Cache writes are split by lifetime because they are priced
-    differently; an older log's undifferentiated `cache_creation_input_tokens`
-    is read as 5m, exactly as the Rate Card assumes.
-    """
-    model: str | None = None
-    when: datetime | None = None
-    turn_uuid: str = ""
-    input_tokens: int = 0
-    output_tokens: int = 0
-    cache_read_tokens: int = 0
-    cache_write_5m_tokens: int = 0
-    cache_write_1h_tokens: int = 0
-    web_search_requests: int = 0
-    speed: str = "standard"
-    service_tier: str = "standard"
-    inference_geo: str = ""
-
-    def as_usage(self) -> dict:
-        """The `usage` shape `rates` reads — the typed reading's round trip."""
-        return {
-            "input_tokens": self.input_tokens,
-            "output_tokens": self.output_tokens,
-            "cache_read_input_tokens": self.cache_read_tokens,
-            "cache_creation_input_tokens": (self.cache_write_5m_tokens
-                                            + self.cache_write_1h_tokens),
-            "cache_creation": {
-                "ephemeral_5m_input_tokens": self.cache_write_5m_tokens,
-                "ephemeral_1h_input_tokens": self.cache_write_1h_tokens,
-            },
-            "speed": self.speed,
-            "service_tier": self.service_tier,
-            "inference_geo": self.inference_geo,
-            "server_tool_use": {"web_search_requests": self.web_search_requests},
-        }
-
-    @property
-    def cost(self) -> float | None:
-        """This turn's Notional Cost, None when the Rate Card has no row for
-        the model — never zero, which would read as a free turn."""
-        return rates.turn_cost(self.model, self.as_usage())
-
-    @property
-    def tokens(self) -> dict[str, int]:
-        """The four display buckets for this turn."""
-        return rates.turn_tokens(self.as_usage())
 
 
 def turn_usage(obj: dict, ts: datetime | None = None) -> TurnUsage | None:
@@ -428,126 +288,189 @@ def turn_usage(obj: dict, ts: datetime | None = None) -> TurnUsage | None:
     )
 
 
+class Reader:
+    """The line readings above, presented as one `logs.LineReader`.
+
+    Stateless apart from one fact about the *file*: whether it is a subagent
+    transcript, which decides how `isSidechain` lines are read for the Activity
+    State (ADR 0004 § the worktree lane).
+    """
+
+    edit_tools = EDIT_TOOLS
+
+    def __init__(self, path: Path):
+        self.path = path
+        self.subagent = "/subagents/" in str(path)
+
+    @staticmethod
+    def timestamp(obj: dict) -> datetime | None:
+        return logs.parse_ts(obj.get("timestamp"))
+
+    @staticmethod
+    def note_session(session: Session, obj: dict) -> None:
+        if session.cwd is None and obj.get("cwd"):
+            session.cwd = obj["cwd"]
+        if obj.get("gitBranch"):
+            session.branches.add(obj["gitBranch"])
+        apply_title_fields(session, obj)
+
+    is_interrupt = staticmethod(is_interrupt)
+    prompt_in = staticmethod(prompt_in)
+    tool_calls_in = staticmethod(tool_calls_in)
+    edits_of = staticmethod(edits_of)
+    turn_usage = staticmethod(turn_usage)
+
+    @staticmethod
+    def shell_command(call: ToolCall) -> str | None:
+        """Bash is the one tool whose argument is a shell command
+        (ADR 0004 § Calls)."""
+        if call.name != "Bash":
+            return None
+        cmd = call.input.get("command")
+        return cmd if isinstance(cmd, str) and cmd.strip() else None
+
+    @staticmethod
+    def is_silent(name: str) -> bool:
+        return name in toolcalls.SILENT_TOOLS
+
+    @staticmethod
+    def tool_results_in(obj: dict) -> list[ToolResult]:
+        if obj.get("type") != "user":
+            return []
+        content = (obj.get("message") or {}).get("content")
+        if not isinstance(content, list):
+            return []
+        return [ToolResult(b.get("tool_use_id") or "", not bool(b.get("is_error")))
+                for b in content
+                if isinstance(b, dict) and b.get("type") == "tool_result"
+                and b.get("tool_use_id")]
+
+    @staticmethod
+    def commit_shas_in(obj: dict) -> list[str]:
+        if obj.get("type") != "user":
+            return []
+        return [m.group(1) for m in COMMIT_LINE_RE.finditer(_result_text(obj))]
+
+    @staticmethod
+    def assistant_parts(obj: dict) -> list[Part]:
+        """Prose, thinking and tool calls in the order the line holds them."""
+        if obj.get("type") != "assistant":
+            return []
+        content = (obj.get("message") or {}).get("content")
+        if not isinstance(content, list):
+            return []
+        uuid = obj.get("uuid") or ""
+        ts = logs.parse_ts(obj.get("timestamp"))
+        parts: list[Part] = []
+        for b in content:
+            if not isinstance(b, dict):
+                continue
+            t = b.get("type")
+            if t == "text" and b.get("text", "").strip():
+                parts.append(Part("text", b["text"].strip()))
+            elif t == "thinking" and b.get("thinking", "").strip():
+                parts.append(Part("thinking", b["thinking"].strip()))
+            elif t == "tool_use":
+                inp = b.get("input")
+                parts.append(Part("call", call=ToolCall(
+                    name=b.get("name") or "", tool_id=b.get("id") or "",
+                    input=inp if isinstance(inp, dict) else {},
+                    turn_uuid=uuid, when=ts)))
+        return parts
+
+    def activity(self, obj: dict, ts: datetime) -> str | None:
+        """Advance the Activity State from one log line (CONTEXT.md).
+
+        Four transitions, in the order they have to be tested:
+
+        - an **interrupt** settles the session. It arrives as a plain user
+          line whose text is `[Request interrupted by user]`, so this must be
+          checked before the prompt reading — that text would otherwise look
+          like you asking a question, and the state would read `thinking` for
+          as long as the Watch stays open.
+        - `stop_reason == "tool_use"` *and* a `tool_use` block on the line names
+          the call about to run: its verb. The stop reason alone is not enough —
+          see the block comment below.
+        - any other `stop_reason` ends the turn — the agent handed control back.
+        - a tool result, or your prompt, leaves the model composing: `thinking`,
+          the one verb no line ever states.
+
+        Sidechain lines inside a *parent* log are skipped: those reads are not
+        this session's, and several running at once have no single answer. A
+        subagent tailer's whole log is one sidechain, so there the flag carries
+        no such ambiguity and tracking proceeds (ADR 0004 § the worktree lane).
+        """
+        if obj.get("isSidechain") and not self.subagent:
+            return None
+        etype = obj.get("type")
+        message = obj.get("message") or {}
+        content = message.get("content") if isinstance(message, dict) else None
+
+        if etype == "assistant":
+            if message.get("stop_reason") != "tool_use":
+                return SETTLED
+            calls = tool_calls_in(obj)
+            name = calls[-1].name if calls else ""     # parallel: the last one
+            if not name:
+                # `stop_reason` belongs to the whole assistant *message*, but the
+                # message's blocks are flushed as separate lines — a preamble
+                # `text` block and an extended `thinking` block each land on
+                # their own line carrying the same `tool_use` stop reason. So the
+                # stop reason says "a tool comes later in this message", not
+                # "this line announces one". Over eight of this repo's own
+                # sessions, 315 of 838 such lines named no tool (231 thinking,
+                # 84 text) and every one of them was read as `acting` — a verb
+                # reserved for a tool absent from the table. A line that names no
+                # tool is the model still composing, so leave the state (and its
+                # age) exactly where the previous line left it.
+                return None
+            return ACT_VERBS.get(name, ACTING)
+
+        if etype != "user" or obj.get("isMeta"):
+            return None
+        if is_interrupt(obj):
+            return SETTLED
+        returned = obj.get("toolUseResult") is not None or (
+            isinstance(content, list)
+            and any(isinstance(b, dict) and b.get("type") == "tool_result"
+                    for b in content))
+        if returned or prompt_text(content):
+            return THINKING
+        return None
+
+    @staticmethod
+    def hint(line: str) -> bool:
+        return '"tool_use"' in line or '"usage"' in line
+
+
 # ── the typed reading of one log ────────────────────────────────────────────
 
 
-@dataclass
-class UsageTotals:
-    """Summed per-turn usage: Notional Cost, its split by model, and the four
-    display buckets. `turns` counts *priced* turns; an unpriced one is counted
-    apart rather than folded in at zero dollars."""
-    turns: int = 0
-    unpriced_turns: int = 0
-    cost: float = 0.0
-    by_model: dict[str, float] = field(default_factory=dict)
-    tokens: dict[str, int] = field(
-        default_factory=lambda: {b: 0 for b in rates.BUCKETS})
-
-
-def usage_totals(turns) -> UsageTotals:
-    """Price an iterable of TurnUsage turn by turn.
-
-    Turn by turn, never bucket by bucket: the modifiers are per-turn, so
-    summing tokens first and pricing once would mis-price any session that
-    mixed fast and standard turns.
-    """
-    totals = UsageTotals()
-    for t in turns:
-        c = t.cost
-        if c is None:
-            totals.unpriced_turns += 1
-            continue
-        totals.turns += 1
-        totals.cost += c
-        totals.by_model[t.model] = totals.by_model.get(t.model, 0.0) + c
-        for b, n in t.tokens.items():
-            totals.tokens[b] += n
-    return totals
-
-
-@dataclass
-class ParsedLog:
-    """One Session log, read once and typed.
-
-    `session` carries the facts the Triage Inbox needs (cwd, titles, branches,
-    edited files, captured commit hashes); the lists beside it carry what the
-    other views used to re-parse for themselves.
-    """
-    session: Session
-    edits: list[EditBlock] = field(default_factory=list)
-    prompts: list[Prompt] = field(default_factory=list)
-    turns: list[TurnUsage] = field(default_factory=list)
-
-    @property
-    def totals(self) -> UsageTotals:
-        """*This log's* Notional Cost. A Session's is more: its subagent
-        transcripts are separate files carrying usage the parent never echoes,
-        and folding them in is the caller's job (ADR 0002 § subagent usage).
-
-        A view with a window filters `turns` by their own timestamps first —
-        the totals are derived, so there is no second meaning to keep in sync.
-        """
-        return usage_totals(self.turns)
-
-    @property
-    def last_turn(self) -> datetime | None:
-        """The newest dated assistant turn — *not* the Session's last activity,
-        which is the log file's mtime (see `models.Session.last_activity`).
-        Named apart because the two answer different questions: when the model
-        last spoke, versus when the file last grew."""
-        stamps = [t.when for t in self.turns if t.when]
-        return max(stamps) if stamps else None
+def session_id_of(path: Path) -> str:
+    """A Claude Code log is named by its `sessionId`."""
+    return path.stem
 
 
 def parse_log(path: Path | str) -> ParsedLog:
     """Read one Session log. Pure: no cache, nothing on disk but this file.
 
-    Every line is parsed — the readings here need the whole conversation, so
-    the line-level prefilter the inbox's sweep uses (`_interesting`) would only
+    Every line is parsed — the readings need the whole conversation, so the
+    line-level prefilter the inbox's sweep uses (`_interesting`) would only
     hide turns. One consequence to know about: `branches` is read off every
     line carrying `gitBranch`, so a Session that changed branch away from an
     edit or a title line lands here with a *superset* of what the prefiltered
     sweep sees. More complete, and the answer a consumer switching over gets.
-
-    A log that cannot be opened comes back as an empty reading rather than
-    raising — a log a view asked for by path may have been deleted under it,
-    and a Session with nothing to say is dropped downstream by its missing
-    `cwd`.
     """
     path = Path(path)
-    session = Session(session_id=path.stem, log_path=str(path),
+    session = Session(session_id=session_id_of(path), log_path=str(path),
                       last_activity=log_mtime(path))
-    parsed = ParsedLog(session=session)
-    try:
-        fh = open(path, errors="replace")
-    except OSError:
-        return parsed
-    with fh:
-        for line in fh:
-            try:
-                obj = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            ts = _parse_ts(obj.get("timestamp"))
-            etype = obj.get("type")
-            if session.cwd is None and obj.get("cwd"):
-                session.cwd = obj["cwd"]
-            if obj.get("gitBranch"):
-                session.branches.add(obj["gitBranch"])
-            apply_title_fields(session, obj)
-            if etype == "assistant":
-                blocks = edits_in(obj, ts)
-                _note_edits(session, blocks)
-                parsed.edits.extend(blocks)
-                turn = turn_usage(obj, ts)
-                if turn is not None:
-                    parsed.turns.append(turn)
-            elif etype == "user":
-                _extract_commits(session, obj, ts)
-                prompt = prompt_in(obj, ts)
-                if prompt is not None:
-                    parsed.prompts.append(prompt)
-    return parsed
+    return logs.walk(Reader(path), path, session)
+
+
+def read_log(path: Path | str, cache) -> ParsedLog:
+    """One log through the Derived Cache — `logs.read_log`, kept here so the
+    name every consumer once imported still answers."""
+    return logs.read_log(path, cache)
 
 
 def cache_id(path: Path) -> str:
@@ -560,51 +483,65 @@ def cache_id(path: Path) -> str:
     parent. Unqualified, two parents' identically-named transcripts share one
     row the moment their size and mtime agree, and one Session is priced with
     the other's turns (ADR 0002 § subagent usage).
-
-    Public because liveness is asked elsewhere: `scan_sessions` names these ids
-    to the prune, and it must spell them the same way.
     """
     if path.parent.name == "subagents":
         return f"{path.parent.parent.name}/{path.stem}"
     return path.stem
 
 
-def session_log_ids(projects_dir: Path) -> set[str]:
-    """Every Session log's Derived Cache id — the keys of a derivation keyed on
-    a Session (ADR 0001 § the accelerator protocol), which is what its rows are
-    pruned against."""
-    return {log.stem for log in Path(projects_dir).glob("*/*.jsonl")}
+def session_logs(root: Path) -> list[Path]:
+    """Every Session log under a projects directory."""
+    return sorted(Path(root).glob("*/*.jsonl"))
 
 
-def readable_log_ids(projects_dir: Path) -> set[str]:
-    """Every id `read_log` can be handed: the Session logs, plus the subagent
-    transcripts a level below them (ADR 0002 § subagent usage), spelled as
-    `cache_id` spells them. A transcript is no Session and lives under the
-    sweep's glob, so a derivation over *readings* is live against a wider set
-    than one over Sessions — which is why each declares its own."""
-    return session_log_ids(projects_dir) | {
-        cache_id(f)
-        for f in Path(projects_dir).glob("*/*/subagents/agent-*.jsonl")}
+def readable_logs(root: Path) -> list[Path]:
+    """The Session logs, plus the subagent transcripts a level below them
+    (ADR 0002 § subagent usage) — everything `read_log` can be handed."""
+    return session_logs(root) + sorted(Path(root).glob(SUBAGENT_GLOB))
 
 
-def read_log(path: Path | str, cache) -> ParsedLog:
-    """One Session log, read through the Derived Cache.
+def _claude_root(where) -> Path | None:
+    """This dialect's root out of what a caller holds — the roots, or one
+    Claude Code directory as a bare path."""
+    if isinstance(where, logs.Roots):
+        return where.claude
+    return Path(where)
 
-    The whole typed reading is cached together, keyed on (size, mtime_ns) like
-    every other row: a Session's log is parsed once per change, however many
-    views ask for it (ADR 0001 § the one log reader).
-    """
-    path = Path(path)
-    stamp = cache_mod.Stamp.of(path)
-    if stamp is None:
-        return parse_log(path)
-    # the Session id is the file's own stem, never the row's key: a
-    # transcript's row is qualified by its parent, its Session is not
-    return cache.derive(
-        cache_mod.LOGS, cache_id(path), stamp,
-        compute=lambda: parse_log(path),
-        load=lambda row: _log_from_cache(path.stem, str(path), stamp.mtime, row),
-        dump=_log_to_cache)
+
+def session_log_ids(where) -> set[str]:
+    """Every Session log's Derived Cache id under this dialect's root — a
+    liveness enumerator in the cache's own shape (ADR 0001 § the accelerator
+    protocol), so it may be handed the roots or the one directory."""
+    root = _claude_root(where)
+    return set() if root is None else {cache_id(p) for p in session_logs(root)}
+
+
+def readable_log_ids(where) -> set[str]:
+    """Every readable log's Derived Cache id under this dialect's root, spelled
+    as `cache_id` spells them."""
+    root = _claude_root(where)
+    return set() if root is None else {cache_id(p) for p in readable_logs(root)}
+
+
+def peek_cwd(log: Path) -> str | None:
+    """A log's `cwd` from its first lines that carry one."""
+    try:
+        with open(log, errors="replace") as f:
+            for _ in range(50):
+                line = f.readline()
+                if not line:
+                    break
+                if '"cwd"' not in line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(obj, dict) and obj.get("cwd"):
+                    return obj["cwd"]
+    except OSError:
+        pass
+    return None
 
 
 # ── the Triage Inbox's sweep ────────────────────────────────────────────────
@@ -621,6 +558,7 @@ def _interesting(line: str) -> bool:
 
 
 def _full_scan(session: Session, path: Path) -> None:
+    reader = Reader(path)
     with open(path, errors="replace") as f:
         for line in f:
             if session.cwd is None and '"cwd"' in line:
@@ -642,20 +580,20 @@ def _full_scan(session: Session, path: Path) -> None:
                 except json.JSONDecodeError:
                     continue
 
-            ts = _parse_ts(obj.get("timestamp"))
+            ts = logs.parse_ts(obj.get("timestamp"))
             etype = obj.get("type")
             apply_title_fields(session, obj)
             if obj.get("gitBranch"):
                 session.branches.add(obj["gitBranch"])
             if etype == "assistant":
-                _note_edits(session, edits_in(obj, ts))
+                logs.note_edits(session, edits_in(obj, ts))
             elif etype == "user":
-                _extract_commits(session, obj, ts)
+                logs.note_commits(session, reader.commit_shas_in(obj), ts)
 
 
-def _swept_session(log: Path, stamp: cache_mod.Stamp, cache) -> Session:
+def swept_session(log: Path, stamp: cache_mod.Stamp, cache) -> Session:
     """One log's prefiltered sweep, through the Derived Cache."""
-    sid = log.stem
+    sid = session_id_of(log)
 
     def scan() -> Session:
         session = Session(session_id=sid, log_path=str(log),
@@ -664,93 +602,11 @@ def _swept_session(log: Path, stamp: cache_mod.Stamp, cache) -> Session:
         return session
 
     return cache.derive(
-        cache_mod.SESSIONS, sid, stamp, compute=scan,
-        load=lambda row: _from_cache(sid, str(log), stamp.mtime, row),
-        dump=_to_cache)
+        cache_mod.SESSIONS, cache_id(log), stamp, compute=scan,
+        load=lambda row: logs.session_from_cache(sid, str(log), stamp.mtime, row),
+        dump=logs.session_to_cache)
 
 
 def scan_sessions(projects_dir: Path, cache) -> list[Session]:
-    """Fully parse every session file, serving unchanged ones from the cache."""
-    sessions: list[Session] = []
-    for log in sorted(projects_dir.glob("*/*.jsonl")):
-        stamp = cache_mod.Stamp.of(log)
-        if stamp is None:
-            continue
-        session = _swept_session(log, stamp, cache)
-        if session.cwd:
-            sessions.append(session)
-    # The sweep is where the cache learns the logs are on disk; *which* of its
-    # rows that makes live is each derivation's own declaration to answer — a
-    # reading keyed on a subagent transcript is live against a set no sweep of
-    # Sessions produces (ADR 0001 § the accelerator protocol).
-    cache.prune(projects_dir)
-    return sessions
-
-
-# ── the Derived Cache round trip ────────────────────────────────────────────
-
-
-def _iso(t: datetime | None) -> str | None:
-    return t.isoformat() if t else None
-
-
-def _to_cache(s: Session) -> dict:
-    return {
-        "cwd": s.cwd,
-        "custom_title": s.custom_title,
-        "ai_title": s.ai_title,
-        "slug": s.slug,
-        "last_prompt": s.last_prompt,
-        "branches": sorted(s.branches),
-        "edited_files": {p: t.isoformat() for p, t in s.edited_files.items()},
-        "commit_hashes": {h: t.isoformat() for h, t in s.commit_hashes.items()},
-    }
-
-
-def _from_cache(session_id: str, log_path: str, mtime: datetime, d: dict) -> Session:
-    s = Session(session_id=session_id, log_path=log_path, last_activity=mtime)
-    s.cwd = d.get("cwd")
-    s.custom_title = d.get("custom_title")
-    s.ai_title = d.get("ai_title")
-    s.slug = d.get("slug")
-    s.last_prompt = d.get("last_prompt")
-    s.branches = set(d.get("branches") or [])
-    s.edited_files = {p: datetime.fromisoformat(t)
-                      for p, t in (d.get("edited_files") or {}).items()}
-    s.commit_hashes = {h: datetime.fromisoformat(t)
-                       for h, t in (d.get("commit_hashes") or {}).items()}
-    return s
-
-
-def _log_to_cache(parsed: ParsedLog) -> dict:
-    """The typed reading as one cache row. Positional, like the fragment index:
-    the lists are long, and a repeated key is paid for on every entry."""
-    return {
-        "session": _to_cache(parsed.session),
-        "edits": [[e.tool, e.path, e.new, e.old, _iso(e.when), e.tool_id,
-                   e.path_only]
-                  for e in parsed.edits],
-        "prompts": [[p.text, _iso(p.when)] for p in parsed.prompts],
-        "turns": [[t.model, _iso(t.when), t.turn_uuid, t.input_tokens,
-                   t.output_tokens, t.cache_read_tokens, t.cache_write_5m_tokens,
-                   t.cache_write_1h_tokens, t.web_search_requests, t.speed,
-                   t.service_tier, t.inference_geo]
-                  for t in parsed.turns],
-    }
-
-
-def _log_from_cache(session_id: str, log_path: str, mtime: datetime | None,
-                    d: dict) -> ParsedLog | None:
-    """A stored reading back, or None when the row is malformed — a row this
-    version cannot read costs a reparse and changes no output."""
-    try:
-        return ParsedLog(
-            session=_from_cache(session_id, log_path, mtime, d["session"]),
-            edits=[EditBlock(tool, path, new, old, _parse_ts(when), tid, only)
-                   for tool, path, new, old, when, tid, only in d["edits"]],
-            prompts=[Prompt(text, _parse_ts(when)) for text, when in d["prompts"]],
-            turns=[TurnUsage(model, _parse_ts(when), *rest)
-                   for model, when, *rest in d["turns"]],
-        )
-    except (KeyError, TypeError, ValueError):
-        return None
+    """Sweep one Claude Code root — `logs.scan_sessions` over that root alone."""
+    return logs.scan_sessions(logs.Roots(claude=Path(projects_dir)), cache)

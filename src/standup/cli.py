@@ -12,7 +12,7 @@ from pathlib import Path
 from . import artifacts
 from . import audit as audit_mod
 from . import brief as brief_mod
-from . import cost, handles, loops, rates, render, termout, transcript, universe
+from . import cost, handles, logs, loops, rates, render, termout, transcript, universe
 
 # the Recent Window (ADR 0001 § the Recent Window); --since overrides
 RECENT_WINDOW_DAYS = 7
@@ -36,7 +36,7 @@ SUBCOMMANDS = {"cost", "watch", "session", "audit", "diff", "completion",
 #   -t --thinking  -r --raw       -n --stat      -l --recent    -U --context
 #   -P --no-pager  -W --no-wrap
 #
-# Letterless by the same table: `--refresh` and `--projects-dir`, plus
+# Letterless by the same table: `--refresh`, `--projects-dir` and `--codex-dir`, plus
 # `session --tools` — `-t` is `--thinking` and `-T` is reserved for a negation,
 # so it spends the whole word rather than bending either rule.
 #
@@ -50,8 +50,9 @@ SUBCOMMANDS = {"cost", "watch", "session", "audit", "diff", "completion",
 #     this one never contend.
 #   * a flag that spends money gets no letter. `audit --refresh` re-runs the
 #     Expert Panel against your subscription, so it costs the whole word — the
-#     same reason `install`/`uninstall` are unaliased. `--projects-dir` has
-#     none either: it is a hidden entry point, and hidden is a decision.
+#     same reason `install`/`uninstall` are unaliased. `--projects-dir` and
+#     `--codex-dir` have none either: hidden entry points, and hidden is a
+#     decision.
 
 # The views reachable object-first — `standup <repo> <view>`
 # (ADR 0005 § two grammars).
@@ -307,7 +308,10 @@ def _cost_json(projects, window_start, label, now, order) -> str:
 
 def _cmd_cost(argv: list[str]) -> int:
     p = argparse.ArgumentParser(prog="standup cost",
-                                description="Notional Cost by project and session (not real money). "
+                                description="Notional Cost by project and session (not real money), "
+                                            "Claude Code and Codex sessions priced side by side from one "
+                                            "Rate Card; a model the card has no row for is flagged "
+                                            "unpriced, never counted at $0. "
                                             "A session's figure includes the subagents it spawned — their "
                                             "transcripts carry usage the parent log never echoes — marked "
                                             "'incl N subagents' in the drill-down. "
@@ -334,8 +338,8 @@ def _cmd_cost(argv: list[str]) -> int:
     window_start, label = _cost_window(args.since, now)
     order = "recent" if args.recent else "cost"
 
-    with universe.open_universe(args.projects_dir) as u:
-        session_costs = cost.scan_session_costs(u.projects_dir, window_start, u.cache)
+    with universe.open_universe(args.projects_dir, args.codex_dir) as u:
+        session_costs = cost.scan_session_costs(u.roots, window_start, u.cache)
         projects = cost.group_by_project(session_costs, order)
         cost.attach_briefs(projects)
         cost.attach_audit_overhead(projects)
@@ -430,9 +434,9 @@ def _cmd_audit(argv: list[str]) -> int:
     st = termout.style()
     width = termout.term_width()
 
-    with universe.open_universe(args.projects_dir) as u:
+    with universe.open_universe(args.projects_dir, args.codex_dir) as u:
         log_path = u.resolve_session(args.handle)
-        sid = log_path.stem
+        sid = logs.session_id_of(log_path)
 
         # the free layer first — always, generation or not (ADR 0003 § the Audit)
         scan = loops.for_session(log_path, u.cache)
@@ -647,8 +651,9 @@ def _cmd_complete(argv: list[str]) -> int:
 
 def _cmd_session(argv: list[str]) -> int:
     p = argparse.ArgumentParser(prog="standup session",
-                                description="Read a session's Transcript (prompts + responses). "
-                                            "Leads with the Session Brief when one exists; tool calls "
+                                description="Read a session's Transcript (prompts + responses) — a "
+                                            "Claude Code session or a Codex one, whichever the handle "
+                                            "names. Leads with the Session Brief when one exists; tool calls "
                                             "collapse to one-liners (--tools prints each one's whole "
                                             "input, never its result), and calls belonging to a detected "
                                             "Loop are gutter-marked ⟳. With no handle: the most recent "
@@ -674,7 +679,7 @@ def _cmd_session(argv: list[str]) -> int:
     args = p.parse_args(argv)
 
     header = ""
-    with universe.open_universe(args.projects_dir) as u:
+    with universe.open_universe(args.projects_dir, args.codex_dir) as u:
         if args.handle:
             path = u.resolve_session(args.handle)
             if args.in_repo:   # a repo was named too: it constrains the handle
@@ -748,7 +753,7 @@ def _cmd_diff(argv: list[str]) -> int:
 
     # the cache holds the typed readings this view's attribution asks for, and
     # is flushed on the way out of the block whichever way this goes
-    with universe.open_universe(args.projects_dir) as u:
+    with universe.open_universe(args.projects_dir, args.codex_dir) as u:
         entries = u.entries(since)
         sessions = u.sessions()
 
@@ -766,7 +771,7 @@ def _cmd_diff(argv: list[str]) -> int:
             if ref.startswith("@"):
                 commit_ref = ref
             else:
-                only_session = u.resolve_session(ref).stem
+                only_session = logs.session_id_of(u.resolve_session(ref))
 
         width = termout.term_width()
         try:
@@ -804,7 +809,8 @@ def _cmd_watch(argv: list[str]) -> int:
                     "as they land; consecutive edits to one file fold into a "
                     "single Change Run that evolves, marked ×N for the tool calls "
                     "it folded), Calls (every tool call that changes no file — a "
-                    "Bash one-liner, an MCP request, a web fetch, a subagent — "
+                    "shell one-liner (Bash, or Codex's exec_command), an MCP "
+                    "request, a web fetch, a subagent — "
                     "with its argument and a ✓/✗ when it returns; local reads "
                     "stay silent), your prompts as chapter "
                     "rules, commits (with their diff), pushes, branch switches, "
@@ -821,8 +827,8 @@ def _cmd_watch(argv: list[str]) -> int:
                     "set within seconds, marked in the feed, and an agent "
                     "working inside one gets its own numbered lane, titled by "
                     "what it was spawned to do. "
-                    "Session logs are the claim stream; git is "
-                    "the ground truth. Interactive: 1-9/tab filters to one "
+                    "Session logs — Claude Code's and Codex's alike — are the "
+                    "claim stream; git is the ground truth. Interactive: 1-9/tab filters to one "
                     "session (repo facts always stay), ↑↓/j/k scrolls back (the "
                     "view holds still while the feed keeps flowing; G returns to "
                     "live), [ ] jumps between chapters, enter expands a block or "
@@ -860,7 +866,7 @@ def _cmd_watch(argv: list[str]) -> int:
         # the Universe closes before the Watch runs: it is read to resolve the
         # repo and pick up the Live Sessions, and a live view must not hold the
         # Derived Cache open for the minutes it stays on screen
-        with universe.open_universe(args.projects_dir) as u:
+        with universe.open_universe(args.projects_dir, args.codex_dir) as u:
             stream = watchstream.WatchStream.discover(
                 u, args.repo, quiet=args.quiet, live_window=window)
     except watchstream.WatchError as e:
@@ -897,7 +903,10 @@ def _cmd_inbox(argv: list[str]) -> int:
     """
     parser = argparse.ArgumentParser(
         prog="standup",
-        description="Morning triage inbox for Claude Code activity across your repos.",
+        description="Morning triage inbox for Claude Code and Codex activity across "
+                    "your repos: which repos have pending work, and which session "
+                    "of which agent did it. A Codex session is tagged `codex` "
+                    "wherever it is named; Claude Code sessions carry no tag.",
         epilog=(
             "subcommands:\n"
             "  diff, d [repo]     the Attributed Diff: this repo's Active Work as\n"
@@ -905,7 +914,8 @@ def _cmd_inbox(argv: list[str]) -> int:
             "                     authored each hunk. @<hash> reads one commit\n"
             "  cost, c [repo]     Notional Cost by project/session (not real money);\n"
             "                     the drill-down flags Loops (repeated tool-call grinds)\n"
-            "  session, s [hdl]   read a session's Transcript (prompts + responses);\n"
+            "  session, s [hdl]   read a session's Transcript (prompts + responses,\n"
+            "                     Claude Code or Codex alike);\n"
             "                     Loop calls are gutter-marked ⟳. No handle: the newest\n"
             "                     session in the repo you're standing in\n"
             "  audit, a <handle>  Expert Panel audit of one session: scriptable Loops,\n"
@@ -950,7 +960,7 @@ def _cmd_inbox(argv: list[str]) -> int:
     since = parse_since(args.since) if args.since else now - timedelta(days=RECENT_WINDOW_DAYS)
     window = args.since or f"{RECENT_WINDOW_DAYS}d"
 
-    with universe.open_universe(args.projects_dir) as u:
+    with universe.open_universe(args.projects_dir, args.codex_dir) as u:
         entries = u.entries(since)
         sessions = u.sessions()
 
@@ -980,7 +990,7 @@ def _cmd_inbox(argv: list[str]) -> int:
         print(render.render_overview(entries, since, now, show_all=args.all,
                                      window=window, briefs=briefs))
         if args.all:  # optional notional-load footer, retrospective only (CONTEXT.md)
-            sc = cost.scan_session_costs(u.projects_dir, since, u.cache)
+            sc = cost.scan_session_costs(u.roots, since, u.cache)
             print(render.render_cost_footer(sc, window))
     return 0
 

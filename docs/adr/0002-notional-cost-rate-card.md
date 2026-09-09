@@ -86,6 +86,36 @@ overhead idiom marks Standup's own spend, not the session's delegated work.
 *Rejected: reading the parent's task notifications instead* — they carry the
 subagent's text result, never its usage.
 
+## Codex usage
+
+*(2026-09-09)* A Codex Session's turns are priced from the same Rate Card,
+through the same `turn_cost`, with OpenAI rows added to `rates.CARD` (source:
+developers.openai.com/api/docs/pricing, captured 2026-09-09, standard tier,
+short context). Three facts about Codex's counts are the reader's to convert,
+so the card stays one formula (ADR 0001 § two dialects, one reading):
+
+- **`input_tokens` includes the cached share.** OpenAI's `cached_input_tokens`
+  is a subset of `input_tokens`; Anthropic's `cache_read_input_tokens` is
+  disjoint from it. `TurnUsage.input_tokens` means *uncached* input, so the
+  Codex reader subtracts — a row then prices a Codex turn exactly as it prices
+  a Claude one.
+- **the multipliers hold.** Every OpenAI row lists cached input at 10% of input,
+  and every row that lists a short-context cache write lists it at 1.25× — the
+  two constants the card already carries. Codex logs `cache_write_input_tokens`
+  (zero on every log seen); it reads as a 5m write.
+- **reasoning tokens are output tokens.** OpenAI bills `reasoning_output_tokens`
+  inside `output_tokens`, so the reader takes `output_tokens` whole.
+
+Not modelled, stated: the long-context rows (prompts over 272K tokens, 2×
+input / 1.5× output) — no Codex log seen carries one, and the card would need a
+per-turn context-length reading to apply them; `codex-auto-review`, the model of
+Codex's review threads, which are no Session and are counted nowhere
+(ADR 0001 § two dialects, one reading). An unpriced-model rule needs no change:
+a Codex model the card lacks is flagged `unpriced`, never $0.
+
+Real Spend stays unreported for Codex as for Claude: a ChatGPT plan's usage is
+account-level and attributed to no thread.
+
 ## Alternatives considered
 
 - **Live pricing API** — adds a network dependency and non-determinism to a

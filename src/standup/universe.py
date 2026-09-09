@@ -11,8 +11,10 @@ and hides the three things a view has no business knowing:
   that forgets to flush loses no output — the cache is a pure accelerator — but
   it pays the parse again on the next run, silently.
 * **where the logs live, and the one way looking for them fails.** The hidden
-  `--projects-dir` and the "no Claude Code logs found" message are declared
-  once here rather than copied into every subcommand.
+  `--projects-dir`/`--codex-dir` overrides and the "no Claude Code logs found"
+  message are declared once here rather than copied into every subcommand. Two
+  agents' logs make one Scan Universe (ADR 0001 § two dialects, one reading):
+  a `cwd` is a `cwd` whichever wrote it.
 * **Repo Entry identity.** `git rev-parse --git-common-dir`, the rule that
   folds worktrees into their main checkout (CONTEXT.md → Repo Entry).
 
@@ -31,14 +33,16 @@ from datetime import datetime
 from pathlib import Path
 
 from . import cache as cache_mod
-from . import claude_logs, gitstate, handles, join, transcript
+from . import gitstate, handles, join, logs, transcript
 from .models import RepoEntry, Session
 
-DEFAULT_PROJECTS_DIR = "~/.claude/projects"
+DEFAULT_PROJECTS_DIR = logs.DEFAULT_PROJECTS_DIR
+DEFAULT_CODEX_DIR = logs.DEFAULT_CODEX_DIR
 
 
 class UniverseError(Exception):
-    """The Scan Universe cannot be read: no Claude Code logs where they live."""
+    """The Scan Universe cannot be read: no Claude Code or Codex logs where
+    they live."""
 
 
 @dataclass(frozen=True)
@@ -100,12 +104,16 @@ def owner_of(cwd: str | None) -> Owner | None:
 
 
 def add_projects_dir_argument(parser: argparse.ArgumentParser) -> None:
-    """The hidden `--projects-dir` override, declared in one place.
+    """The hidden `--projects-dir` and `--codex-dir` overrides, declared in one
+    place — one per log root (ADR 0001 § two dialects, one reading).
 
-    Hidden is a decision, not an omission (CLAUDE.md § CLI help): it is a test
-    and debugging entry point, and listing it would invite it to be configured.
+    Hidden is a decision, not an omission (CLAUDE.md § CLI help): they are test
+    and debugging entry points, and listing them would invite them to be
+    configured.
     """
     parser.add_argument("--projects-dir", default=os.path.expanduser(DEFAULT_PROJECTS_DIR),
+                        help=argparse.SUPPRESS)
+    parser.add_argument("--codex-dir", default=os.path.expanduser(DEFAULT_CODEX_DIR),
                         help=argparse.SUPPRESS)
 
 
@@ -117,8 +125,10 @@ class Universe:
     time. Construct it with `open_universe()`, which owns the cache's lifecycle.
     """
 
-    def __init__(self, projects_dir: Path, cache):
-        self.projects_dir = projects_dir
+    def __init__(self, roots, cache):
+        # the log roots this command reads — `logs.Roots`, or one Claude Code
+        # root handed as a bare path, the shape every caller used before Codex
+        self.roots: logs.Roots = logs.as_roots(roots)
         self.cache = cache
         self._sessions: list[Session] | None = None
         self._owners: dict[str, Owner | None] = {}
@@ -129,8 +139,14 @@ class Universe:
     def sessions(self) -> list[Session]:
         """Every Session of the Scan Universe, newest parse served warm."""
         if self._sessions is None:
-            self._sessions = claude_logs.scan_sessions(self.projects_dir, self.cache)
+            self._sessions = logs.scan_sessions(self.roots, self.cache)
         return self._sessions
+
+    @property
+    def projects_dir(self) -> Path | None:
+        """The Claude Code root alone — for the one consumer whose layout is
+        Claude's (subagent transcripts, ADR 0004 § the worktree lane)."""
+        return self.roots.claude
 
     def entries(self, since: datetime) -> list[RepoEntry]:
         """The Repo Entries, with their git state attributed to Sessions — the
@@ -213,11 +229,11 @@ class Universe:
             if other is not None and other.key == owner.key:
                 return t
         raise handles.HandleError(
-            f"{prog}: {handles.shorten_home(owner.path)} has no Claude Code sessions")
+            f"{prog}: {handles.shorten_home(owner.path)} has no recorded sessions")
 
     def resolve_session(self, handle: str) -> Path:
         """A Session Handle (any unambiguous `sessionId` prefix) → its log."""
-        return transcript.resolve_handle(self.projects_dir, handle)
+        return transcript.resolve_handle(self.roots, handle)
 
     def check_session_in(self, log_path: Path, repo: str,
                          prog: str = "standup session") -> None:
@@ -237,7 +253,7 @@ class Universe:
         if want is None or not want.is_repo:
             raise UniverseError(f"{prog}: {hit.name} is not a git repo")
 
-        sid = log_path.stem
+        sid = logs.session_id_of(log_path)
         session = next((s for s in self.sessions() if s.session_id == sid), None)
         found = self.owner(session.cwd) if session else None
         if found is not None and found.key == want.key:
@@ -282,19 +298,24 @@ class Universe:
 
 
 @contextmanager
-def open_universe(projects_dir: str | Path | None = None):
+def open_universe(projects_dir: str | Path | None = None,
+                  codex_dir: str | Path | None = None):
     """Open the Scan Universe over a Derived Cache, and flush it on the way out
     — including when the view raised (ADR 0001 § the Derived Cache).
 
-    Raises `UniverseError` when there are no logs to read, so the message is
-    written once instead of once per subcommand.
+    Either root may be missing — a machine with one agent installed has one —
+    and the Universe reads the ones that exist. Raises `UniverseError` only
+    when *neither* is there, so the message is written once instead of once per
+    subcommand.
     """
-    path = Path(os.path.expanduser(DEFAULT_PROJECTS_DIR) if projects_dir is None
-                else projects_dir)
-    if not path.is_dir():
-        raise UniverseError(f"standup: no Claude Code logs found at {path}")
+    wanted = logs.Roots.default(projects_dir, codex_dir)
+    present = wanted.present()
+    if not present:
+        raise UniverseError(
+            f"standup: no Claude Code logs found at {wanted.claude}, "
+            f"and no Codex logs at {wanted.codex}")
     cache = cache_mod.open_cache()
     try:
-        yield Universe(path, cache)
+        yield Universe(present, cache)
     finally:
         cache.flush()

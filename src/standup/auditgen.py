@@ -205,7 +205,7 @@ def generate(log_path: Path, u: universe.Universe, progress=lambda r: None,
     """Run the full panel for one session and store the Audit. Raises
     `AuditError` on failure (nothing partial is ever stored); `progress` is
     called with each `Result` as it lands, so a run can print what it paid."""
-    from . import claude_logs
+    from . import logs
 
 
     sid = log_path.stem
@@ -218,7 +218,7 @@ def generate(log_path: Path, u: universe.Universe, progress=lambda r: None,
         # Session (cwd, titles) and caches the reading for whatever asks next
         # (ADR 0001 § the one log reader). Reaching for the sweep's private
         # prefiltered scan would have made this module a rival reading.
-        target = claude_logs.read_log(log_path, cache).session
+        target = logs.read_log(log_path, cache).session
 
     scan = loops.for_session(log_path, cache)
     looped_ids = {tid for l in loops.significant(scan) for tid in l.tool_ids}

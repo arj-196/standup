@@ -92,6 +92,15 @@ def session_ref(handle: str, st: Style) -> str:
     return st.cyan(handle)
 
 
+def agent_tag(agent: str, st: Style) -> str:
+    """The word that says which agent a Session belongs to, dim, for the
+    Sessions that are not Claude Code's — `codex` after a title. A fact read off
+    the log's shape (ADR 0001 § two dialects, one reading), so it is printed
+    bare, never `~`-marked; Claude Code's own carry nothing, because a tag on
+    every line says less than a tag on the exception."""
+    return "" if agent in ("claude", "") else "  " + st.dim(agent)
+
+
 def commit_ref(short: str, st: Style) -> str:
     """A commit's short hash, marked so it can never read as a Session Handle.
 

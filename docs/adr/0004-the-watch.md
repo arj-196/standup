@@ -244,7 +244,10 @@ aged out of the Live window. The tags are still read, because a log that has one
 is not wrong; the text is what is always there.
 `claude_logs.is_interrupt` owns which markers count, so the reading is one
 function rather than a condition copied per consumer (ADR 0001 § the one log
-reader).
+reader). The whole transition table is the dialect's (`Reader.activity`,
+ADR 0001 § two dialects, one reading): Codex states its edges outright
+(`task_started`, `task_complete`, `turn_aborted`), so only the pause after a
+tool's return is inferred there.
 
 **`thinking` is an inference and is documented as one**, here and in the manual.
 It is not `~`-marked: the tilde marks claims about *what happened or was
@@ -303,8 +306,10 @@ was the part that vanished. The status bar said `acting`, correctly and
 uselessly — it names a verb, not a target, and it is gone the moment the call
 returns.
 
-**Every tool call that changes no file is a Call: one Feed Event kind, `Bash`
-included.** A `bash` event was already "a tool call, its argument, and a ✓/✗",
+**Every tool call that changes no file is a Call: one Feed Event kind, the
+shell tool included** — Claude Code's `Bash`, Codex's `exec_command`; which
+tool that is, and which tools are silent, is the dialect's answer
+(ADR 0001 § two dialects, one reading). A `bash` event was already "a tool call, its argument, and a ✓/✗",
 which is exactly the row the missing tools needed, so the kind was generalised
 rather than duplicated — one pending-call join, one result back-patch, one
 expand rule, one glyph.

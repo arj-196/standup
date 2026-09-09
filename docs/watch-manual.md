@@ -42,8 +42,12 @@ still working?** Each session that's mid-turn shows its **Activity State** in
 the status bar — `thinking`, `reading`, `writing`, `running` — and a session
 that has handed control back shows nothing at all. See §3.
 
-It reads two sources, exactly as the **Triage Inbox** does: the Claude Code
-session log claims *who and what*, and git confirms *ground truth*. Assistant
+It reads two sources, exactly as the **Triage Inbox** does: the session log —
+Claude Code's or Codex's, read through one reader (ADR 0001 § two dialects,
+one reading) — claims *who and what*, and git confirms *ground truth*. A Codex
+thread working in the repo gets a lane like any other session; its
+`apply_patch` calls are file events, its `exec_command` calls render `$ …`
+exactly as Claude Code's `Bash` does. Assistant
 prose and thinking never appear here — reading the conversation is
 `standup session`'s job. (The `thinking` **Activity State** is not an exception: it
 reports *that* the model is composing, never a word of what it is composing.)
@@ -68,8 +72,8 @@ The argument is a **Project Handle**, a full repo name, or a path to a git
 checkout; it defaults to `.`. A handle is the underlined letters of a project's
 name in the inbox — the acronym for a multi-word name (`pm` for
 ProjectManagement), the shortest unique prefix otherwise (`st` for standup) —
-and it resolves against the **Scan Universe**, the repos some Claude session
-has visited. A fragment that fits two projects is an error listing both, never
+and it resolves against the **Scan Universe**, the repos some session (Claude
+Code's or Codex's) has visited. A fragment that fits two projects is an error listing both, never
 a silent pick; nothing matching at all lists the known names.
 
 A bare word is always a handle, never a directory, so a folder in your cwd can
@@ -205,7 +209,7 @@ Then a kind mark and the content:
 |---|---|---|
 | `✎` | file | a file was written, edited, or deleted (session-claimed) |
 | `~` amber | file | the same, but *git is the only witness* — tagged `~unattributed` |
-| `⏺` | call | a tool call that changed no file — `$ cmd` for Bash, otherwise the tool's name and as much of its input as the row holds. `✓` or `✗` appended when it returns; `▸ N lines` at the right edge when there is more input than the header showed |
+| `⏺` | call | a tool call that changed no file — `$ cmd` for the shell tool (Claude Code's `Bash`, Codex's `exec_command`), otherwise the tool's name and as much of its input as the row holds. `✓` or `✗` appended when it returns; `▸ N lines` at the right edge when there is more input than the header showed |
 | `──` violet | prompt | **you** typed something — a full-width chapter rule |
 | `⚑` gold | commit | a new commit reached HEAD, `@<sha>` and its diff |
 | `⇧` gold | push | commits left for a remote |
@@ -461,7 +465,7 @@ what makes anything appearing there worth a glance.
 | `thinking` | the model is composing — no tool call is in flight |
 | `reading` | `Read`, `Grep`, `Glob`, `WebFetch`, `WebSearch` |
 | `writing` | `Write`, `Edit`, `MultiEdit`, `NotebookEdit` |
-| `running` | `Bash` and its shell companions |
+| `running` | `Bash` and its shell companions; Codex's `exec_command` |
 | `acting` | any other tool, including MCP tools — an unmapped tool is still true |
 
 **A tool verb lingers for a second.** A local `Read` returns in about 25
@@ -822,7 +826,10 @@ means work is still going.
 
 **`thinking` is read from silence.** It's the one state the log never states.
 Claude Code writes a line when a tool is called and a line when it returns, but
-nothing about the pause between them — so the pause is what `thinking` is. The
+nothing about the pause between them — so the pause is what `thinking` is.
+(Codex does write its turn edges — `task_started`, `task_complete` — so a Codex
+lane settles on the log's own word; the pause between a tool's return and the
+next line is still inferred.) The
 practical consequence: a session killed outright in that gap (window closed,
 `kill -9`) leaves a tail that looks exactly like a session still composing, and
 it will read `thinking` until it ages past the 30-minute Live window.
@@ -882,7 +889,7 @@ opening with one enormous block of old news.
 | `needs an interactive terminal` | stdout isn't a tty; the Watch has no piped mode |
 | `no scanned repo matches 'x'` | the name isn't in the **Scan Universe** — the message lists what is; pass a path instead |
 | `is not inside a git repo` | the path resolves to no checkout |
-| `no Claude Code logs found at …` | `~/.claude/projects` is missing |
+| `no Claude Code logs found at …, and no Codex logs at …` | neither `~/.claude/projects` nor `~/.codex` exists; one of the two is enough |
 | `no live session · last log append …` | nothing appended inside the Live window; git-only narration is working as designed — `--since 2h` widens the window if the work you want is older |
 | `s` does nothing | the selected event has no session (git-only), or its log isn't tailed |
 | everything is `~unattributed` | no session log covers this repo — expected outside the Scan Universe |
@@ -901,7 +908,7 @@ opening with one enormous block of old news.
 | `reading 0s` / `writing 0s` | the tool has already returned and the verb is inside its one-second floor. The age is honest — the tool really did take under a second |
 | almost always `thinking` | expected, and not the bug it was: the model composing genuinely is most of a turn's wall-clock. `running` shows for `Bash`, and `reading`/`writing` for their floor; if you see *nothing else, ever*, the floor is one constant (`ACT_FLOOR`) in `watchstream.py` |
 | `[2] ⠹ acting 3s` | a tool with no mapped verb (an MCP tool, or one newer than the table) — and only that: a log line announcing no tool at all leaves the previous verb standing instead of falling to `acting`. The call itself lands in the feed as a **Call**, so the bar says it is in flight and the feed says what it was |
-| the feed is empty while the agent is clearly working | the only silent tools are the local reads (`Read`, `Grep`, `Glob`, `NotebookRead`, `BashOutput`, `KillShell`) — everything else is a **Call**. An empty feed with `reading` in the bar is the agent reading; an empty feed under `-q` is the flag, which drops Calls |
+| the feed is empty while the agent is clearly working | the only silent tools are Claude Code's local reads (`Read`, `Grep`, `Glob`, `NotebookRead`, `BashOutput`, `KillShell`) — everything else is a **Call**, and a Codex lane is never silent (its reads are shell commands). An empty feed with `reading` in the bar is the agent reading; an empty feed under `-q` is the flag, which drops Calls |
 
 ## 8. One-page key reference
 

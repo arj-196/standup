@@ -23,7 +23,7 @@ _EPOCH = datetime.min.replace(tzinfo=timezone.utc)
 
 def _attr(session: Session, tier: str, when=None) -> Attribution:
     return Attribution(tier=tier, session_id=session.session_id,
-                       title=session.title, when=when)
+                       title=session.title, when=when, agent=session.agent)
 
 
 def _match_pending(entry: RepoEntry, sessions: list[Session]) -> None:
@@ -124,7 +124,8 @@ def rollups(entry: RepoEntry) -> list[Rollup]:
             a = pf.attributions[0]  # latest Session wins; one Rollup per file
             r = buckets.get(a.session_id)
             if r is None:
-                r = buckets[a.session_id] = Rollup(session_id=a.session_id, title=a.title)
+                r = buckets[a.session_id] = Rollup(session_id=a.session_id, title=a.title,
+                                                       agent=a.agent)
             r.files.append((co.branch, pf))
             if a.when and (r.last_activity is None or a.when > r.last_activity):
                 r.last_activity = a.when

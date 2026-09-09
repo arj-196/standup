@@ -31,9 +31,19 @@ class Session:
     session_id: str
     log_path: str
     cwd: str | None = None
+    # Which agent's conversation this was — "claude" (Claude Code) or "codex"
+    # (ADR 0001 § two dialects, one reading). A fact read off the log's shape,
+    # never a claim, so the views print it bare where a Session is named.
+    agent: str = "claude"
     custom_title: str | None = None
     ai_title: str | None = None
     slug: str | None = None
+    # the two prompts a title falls back on. Claude Code writes `last-prompt`
+    # lines, so its Sessions carry the last; a Codex rollout carries no title
+    # at all, and its reader records the first prompt too, because a thread's
+    # last prompt is usually `y` and its first is what it was for
+    # (ADR 0001 § two dialects, one reading)
+    first_prompt: str | None = None
     last_prompt: str | None = None
     # The Session log's mtime: when the log last grew, and the *only* meaning
     # this field carries as the log reader produces it
@@ -57,8 +67,9 @@ class Session:
         for t in (self.custom_title, self.ai_title, self.slug):
             if t:
                 return t
-        if self.last_prompt:
-            p = " ".join(self.last_prompt.split())
+        prompt = self.first_prompt or self.last_prompt
+        if prompt:
+            p = " ".join(prompt.split())
             return p[:57] + "..." if len(p) > 60 else p
         return self.session_id[:8]
 
@@ -69,6 +80,7 @@ class Attribution:
     session_id: str
     title: str
     when: datetime | None = None
+    agent: str = "claude"     # the Session's agent, carried so a view can tag it
 
 
 @dataclass
@@ -82,6 +94,7 @@ class Rollup:
     title: str
     files: list[tuple[str, "PendingFile"]] = field(default_factory=list)  # (branch, file)
     last_activity: datetime | None = None
+    agent: str = "claude"     # the Session's agent (see Session.agent)
 
     @property
     def handle(self) -> str | None:

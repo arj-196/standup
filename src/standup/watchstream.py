@@ -5,8 +5,10 @@ imports textual. The watch UI is just one consumer of the typed Feed Events
 produced here.
 
 The split mirrors Attribution: the session log claims *who and what* (the exact
-Edit text, the Bash command, the prompt); git confirms tree state and alone
-reveals live Unattributed Changes. Live Session is a recency claim — a log
+edit text, the shell command, the prompt); git confirms tree state and alone
+reveals live Unattributed Changes. A Claude Code log and a Codex rollout are
+tailed through the same `logs.LineReader` face, so a lane never knows which
+agent it narrates (ADR 0001 § two dialects, one reading). Live Session is a recency claim — a log
 appended within the Live window (LIVE_THRESHOLD by default, widened per run by
 `standup watch --since`) — never a process fact (CONTEXT.md).
 """
@@ -22,7 +24,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from . import brief as brief_mod
-from . import claude_logs, gitstate, handles, toolcalls, unidiff, universe
+from . import claude_logs, gitstate, handles, logs, toolcalls, unidiff, universe
 from .models import Session
 
 LIVE_THRESHOLD = timedelta(minutes=30)  # Live Session recency claim (CONTEXT.md)
@@ -33,21 +35,14 @@ DISCOVERY_INTERVAL = 10.0      # seconds between scans for new session logs
 # Session's directory (<proj>/<parent-session-id>/subagents/agent-<id>.jsonl),
 # one level below where top-level Session logs sit — which is why the ordinary
 # `*/*.jsonl` glob can never find one (ADR 0004 § the worktree lane).
-SUBAGENT_GLOB = "*/*/subagents/*.jsonl"
+SUBAGENT_GLOB = claude_logs.SUBAGENT_GLOB
 BACKFILL_CAP = 400             # newest events replayed at launch, all sessions
 
-# Activity State verbs (CONTEXT.md): the pending tool call read as one word.
-# An unmapped tool falls to "acting" — true of anything, so a new or MCP tool
-# never needs a table entry to stay honest.
-ACT_VERBS = {
-    "Read": "reading", "Grep": "reading", "Glob": "reading",
-    "NotebookRead": "reading", "WebFetch": "reading", "WebSearch": "reading",
-    "Write": "writing", "Edit": "writing", "MultiEdit": "writing",
-    "NotebookEdit": "writing",
-    "Bash": "running", "BashOutput": "running", "KillShell": "running",
-}
-ACT_FALLBACK = "acting"
-ACT_THINKING = "thinking"
+# Activity State verbs (CONTEXT.md) are each dialect's own table
+# (`claude_logs.ACT_VERBS`, `codex_logs.ACT_VERBS`), read through the reader;
+# the two states no table names are shared.
+ACT_FALLBACK = logs.ACTING
+ACT_THINKING = logs.THINKING
 # Display floor for a tool verb (ADR 0004 § the Activity State). A local Read
 # returns in ~25ms, so bound to its own execution window `reading` was never on
 # screen long enough to be read by a human — measured over eight of this repo's
@@ -56,8 +51,6 @@ ACT_THINKING = "thinking"
 # least this long before `thinking` may replace it. It never delays a *settled*
 # session going blank, and never delays another tool verb.
 ACT_FLOOR = timedelta(seconds=1.0)
-
-_COMMIT_RE = claude_logs.COMMIT_LINE_RE
 
 
 class WatchError(Exception):
@@ -206,6 +199,9 @@ class _Tailer:
     def __init__(self, session: Session, repo_paths: list[str]):
         self.session = session
         self.path = Path(session.log_path)
+        # the file's own reader, fed its lines in order — stateful for a Codex
+        # rollout, whose model and cwd are named once and remembered
+        self.reader = logs.reader(self.path)
         self.offset = 0
         # The WatchStream's own root list, shared by reference and mutated in
         # place when a worktree appears or vanishes mid-watch — a tailer that
@@ -257,117 +253,60 @@ class _Tailer:
     def _track_activity(self, obj: dict, ts: datetime) -> None:
         """Advance the Activity State from one log line (CONTEXT.md).
 
-        Four transitions, in the order they have to be tested:
-
-        - an **interrupt** settles the session. It arrives as a plain user
-          line whose text is `[Request interrupted by user]`, so this must be
-          checked before the prompt reading — that text would otherwise look
-          like you asking a question, and the state would read `thinking` for
-          as long as the Watch stays open. `claude_logs.is_interrupt` holds
-          which markers count, because the tags this used to key on
-          (`interruptedMessageId` / `interruptedByShutdown`) stopped being
-          written and the text is the only one every version has.
-        - `stop_reason == "tool_use"` *and* a `tool_use` block on the line names
-          the call about to run: its verb. The stop reason alone is not enough —
-          see the block comment below.
-        - any other `stop_reason` ends the turn — the agent handed control back.
-        - a tool result, or your prompt, leaves the model composing: `thinking`,
-          the one verb no line ever states.
-
-        Sidechain lines inside a *parent* log are skipped: those reads are not
-        this session's, and several running at once have no single answer. A
-        subagent tailer's whole log is one sidechain, so there the flag carries
-        no such ambiguity and tracking proceeds (ADR 0004 § the worktree lane).
+        The transitions are the reader's to read — which line settles a turn,
+        which names a tool, which leaves the model composing is a fact about
+        each dialect's schema (`claude_logs.Reader.activity`,
+        `codex_logs.Reader.activity`; ADR 0004 § the Activity State). What is
+        kept here is the state itself, and the one rule about it: a settled or
+        interrupted turn clears the held tool verb, so the display floor never
+        outlives the turn.
         """
-        if obj.get("isSidechain") and not self.subagent:
-            return
-        etype = obj.get("type")
-        message = obj.get("message") or {}
-        content = message.get("content") if isinstance(message, dict) else None
-
-        if etype == "assistant":
-            if message.get("stop_reason") != "tool_use":
-                self.act_verb, self.act_since = None, ts
-                self.act_tool = None      # settled: nothing may be held over
-                return
-            calls = claude_logs.tool_calls_in(obj)
-            name = calls[-1].name if calls else ""     # parallel: the last one
-            if not name:
-                # `stop_reason` belongs to the whole assistant *message*, but the
-                # message's blocks are flushed as separate lines — a preamble
-                # `text` block and an extended `thinking` block each land on
-                # their own line carrying the same `tool_use` stop reason. So the
-                # stop reason says "a tool comes later in this message", not
-                # "this line announces one". Over eight of this repo's own
-                # sessions, 315 of 838 such lines named no tool (231 thinking,
-                # 84 text) and every one of them was read as `acting` — a verb
-                # reserved for a tool absent from the table. A line that names no
-                # tool is the model still composing, so leave the state (and its
-                # age) exactly where the previous line left it.
-                return
-            self.act_verb = ACT_VERBS.get(name, ACT_FALLBACK)
-            self.act_since = ts
-            self.act_tool, self.act_tool_since = self.act_verb, ts
-            return
-
-        if etype != "user" or obj.get("isMeta"):
-            return
-        if claude_logs.is_interrupt(obj):
+        step = self.reader.activity(obj, ts)
+        if step is None:
+            return                        # the line moves the state nowhere
+        if step == logs.SETTLED:
             self.act_verb, self.act_since = None, ts
-            self.act_tool = None          # cut short: nothing may be held over
-            return
-        returned = obj.get("toolUseResult") is not None or (
-            isinstance(content, list)
-            and any(isinstance(b, dict) and b.get("type") == "tool_result"
-                    for b in content))
-        if returned or claude_logs.prompt_text(content):
+            self.act_tool = None          # settled: nothing may be held over
+        elif step == logs.THINKING:
             self.act_verb, self.act_since = ACT_THINKING, ts
+        else:
+            self.act_verb, self.act_since = step, ts
+            self.act_tool, self.act_tool_since = step, ts
 
     def _events_from_obj(self, obj: dict) -> list[FeedEvent]:
+        if not isinstance(obj, dict):
+            return []
         sid, title = self.session.session_id, self.session.title
-        ts = _parse_ts(obj.get("timestamp")) or _now()
-        etype = obj.get("type")
+        r = self.reader
+        ts = r.timestamp(obj) or _now()
         events: list[FeedEvent] = []
         # every line advances the state, including on the backfill pass — which
         # walks the whole file, so a session mid-turn at launch is already in
         # the right state before its first live line arrives
         self._track_activity(obj, ts)
 
-        if etype == "user":
-            tr = obj.get("toolUseResult")
-            content = (obj.get("message") or {}).get("content")
-            if isinstance(content, list):
-                for b in content:
-                    if isinstance(b, dict) and b.get("type") == "tool_result":
-                        tid = b.get("tool_use_id")
-                        if tid in self.pending_calls:
-                            del self.pending_calls[tid]
-                            events.append(FeedEvent(
-                                kind="call_result", when=ts, session_id=sid, title=title,
-                                tool_id=tid, ok=not bool(b.get("is_error"))))
-            if tr is not None:
-                text = tr if isinstance(tr, str) else (tr.get("stdout") or "") if isinstance(tr, dict) else ""
-                for m in _COMMIT_RE.finditer(text):
-                    self.claimed_shas.add(m.group(1))
-            prompt = claude_logs.prompt_in(obj, ts)
-            if prompt is not None:
-                events.append(FeedEvent(kind="prompt", when=ts, session_id=sid,
-                                        title=title, message=prompt.text))
-            return events
+        for res in r.tool_results_in(obj):
+            if res.tool_id in self.pending_calls:
+                del self.pending_calls[res.tool_id]
+                events.append(FeedEvent(kind="call_result", when=ts, session_id=sid,
+                                        title=title, tool_id=res.tool_id, ok=res.ok))
+        self.claimed_shas.update(r.commit_shas_in(obj))
+        prompt = r.prompt_in(obj, ts)
+        if prompt is not None:
+            events.append(FeedEvent(kind="prompt", when=ts, session_id=sid,
+                                    title=title, message=prompt.text))
 
-        if etype != "assistant":
-            return events
-        for call in claude_logs.tool_calls_in(obj, ts):
+        for call in r.tool_calls_in(obj, ts):
             name, inp = call.name, call.input
-            if not name or name in toolcalls.SILENT_TOOLS:
+            if not name or r.is_silent(name):
                 continue      # a local read narrates nothing the feed can show
-            if name not in claude_logs.EDIT_TOOLS:
+            if name not in r.edit_tools:
                 # a Call (ADR 0004 § Calls): every tool call that changes no
-                # file, Bash included — it is the one whose argument is a shell
-                # command, so it carries `command` and the rest carry `args`
+                # file, the shell tool included — it is the one whose argument
+                # is a shell command, so it carries `command` and the rest
+                # carry `args`
                 self.pending_calls[call.tool_id] = ts
-                cmd = inp.get("command") if name == "Bash" else None
-                cmd = cmd if isinstance(cmd, str) and cmd.strip() else None
+                cmd = r.shell_command(call)
                 events.append(FeedEvent(
                     kind="call", when=ts, session_id=sid, title=title,
                     tool_id=call.tool_id, tool=toolcalls.display_name(name),
@@ -384,7 +323,7 @@ class _Tailer:
             events.extend(self._file_events(call, ts))
         return events
 
-    def _file_events(self, call: claude_logs.ToolCall,
+    def _file_events(self, call: logs.ToolCall,
                      ts: datetime) -> list[FeedEvent]:
         """One file-touching call as Feed Events — a projection of the reader's
         edit blocks (ADR 0001 § the one log reader), never a second reading of
@@ -396,7 +335,7 @@ class _Tailer:
         """
         sid, title = self.session.session_id, self.session.title
         events: list[FeedEvent] = []
-        for e in claude_logs.edits_of(call):
+        for e in self.reader.edits_of(call):
             loc = self._rel(e.path)
             if loc is None:
                 continue  # the session touched a file outside this Repo Entry
@@ -408,8 +347,10 @@ class _Tailer:
                 # must not re-report it), and there is nothing to narrate
                 continue
             change = "modify"
-            if e.tool == "Write":
-                # during backfill the tree has long moved on — don't ask git
+            if e.tool == "Write" or (e.tool == "apply_patch" and not e.old):
+                # a whole-file write, or a patch hunk that took nothing out:
+                # create vs modify is git's to say. During backfill the tree
+                # has long moved on — don't ask git
                 change = ("modify" if self._backfilling
                           else self._write_change(root, rel))
             events.append(FeedEvent(kind="file", when=ts, session_id=sid,
@@ -800,20 +741,22 @@ class WatchStream:
         """
         name, checkouts = _resolve_target(repo_arg, u)
         return cls(name=name, checkouts=checkouts, sessions=u.sessions(),
-                   projects_dir=u.projects_dir, quiet=quiet,
+                   projects_dir=u.roots, quiet=quiet,
                    live_window=live_window)
 
     def __init__(self, name: str, checkouts: list[str], sessions: list[Session],
-                 projects_dir: Path, quiet: bool = False,
+                 projects_dir, quiet: bool = False,
                  live_window: timedelta | None = None):
         # Resolved values only, so a stream can be built over a scratch repo and
         # a temp log tree. `sessions` is the *whole* Scan Universe, not this
         # repo's share of it: which of them get a lane is this object's decision
         # (repo membership, then the Live window), and the ones that do not still
         # have to be marked known, so `_discover` never replays them as new.
-        # `projects_dir` is the log directory, globbed for the Sessions and
-        # subagent transcripts that appear mid-run.
-        self.projects_dir = Path(projects_dir)
+        # `projects_dir` is where the logs live — `logs.Roots`, or one Claude
+        # Code root as a bare path — enumerated for the Sessions and subagent
+        # transcripts that appear mid-run.
+        self.roots = logs.as_roots(projects_dir)
+        self.projects_dir = self.roots.claude
         self.quiet = quiet
         # The recency claim, widenable per run (`--since`): it decides both which
         # Sessions this Watch picks up and which ones the header still calls
@@ -864,6 +807,8 @@ class WatchStream:
         Sessions answer to. Every transcript found is marked known, lane or
         not, so `_discover` never replays a long-finished agent as brand new."""
         found: list[Session] = []
+        if self.projects_dir is None:
+            return found
         for log in self.projects_dir.glob(SUBAGENT_GLOB):
             lp = str(log)
             if lp in self._known_logs:
@@ -889,7 +834,7 @@ class WatchStream:
         parent's intent for this agent is written down. The cwd is peeked from
         the log itself: a worktree agent's cwd *is* its worktree, which is all
         the repo membership check needs."""
-        cwd = self._peek_cwd(log)
+        cwd = claude_logs.peek_cwd(log)
         if not cwd:
             return None
         if mtime is None:
@@ -1001,8 +946,9 @@ class WatchStream:
         """Notice brand-new session logs in this repo — top-level Sessions and
         subagent transcripts alike — and start tailing them."""
         events: list[FeedEvent] = []
-        for log in (*self.projects_dir.glob("*/*.jsonl"),
-                    *self.projects_dir.glob(SUBAGENT_GLOB)):
+        subagents = (self.projects_dir.glob(SUBAGENT_GLOB)
+                     if self.projects_dir is not None else ())
+        for log in (*self.roots.present().session_logs(), *subagents):
             lp = str(log)
             if lp in self._known_logs:
                 continue
@@ -1010,8 +956,9 @@ class WatchStream:
             if "/subagents/" in lp:
                 s = self._subagent_session(log, _now())
             else:
-                cwd = self._peek_cwd(log)
-                s = (Session(session_id=log.stem, log_path=lp, cwd=cwd,
+                cwd = logs.peek_cwd(log)
+                s = (Session(session_id=logs.session_id_of(log), log_path=lp,
+                             cwd=cwd, agent=logs.dialect_of(log).name,
                              last_activity=_now()) if cwd else None)
             if not s or not self._in_repo(s.cwd):
                 continue
@@ -1021,26 +968,6 @@ class WatchStream:
                                     message="new session"))
             events.extend(t.read_new())
         return events
-
-    @staticmethod
-    def _peek_cwd(log: Path) -> str | None:
-        try:
-            with open(log, errors="replace") as f:
-                for _ in range(50):
-                    line = f.readline()
-                    if not line:
-                        break
-                    if '"cwd"' not in line:
-                        continue
-                    try:
-                        obj = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    if obj.get("cwd"):
-                        return obj["cwd"]
-        except OSError:
-            pass
-        return None
 
     def _filtered(self, events: list[FeedEvent]) -> list[FeedEvent]:
         if self.quiet:

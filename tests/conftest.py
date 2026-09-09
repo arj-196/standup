@@ -32,6 +32,7 @@ from standup import install as install_mod
 
 from tests.support.llm import FakeLLM
 from tests.support.repos import ScratchRepo, make_repo
+from tests.support.codex_sessions import CodexLog, fixture_codex_session
 from tests.support.sessions import SessionLog, fixture_session
 
 # (module, attribute) pairs holding a path under the durable `~/.standup` root
@@ -86,6 +87,26 @@ def projects_dir(fake_home) -> Path:
     d = fake_home / ".claude" / "projects"
     d.mkdir(parents=True)
     return d
+
+
+@pytest.fixture
+def codex_dir(fake_home) -> Path:
+    """An empty `~/.codex` — the Codex root of the Scan Universe, in the layout
+    its reader globs (`sessions/YYYY/MM/DD/rollout-*.jsonl`). Write into it
+    with `CodexLog.save()`."""
+    d = fake_home / ".codex"
+    d.mkdir(parents=True)
+    return d
+
+
+@pytest.fixture
+def codex_log():
+    """Factory for the canonical fixture Codex Session (a prompt, two patched
+    files, a commit hash, priced per-turn usage). Pass `cwd=` to point it at a
+    scratch repo."""
+    def _make(**kwargs) -> CodexLog:
+        return fixture_codex_session(**kwargs)
+    return _make
 
 
 @pytest.fixture

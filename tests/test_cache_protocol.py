@@ -25,7 +25,7 @@ import sqlite3
 import pytest
 
 from standup import cache as cache_mod
-from standup import claude_logs, cli
+from standup import claude_logs, logs, cli
 
 from tests.support.sessions import SessionLog
 
@@ -186,8 +186,9 @@ def test_a_version_bump_invalidates_that_derivations_rows_only(
     real_parse = claude_logs.parse_log
     monkeypatch.setattr(claude_logs, "parse_log",
                         lambda p: reads.append(p) or real_parse(p))
-    monkeypatch.setattr(claude_logs, "READER_VERSION",
-                        claude_logs.READER_VERSION + 1)
+    # the typed reading's version belongs to `logs`, which owns the shape both
+    # dialects are read into (ADR 0001 § two dialects, one reading)
+    monkeypatch.setattr(logs, "READER_VERSION", logs.READER_VERSION + 1)
 
     assert _run(capsys, projects_dir, "cost", "-s", "30d", "-P") == before
     assert reads, "a bumped reader version must not be served the old rows"

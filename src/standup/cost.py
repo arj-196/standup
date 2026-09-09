@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import claude_logs, universe
+from . import logs, universe
 from .models import Session
 
 _EPOCH = datetime.min.replace(tzinfo=timezone.utc)
@@ -35,10 +35,9 @@ class SessionCost:
     session: Session
     # the priced fold of every turn this Session counted in the window — its
     # own and its subagents'. Held rather than re-derived field by field: the
-    # arithmetic is `claude_logs.usage_totals`', and a second copy of it here
+    # arithmetic is `logs.usage_totals`', and a second copy of it here
     # is how the two ways to price a session start to disagree.
-    usage: claude_logs.UsageTotals = field(
-        default_factory=claude_logs.UsageTotals)
+    usage: logs.UsageTotals = field(default_factory=logs.UsageTotals)
     # subagent transcripts that contributed at least one in-window turn to the
     # figures above (ADR 0002 § subagent usage). The fold's visible mark: a
     # session line whose tokens include delegated work says so.
@@ -161,7 +160,7 @@ def _subagent_logs(parent_log: Path, window_start: datetime) -> list[Path]:
     turns are timestamp-filtered anyway.
     """
     agents_dir = parent_log.parent / parent_log.stem / "subagents"
-    live = ((f, claude_logs.log_mtime(f))
+    live = ((f, logs.log_mtime(f))
             for f in sorted(agents_dir.glob("agent-*.jsonl")))
     return [f for f, m in live if m is not None and m >= window_start]
 
@@ -173,11 +172,11 @@ def _session_cost(log: Path, window_start: datetime, cache) -> SessionCost | Non
     Usage is all a subagent transcript contributes — titles and cwd are the
     parent's business, and a subagent log carries neither.
     """
-    parsed = claude_logs.read_log(log, cache)
+    parsed = logs.read_log(log, cache)
     counted = _in_window(parsed.turns, window_start)
     subagents = 0
     for f in _subagent_logs(log, window_start):
-        delegated = _in_window(claude_logs.read_log(f, cache).turns, window_start)
+        delegated = _in_window(logs.read_log(f, cache).turns, window_start)
         if delegated:
             subagents += 1
             counted += delegated
@@ -188,23 +187,23 @@ def _session_cost(log: Path, window_start: datetime, cache) -> SessionCost | Non
         # one fold over the concatenated turns, never a sum of two folds:
         # pricing is per-turn (ADR 0002), so the turns of one Session are one
         # list however many files they were read from
-        usage=claude_logs.usage_totals(counted),
+        usage=logs.usage_totals(counted),
         subagents=subagents,
         last_turn=max((t.when for t in counted if t.when), default=None),
     )
 
 
-def scan_session_costs(projects_dir: Path, window_start: datetime,
-                       cache) -> list[SessionCost]:
+def scan_session_costs(roots, window_start: datetime, cache) -> list[SessionCost]:
     """Price every Session of the Scan Universe over one window.
 
-    `cache` is the open Derived Cache — the same rows the inbox's reading
-    fills, so a log unchanged since any earlier view read it is not opened
-    (ADR 0001 § the Derived Cache).
+    `roots` is where the logs live (`logs.Roots`, or one Claude Code root as a
+    bare path). `cache` is the open Derived Cache — the same rows the inbox's
+    reading fills, so a log unchanged since any earlier view read it is not
+    opened (ADR 0001 § the Derived Cache).
     """
     out: list[SessionCost] = []
-    for log in sorted(projects_dir.glob("*/*.jsonl")):
-        mtime = claude_logs.log_mtime(log)
+    for log in logs.as_roots(roots).present().session_logs():
+        mtime = logs.log_mtime(log)
         if mtime is None or mtime < window_start:
             continue
         sc = _session_cost(log, window_start, cache)

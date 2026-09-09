@@ -1,8 +1,9 @@
 # standup
 
-Morning triage inbox for Claude Code activity across your repos. Joins
-`~/.claude/projects` session logs with git state and answers: which repos
-have pending work, **which sessions did it**, and how big each footprint is.
+Morning triage inbox for Claude Code and Codex activity across your repos.
+Joins the session logs of both agents (`~/.claude/projects`, `~/.codex`) with
+git state and answers: which repos have pending work, **which sessions did
+it**, and how big each footprint is.
 
 See [CONTEXT.md](CONTEXT.md) for the domain language and
 [docs/adr/](docs/adr/) for design decisions.
@@ -280,8 +281,36 @@ drill-down.
 - With active work present, the drill-down ends with one dim line naming the
   view after it — `standup st diff · read the changes`.
 
-Only repos some Claude session has ever visited are scanned (ADR 0001 § the Scan Universe) —
-but within those repos, *all* dirt is shown, Claude-made or not.
+Only repos some session — Claude Code's or Codex's — has ever visited are
+scanned (ADR 0001 § the Scan Universe), but within those repos, *all* dirt is
+shown, agent-made or not.
+
+## Two agents, one inbox
+
+Standup reads Claude Code's logs and Codex's rollouts into one reading
+(ADR 0001 § two dialects, one reading), so every view above works over both
+without a flag: a Codex session claims the files its `apply_patch` calls
+touched, its `git commit` hashes are captured from its shell output, its turns
+are priced from the same Rate Card (the OpenAI rows), `standup session` renders
+its transcript, `standup <repo> diff` matches its hunks, and `standup watch`
+tails a running Codex thread as a lane beside a Claude Code one. Where a
+session is named — a Session Rollup, the cost drill-down, a transcript header —
+a Codex session carries a dim `codex` tag; Claude Code sessions carry none.
+What differs is stated, not hidden:
+
+- **a Codex session has no title**, so its *first* prompt stands in (the last
+  one is usually `y`);
+- **Codex's own review threads are not sessions** — the auto-reviewer's
+  rollouts are skipped, and their tokens are counted nowhere;
+- **Session Briefs are Claude Code's only**: `standup install` sets up a Claude
+  Code Stop hook, and Codex sessions render without a Brief, exactly as a
+  briefless Claude session does;
+- **a resumed Codex thread is two sessions** — Codex writes a second rollout
+  named `…-<thread>_<fork>.jsonl`, and each file is addressed by its own id.
+
+Either root may be missing: with only Codex installed the inbox reads
+`~/.codex` alone, and it errors only when neither `~/.claude/projects` nor
+`~/.codex` exists.
 
 `standup --json` prints that same reading as a payload instead of a view, and it
 is derived from the models: every field a Repo Entry, a Checkout, a Commit, an
@@ -405,10 +434,13 @@ that a result is never shown.
 
 These dollar figures are **Notional Cost** — API-equivalent *load*, a
 comparison weight, **not money paid**. On a subscription the real money is the
-account-level credit overflow, which Anthropic does not attribute to any
-session; Standup deliberately reports no real-spend figure (there is no
+account-level credit overflow, which neither Anthropic nor OpenAI attributes to
+any session; Standup deliberately reports no real-spend figure (there is no
 trustworthy local source — see ADR 0002). For your actual bill, use
-claude.ai → Settings → Usage. Cost spans all sessions (not just those with
+claude.ai → Settings → Usage, or your ChatGPT plan's usage page for Codex. A
+Codex turn is priced from the OpenAI rows of the same Rate Card (ADR 0002
+§ Codex usage): its cached input reads as `cache-r`, and a model the card has
+no row for is flagged `unpriced`, never counted at $0. Cost spans all sessions (not just those with
 pending git work) and, like the inbox, is stateless — and, like the inbox, it
 reads each session log through the shared derived cache, so an unchanged log is
 priced without being re-parsed. The cache holds token counts, never dollars: a
@@ -425,8 +457,15 @@ It runs offline and needs no `claude` binary, and it cannot reach the real
 every durable path Standup froze at import — autouse, so no test opts in. `git`
 is the one external binary it shells out to.
 
-Three builders under `tests/support/` stand in for the outside world:
+Four builders under `tests/support/` stand in for the outside world:
 
+- `codex_sessions.py` writes a Codex **Session** — a rollout in Codex's own
+  layout (`~/.codex/sessions/YYYY/MM/DD/rollout-<ts>-<id>.jsonl`), with the
+  shapes a Claude-shaped fixture never exercises: the model on `turn_context`,
+  cwd-relative `apply_patch` hunks, `exec_command` as the shell, `token_count`
+  usage counting cached input inside `input_tokens`, `turn_aborted` as the
+  interrupt. `fixture_codex_session()` is the canonical small one; `CodexLog`
+  builds any other shape.
 - `sessions.py` writes a **Session** log in Claude Code's own layout
   (`~/.claude/projects/<cwd-slug>/<sessionId>.jsonl`). `fixture_session()` is the
   canonical small one — a title, two edits, one captured commit hash, and priced
@@ -445,7 +484,7 @@ Three builders under `tests/support/` stand in for the outside world:
   doctor-check — which is why the suite needs no `claude` binary.
 
 All three are importable directly. The conftest also offers them as fixtures —
-`projects_dir` (an empty Scan Universe root), `session_log`, `scratch_repo` and
-`fake_llm` (factories over the three builders), `null_cache` (the **Derived
-Cache** switched off) — and `fake_home`, which is autouse and needs no asking
-for.
+`projects_dir` (an empty Claude Code root), `codex_dir` (an empty Codex root),
+`session_log`, `codex_log`, `scratch_repo` and `fake_llm` (factories over the
+four builders), `null_cache` (the **Derived Cache** switched off) — and
+`fake_home`, which is autouse and needs no asking for.

@@ -53,7 +53,7 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import claude_logs
+from . import logs
 
 # Verdicts (CONTEXT.md -> Attribution Tier).
 LIKELY, SHARED, UNACCOUNTED, UNATTRIBUTED = (
@@ -98,8 +98,8 @@ def for_session(log_path: Path, cache=None) -> dict[str, list[Fragment]]:
     still contributes its path, so a file the inbox attributes is a file this
     index has heard of.
     """
-    parsed = (claude_logs.read_log(log_path, cache) if cache is not None
-              else claude_logs.parse_log(log_path))
+    parsed = (logs.read_log(log_path, cache) if cache is not None
+              else logs.parse_log(log_path))
     real: dict[str, str] = {}         # one realpath call per distinct path
     out: dict[str, list[Fragment]] = {}
     for e in parsed.edits:

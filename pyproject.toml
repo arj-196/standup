@@ -1,7 +1,7 @@
 [project]
 name = "standup"
 version = "0.1.0"
-description = "Morning triage inbox: joins Claude Code session logs with git repo state"
+description = "Morning triage inbox: joins Claude Code and Codex session logs with git repo state"
 requires-python = ">=3.11"
 # claude-agent-sdk is the fan-out transport behind the LLM-pass seam
 # (ADR 0003 § the LLM-pass seam) — imported lazily by `llmpass` when an Audit's
